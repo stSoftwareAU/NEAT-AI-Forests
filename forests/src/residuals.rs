@@ -11,7 +11,9 @@
 //! the residual expressed there. For each output with squash `s` and pre-squash
 //! value `h` (the "hint" NEAT-AI-core traces), the correction-space residual is
 //! `unsquash_s(target, h) − h`, using NEAT-AI-core's own `apply_unsquash`. For
-//! an `IDENTITY` output the two residuals coincide. Both are stored; the
+//! an `IDENTITY` output — and for aggregate outputs such as an `IF` output
+//! neuron, whose activation is linear in the winning branch sum — the two
+//! residuals coincide. Both are stored; the
 //! correction-space one drives histogram search, the output-space one drives
 //! the MSE parity check against the scorer.
 //!
@@ -171,8 +173,16 @@ fn record_residuals(
         let hint = traced[hints_start + j];
         let target = targets[j];
         residual[j] = target - prediction;
-        let pre = apply_unsquash(squashes[j], target, hint);
-        correction[j] = if pre.is_finite() { pre - hint } else { 0.0 };
+        // Aggregate outputs (e.g. an `IF` output neuron) apply no squash:
+        // the activation is linear in the winning branch sum, so the
+        // correction space is the output space. `unsquash` has no inverse for
+        // them and must not be used.
+        correction[j] = if squashes[j].is_aggregate() {
+            residual[j]
+        } else {
+            let pre = apply_unsquash(squashes[j], target, hint);
+            if pre.is_finite() { pre - hint } else { 0.0 }
+        };
     }
 }
 
@@ -565,6 +575,24 @@ mod tests {
             assert!((fixed - t[0]).abs() < 1e-4, "{fixed} vs {}", t[0]);
             assert_ne!(cache.residual_at(i, 0), cache.correction_at(i, 0));
         }
+    }
+
+    #[test]
+    fn if_output_uses_output_space_as_correction_space() {
+        let tmp = tempfile::tempdir().unwrap();
+        let recs: Vec<(Vec<f32>, Vec<f32>)> = (0..12)
+            .map(|i| (vec![i as f32 - 6.0, 0.5, 0.25], vec![i as f32 * 0.1]))
+            .collect();
+        write_bin_file(&tmp.path().join("0.bin"), &recs).unwrap();
+        let inc =
+            Incumbent::from_creature(crate::graft::fixtures::if_output_creature(3), "t").unwrap();
+        let cfg = TrainingDataConfig::new(3, 1);
+        let corpus = corpus_info(tmp.path(), &cfg).unwrap();
+        let cache = compute_residuals(&inc, tmp.path(), &corpus, 5, 2).unwrap();
+        assert_eq!(cache.meta.output_squashes, ["IF"]);
+        assert_eq!(cache.residual, cache.correction);
+        assert!(cache.correction.iter().any(|&c| c != 0.0));
+        assert!(cache.meta.stats[0].correction_mse > 0.0);
     }
 
     #[test]

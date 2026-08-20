@@ -64,7 +64,9 @@ means the incumbent is too low and a positive correction helps.
 
 **Correction space.** A graft adds to the output neuron's pre-squash sum, so
 the search target is `unsquash(target, hint) − hint` using NEAT-AI-core's own
-`apply_unsquash`. For `IDENTITY` outputs it equals the output-space residual.
+`apply_unsquash`. For `IDENTITY` outputs, and for aggregate outputs such as an
+`IF` output neuron (linear in the winning branch sum, no inverse), it equals
+the output-space residual.
 
 **Invalidation.** Keyed by incumbent checksum × corpus identity; an accepted
 winner has a new checksum, so its residuals are recomputed by construction.

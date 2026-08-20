@@ -58,6 +58,9 @@ pub enum GraftError {
     OutputsNotLast,
     /// NEAT-AI-core refused to compile the result.
     Compile(String),
+    /// The target output neuron is an aggregate (MINIMUM/MAXIMUM/MEAN/HYPOT…)
+    /// whose activation is not additive in an extra synapse.
+    UnsupportedOutputSquash(String),
     /// Structural validator rejected the result.
     Structural {
         /// Validator code.
@@ -84,6 +87,10 @@ impl fmt::Display for GraftError {
                 "output neurons are not the trailing entries of `neurons`"
             ),
             Self::Compile(m) => write!(f, "grafted creature does not compile: {m}"),
+            Self::UnsupportedOutputSquash(s) => write!(
+                f,
+                "output neuron squash `{s}` is an aggregate whose value is not additive in a new synapse; refusing to graft"
+            ),
             Self::Structural { code, index } => {
                 write!(f, "structural validation failed: code {code} at {index}")
             }
@@ -225,12 +232,34 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
         existing: &existing,
     };
     let (root_uuid, root_w) = em.emit(&patch.root)?;
-    em.synapses.push(SynapseExport {
-        from_uuid: root_uuid,
-        to_uuid: target_uuid,
-        weight: root_w,
-        synapse_type: None,
-    });
+    // How the correction enters the output depends on the output's squash:
+    // * point-wise squash: one untyped synapse adds to the pre-squash sum;
+    // * `IF` output: an untyped synapse would feed only the positive branch,
+    //   so the correction is wired into BOTH branches (positive + negative);
+    // * other aggregates (MIN/MAX/MEAN/HYPOT): not additive — fail closed.
+    let target_squash = incumbent.neurons[first_output + patch.output]
+        .squash
+        .as_deref()
+        .unwrap_or("IDENTITY");
+    let parsed = neat_core::parse_squash_name(target_squash)
+        .map_err(|e| GraftError::Compile(e.to_string()))?;
+    let roles: &[Option<&str>] = if parsed == neat_core::SquashType::If {
+        &[Some("positive"), Some("negative")]
+    } else if parsed.is_aggregate() {
+        return Err(GraftError::UnsupportedOutputSquash(
+            target_squash.to_string(),
+        ));
+    } else {
+        &[None]
+    };
+    for role in roles {
+        em.synapses.push(SynapseExport {
+            from_uuid: root_uuid.clone(),
+            to_uuid: target_uuid.clone(),
+            weight: root_w,
+            synapse_type: role.map(str::to_string),
+        });
+    }
 
     let mut creature = incumbent.clone();
     let added_neurons = em.neurons.len();
@@ -336,6 +365,45 @@ pub mod fixtures {
     /// JSON text of [`identity_creature`].
     pub fn identity_creature_json(inputs: usize, outputs: usize) -> String {
         neat_core::creature_to_json_pretty(&identity_creature(inputs, outputs)).unwrap()
+    }
+
+    /// A creature whose single output is itself an `IF` aggregate (as the
+    /// production champion's is): condition on `input-0`, positive branch
+    /// `2·input-1`, negative branch `-input-2`.
+    pub fn if_output_creature(inputs: usize) -> CreatureExport {
+        assert!(inputs >= 3);
+        CreatureExport {
+            input: inputs,
+            output: 1,
+            neurons: vec![NeuronExport {
+                neuron_type: "output".into(),
+                uuid: "output-0".into(),
+                bias: 0.01,
+                squash: Some("IF".into()),
+            }],
+            synapses: vec![
+                SynapseExport {
+                    from_uuid: "input-0".into(),
+                    to_uuid: "output-0".into(),
+                    weight: 1.0,
+                    synapse_type: Some("condition".into()),
+                },
+                SynapseExport {
+                    from_uuid: "input-1".into(),
+                    to_uuid: "output-0".into(),
+                    weight: 2.0,
+                    synapse_type: Some("positive".into()),
+                },
+                SynapseExport {
+                    from_uuid: "input-2".into(),
+                    to_uuid: "output-0".into(),
+                    weight: -1.0,
+                    synapse_type: Some("negative".into()),
+                },
+            ],
+            semantic_version: Some("4.0.0".into()),
+            forward_only: true,
+        }
     }
 
     /// A small creature with a hidden TANH layer and a LOGISTIC output, so
@@ -505,6 +573,48 @@ mod tests {
         };
         let patch = Patch::new(1, root, Provenance::default());
         assert_graft_matches_evaluator(&inc, &patch, 1e-6);
+    }
+
+    #[test]
+    fn if_output_neuron_receives_the_correction_on_both_branches() {
+        let inc = if_output_creature(4);
+        let patch = Patch::new(0, Node::stump(3, 0.0, -0.05, 0.07), Provenance::default());
+        let g = graft_patch(&inc, &patch).unwrap();
+        // Two typed synapses into the IF output, none untyped.
+        let into_out: Vec<_> = g
+            .creature
+            .synapses
+            .iter()
+            .filter(|s| s.to_uuid == "output-0" && s.from_uuid.starts_with("forest-"))
+            .collect();
+        assert_eq!(into_out.len(), 2);
+        assert_eq!(
+            into_out
+                .iter()
+                .map(|s| s.synapse_type.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("positive"), Some("negative")]
+        );
+        let mut base = compile_creature(&inc).unwrap();
+        let mut cand = compile_creature(&g.creature).unwrap();
+        let (mut pos, mut neg) = (0, 0);
+        for rec in records(300, 4) {
+            let delta = cand.activate(&rec, 1)[0] - base.activate(&rec, 1)[0];
+            assert!(
+                (delta - patch.evaluate(&rec)).abs() < 1e-6,
+                "delta {delta} vs {}",
+                patch.evaluate(&rec)
+            );
+            if rec[0] > 0.0 { pos += 1 } else { neg += 1 }
+        }
+        assert!(pos > 0 && neg > 0);
+        // A MAXIMUM output is refused.
+        let mut max_out = inc.clone();
+        max_out.neurons[0].squash = Some("MAXIMUM".into());
+        assert!(matches!(
+            graft_patch(&max_out, &patch),
+            Err(GraftError::UnsupportedOutputSquash(_))
+        ));
     }
 
     #[test]

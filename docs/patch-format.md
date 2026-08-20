@@ -65,6 +65,13 @@ forest-P-ifN            type "hidden", squash "IF", bias 0   (children emitted b
 root IF ──(weight 1.0, untyped)──▶ output-j
 ```
 
+When the target output neuron is itself an **`IF` aggregate** (as the
+production champion's is), an untyped synapse would feed only its positive
+branch, so the root is wired in twice — once `positive`, once `negative` —
+and the correction reaches every record. Other aggregate outputs
+(`MINIMUM`/`MAXIMUM`/`MEAN`/`HYPOT`) are not additive in a new synapse and the
+graft is refused.
+
 Because `IF` applies no squash and `condition_sum > 0 ? positive_sum + bias :
 negative_sum + bias`, the root's activation is exactly the patch's correction,
 and it enters the output neuron's pre-squash sum with weight 1. A leaf of

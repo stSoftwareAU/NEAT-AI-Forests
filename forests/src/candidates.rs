@@ -122,8 +122,9 @@ fn zero_side(node: &Node, right: bool) -> Option<Node> {
         } else {
             (Box::new(Node::leaf(0.0)), r.clone())
         };
-        if l2.zero_leaves() + r2.zero_leaves() == l2.zero_leaves() + r2.zero_leaves()
-            && (**left != *l2 || **r != *r2)
+        // Only a genuine variant: something changed and a non-zero leaf remains.
+        if (**left != *l2 || **r != *r2)
+            && (l2.max_abs_correction() > 0.0 || r2.max_abs_correction() > 0.0)
         {
             return Some(Node::Split {
                 condition: condition.clone(),

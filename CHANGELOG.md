@@ -5,6 +5,14 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Creatures whose output neuron is an `IF` aggregate (the production
+  champion): correction-space residuals are now the output-space residuals
+  (no `unsquash`), and grafts feed the output through both a `positive` and a
+  `negative` synapse so the correction reaches every record. Previously such
+  creatures produced zero stumps.
+
 ### Added
 
 - Rust workspace, `forests` crate, quality gate and CI hygiene (#1).
