@@ -1,0 +1,65 @@
+name: Semgrep
+
+# Semgrep SAST scanning gate for pull requests (Issue #47).
+#
+# Why the container path?
+#   We run Semgrep via the official `semgrep/semgrep` container — upstream's
+#   recommended PR-scan integration — as the equivalent of the
+#   semgrep/semgrep-action GitHub Action. Both consume `SEMGREP_APP_TOKEN`
+#   from repo secrets and execute `semgrep ci --config <ruleset>`; the
+#   container path simply runs the CLI directly inside the pinned image
+#   instead of through the action wrapper.
+#
+# Why pin the container by digest?
+#   * Reproducibility — a given PR always runs the same scanner build,
+#     so rule updates never silently change PR-gating behaviour.
+#   * Supply-chain hygiene — Docker tags are mutable (an attacker who
+#     compromises the `semgrep/semgrep` namespace could re-push the tag
+#     to point at a malicious image). The `sha256:` digest is immutable
+#     and prevents that silent substitution (Issue #102).
+#   * Transparency — bumping Semgrep is an explicit, reviewable change to
+#     both the digest and the trailing version-label comment below.
+#
+# Bump protocol: look up the upstream digest for the new release
+# (`docker buildx imagetools inspect semgrep/semgrep:<version>` or the
+# Docker Hub tag page), update the digest AND the version-label comment
+# in lockstep, and record the upstream changelog highlights in the PR
+# that does the bump.
+
+on:
+  pull_request:
+    # `*` matches only slash-free branch names, so bare `["*"]` skips
+    # `milestone/<slug>` PRs; the `milestone/*` glob gates them too (Issue #396).
+    branches: ["*", "milestone/*"]
+
+permissions:
+  contents: read
+
+# Avoid stacking overlapping scans on rapid pushes; keep only the latest run.
+concurrency:
+  group: semgrep-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  semgrep:
+    name: Semgrep SAST Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      # Pinned Semgrep release. Equivalent to `uses: semgrep/semgrep-action@v1`.
+      # Digest pin: semgrep/semgrep v1.86.0 multi-arch manifest, frozen
+      # 2026-05-18. Docker tags are mutable; the sha256 digest is not
+      # (Issue #102).
+      image: semgrep/semgrep@sha256:a9ea2d5621c29d815d90c2a3b2f9571da8972ef4ff855c9e4902681730240e35
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          # No step in this job pushes back or fetches a private submodule, so
+          # the GITHUB_TOKEN need not be written to .git/config (Issue #389).
+          persist-credentials: false
+
+      - name: Run Semgrep
+        run: semgrep ci --config p/default
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}

@@ -1,0 +1,98 @@
+name: Gitleaks
+
+# Secret-scanning gate for pull requests. The scan is deliberately scoped to
+# the PR commit range (`origin/<base>..HEAD`) so reviewers see findings that
+# belong to the proposed change, not unrelated history already audited by
+# earlier scans.
+#
+# Why pin the Gitleaks binary?
+#   * Reproducibility — a given PR always executes the same scanner binary,
+#     so rule updates never silently change PR-gating behaviour.
+#   * Supply-chain hygiene — the downloaded archive is verified against a
+#     known SHA256 checksum, so a compromised release asset cannot silently
+#     replace the scanner.
+#   * Transparency — bumping Gitleaks is an explicit, reviewable change to
+#     both GITLEAKS_VERSION and GITLEAKS_SHA256 below.
+
+on:
+  pull_request:
+    # `*` matches only top-level branches (it does not span `/`), so
+    # `milestone/<slug>` PRs need an explicit `milestone/*` glob — otherwise the
+    # secret-scanning gate never runs on milestone sub-issue PRs and they merge
+    # into the milestone branch unscanned (Issue #394).
+    branches: ["*", "milestone/*"]
+
+permissions:
+  contents: read
+
+# Avoid stacking overlapping scans on rapid pushes; keep only the latest run.
+concurrency:
+  group: gitleaks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gitleaks:
+    name: Gitleaks Secrets Detection
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Pinned release. Bump both values together and record the upstream
+    # release notes / rationale in the PR that lifts them.
+    env:
+      GITLEAKS_VERSION: "8.24.2"
+      GITLEAKS_SHA256: "fa0500f6b7e41d28791ebc680f5dd9899cd42b58629218a5f041efa899151a8e"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          # Full history so `origin/<base>..HEAD` resolves on every PR.
+          fetch-depth: 0
+
+      - name: Install pinned Gitleaks binary
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "Downloading pinned Gitleaks v${GITLEAKS_VERSION} from ${url}"
+          # GitHub's release CDN intermittently returns transient gateway
+          # errors (e.g. HTTP 504). Retry with backoff so a one-off blip does
+          # not fail the secret-scanning gate. The pinned SHA256 check below
+          # still guarantees we only accept the expected binary.
+          curl -sSfL \
+            --retry 5 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            "${url}" -o "${archive}"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check -
+          tar -xzf "${archive}" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Fetch base ref for diff scan
+        env:
+          # Intermediate env avoids Semgrep run-shell-injection on github.* in run:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # Ensure origin/<base_ref> resolves locally before gitleaks uses it
+          # in --log-opts. actions/checkout fetches the PR merge ref but not
+          # always the base branch tip.
+          git fetch --no-tags origin "${BASE_REF}"
+          echo "Base ref: origin/${BASE_REF} -> $(git rev-parse "origin/${BASE_REF}")"
+          echo "HEAD:     $(git rev-parse HEAD)"
+
+      - name: Run Gitleaks on PR diff range
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # --log-opts scopes the scan to commits introduced by this PR.
+          # --redact prevents leaked values from appearing in CI logs.
+          # --verbose keeps the output actionable for reviewers.
+          # Gitleaks exits non-zero on any finding, which fails the job —
+          # that is the intended strict-failure semantics.
+          gitleaks detect \
+            --source . \
+            --log-opts="origin/${BASE_REF}..HEAD" \
+            --redact \
+            --verbose

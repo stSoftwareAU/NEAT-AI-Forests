@@ -1,0 +1,68 @@
+name: Cargo Audit
+
+# Standalone Cargo Security Audit workflow (Issue #64).
+#
+# Why a dedicated workflow? The reusable `security.yml` workflow already runs
+# `cargo audit` as part of CI on each pull request. This file mirrors that
+# coverage but adds a weekly cron schedule so advisories published *after*
+# the last PR still surface — the lockfile does not change but the RustSec
+# advisory database does, so a freshly published CVE against a pinned
+# dependency would otherwise go unnoticed until the next merge.
+#
+# Triggers:
+#   * pull_request   — belt-and-braces alongside security.yml; cargo-audit
+#                      is fast (seconds) so the duplication is negligible
+#                      and keeps the standalone workflow self-contained. The
+#                      filter includes `milestone/**` so the gate also runs on
+#                      milestone/<slug> sub-issue PRs — a bare "*" glob does
+#                      not match refs containing a slash (Issue #391).
+#   * schedule       — Mondays 06:00 UTC; catches new advisories weekly.
+#   * workflow_dispatch — manual trigger for ad-hoc audits.
+#
+# Action versions follow `scripts/check-workflow-action-versions.sh`:
+# `actions/checkout@v5` (Node 24 policy) and `dtolnay/rust-toolchain@stable`
+# (composite/shell action — no Node runtime, ref policy not applicable).
+
+on:
+  pull_request:
+    branches: ["*", "milestone/**"]
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Avoid duplicate scheduled / dispatch runs piling up; PR runs are deduped
+# per-branch.
+concurrency:
+  group: cargo-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          # Read-only audit job: never pushes back nor fetches private
+          # submodules, so the GITHUB_TOKEN must not be persisted to
+          # `.git/config` where a later step could read it (Issue #373).
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
+
+      # Fetch a prebuilt cargo-audit binary instead of compiling from source
+      # on every run (Issue #208). Installs in seconds; no `cargo install`
+      # build. taiki-e/install-action resolves a released binary, matching
+      # the prior unversioned `cargo install` behaviour.
+      - name: Install cargo-audit (prebuilt binary)
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
+        with:
+          tool: cargo-audit
+
+      - name: Run cargo audit
+        run: cargo audit

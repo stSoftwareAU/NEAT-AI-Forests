@@ -1,0 +1,87 @@
+name: SBOM
+
+# Software Bill of Materials workflow (Issue #172).
+#
+# `forests` ships a binary (`[[bin]] name = "forests"`), so it has a
+# real binary surface whose dependency inventory should be captured in a
+# standard, scanner-consumable format. `Cargo.lock` already pins the full
+# graph; this workflow exports it as a CycloneDX SBOM and uploads the document
+# as a build artefact. When a supply-chain advisory drops ("crate X version Y
+# is compromised"), the SBOM is the lookup table that answers "are we affected,
+# and where?" in seconds — without re-deriving the dependency tree by hand or
+# needing a Rust toolchain.
+#
+# Scope note (see issue cross-links): active dependency vulnerabilities are
+# owned by `cargo-audit.yml` / `security.yml`; this workflow only emits the
+# inventory artefact (the posture gap), it does not gate on advisories.
+#
+# Action versions follow `scripts/check-workflow-action-versions.sh`: every
+# `uses:` is SHA-pinned with a trailing `# <version>` comment.
+
+on:
+  pull_request:
+    # "**" not "*": a single star does not match "/" so PRs targeting
+    # milestone/<slug> branches would silently skip this required check.
+    branches: ["**"]
+  push:
+    branches: [Develop]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+# Least-privilege token scope (Issue #155): generating and uploading an SBOM
+# only reads the checked-out code.
+permissions:
+  contents: read
+
+concurrency:
+  group: sbom-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          # Least-privilege token handling (Issue #385): this job only reads the
+          # checked-out code to build the SBOM — it never pushes back — so the
+          # workflow GITHUB_TOKEN must not be written to `.git/config`, where a
+          # later step could read it and act as the token.
+          persist-credentials: false
+
+      # NEAT-AI-core checkout + sibling symlink (Issue #18) via the shared
+      # composite action (Issue #401): cargo-cyclonedx reads the resolved
+      # workspace metadata, so the `../../NEAT-AI-core/neat-core` path
+      # dependency must resolve on the runner.
+      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
+        uses: ./.github/actions/setup-neat-core
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
+
+      # Fetch a prebuilt cargo-cyclonedx binary instead of compiling from
+      # source on every run (Issue #208). taiki-e/install-action resolves a
+      # released binary in seconds, matching the prior unversioned
+      # `cargo install` behaviour.
+      - name: Install cargo-cyclonedx (prebuilt binary)
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
+        with:
+          tool: cargo-cyclonedx
+
+      - name: Generate CycloneDX SBOM
+        # Reads Cargo.lock / resolved workspace metadata and emits a standard
+        # CycloneDX document per crate (e.g. forests.cdx.json). No runtime
+        # dependency on the binary is introduced.
+        run: cargo cyclonedx --format json --all
+
+      - name: Upload SBOM artefact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: sbom
+          path: "**/*.cdx.json"
+          if-no-files-found: error

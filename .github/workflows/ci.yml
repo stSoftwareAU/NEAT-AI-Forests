@@ -1,0 +1,251 @@
+# Quality bar aligned with NEAT-AI-scorer (fmt, clippy, tests, security, spell & shell checks).
+#
+# Job dependency graph:
+#
+#   validation ──┬── quality ─────────────┐
+#                │                         │
+#                └── security ─────────────┤
+#                                          ├──► ci-required  (aggregator)
+#   shell-checks ──────────────────────────┤
+#   spell-check ───────────────────────────┘
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - Develop
+      # Milestone branches carry the same required checks as Develop, so PRs
+      # from issue branches into a milestone must run CI too (Issue #89).
+      - "milestone/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "2"
+
+jobs:
+  quality:
+    name: Quality Checks
+    needs: [validation]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: "-D warnings"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
+        uses: ./.github/actions/setup-neat-core
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache dependencies
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-deny (prebuilt binary)
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
+        with:
+          tool: cargo-deny
+
+      - name: cargo deny
+        run: cargo deny check
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run linter
+        run: |
+          set -euo pipefail
+          cargo clippy --workspace --all-targets --all-features -- \
+            -D warnings \
+            -D clippy::filter_next \
+            -D clippy::collapsible_if
+
+      - name: Build workspace
+        run: cargo build --workspace
+
+      - name: Run tests
+        run: cargo test --workspace --all-features --verbose -- --test-threads=2
+
+      - name: Build documentation
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
+  security:
+    needs: [validation]
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    uses: ./.github/workflows/security.yml
+    if: github.event_name == 'pull_request'
+    with:
+      include-dependency-review: false
+
+  validation:
+    name: Project Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          persist-credentials: false
+
+      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
+        uses: ./.github/actions/setup-neat-core
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
+
+      - name: Check for required files
+        run: |
+          set -euo pipefail
+          required_files=(
+            "Cargo.toml"
+            "README.md"
+            "LICENSE"
+            "CONTRIBUTING.md"
+            "CHANGELOG.md"
+            "quality.sh"
+            "deny.toml"
+            "rust-toolchain.toml"
+            "forests/src/main.rs"
+            ".github/CODEOWNERS"
+            "SECURITY.md"
+            "neat-core.expected-version"
+          )
+          missing_files=()
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              missing_files+=("$file")
+            fi
+          done
+          if [ ${#missing_files[@]} -ne 0 ]; then
+            echo "Missing required files: ${missing_files[*]}"
+            exit 1
+          fi
+
+      - name: Validate Cargo workspace
+        run: cargo metadata --no-deps --format-version 1 > /dev/null
+
+      - name: Gate on unhandled breaking neat-core bump
+        run: ./scripts/check-neat-core-version.sh
+
+  shell-checks:
+    name: Shell Script Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          persist-credentials: false
+
+      - name: Check bash script syntax
+        run: |
+          set -euo pipefail
+          EXIT_CODE=0
+          while IFS= read -r script; do
+            if bash -n "$script"; then
+              echo "OK $script"
+            else
+              echo "FAIL $script"
+              EXIT_CODE=1
+            fi
+          done < <(find . -name "*.sh" -not -path "./target/*" -not -path "./.git/*")
+          exit $EXIT_CODE
+
+      - name: Run ShellCheck
+        env:
+          SHELLCHECK_OPTS: -s bash
+        run: |
+          set -euo pipefail
+          shellcheck --version
+          scripts=()
+          while IFS= read -r script; do
+            scripts+=("$script")
+          done < <(find . -name "*.sh" -not -path "./target/*" -not -path "./.git/*")
+          if [ ${#scripts[@]} -eq 0 ]; then
+            echo "No shell scripts found — nothing to lint"
+            exit 0
+          fi
+          shellcheck --severity=warning "${scripts[@]}"
+
+  spell-check:
+    name: Spell Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          persist-credentials: false
+
+      - name: Install codespell
+        run: pip install --user codespell
+
+      - name: Run codespell preflight
+        run: ./scripts/spell-check.sh
+
+  ci-required:
+    name: CI Required Checks
+    needs: [validation, quality, security, shell-checks, spell-check]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify all gating jobs succeeded
+        env:
+          VALIDATION_RESULT: ${{ needs.validation.result }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          SHELL_CHECKS_RESULT: ${{ needs.shell-checks.result }}
+          SPELL_CHECK_RESULT: ${{ needs.spell-check.result }}
+        run: |
+          set -euo pipefail
+          fail=0
+          check() {
+            local name="$1" result="$2"
+            if [[ "$result" == "success" || "$result" == "skipped" ]]; then
+              echo "OK   $name: $result"
+            else
+              echo "FAIL $name: $result" >&2
+              fail=1
+            fi
+          }
+          check "validation"   "$VALIDATION_RESULT"
+          check "quality"      "$QUALITY_RESULT"
+          check "security"     "$SECURITY_RESULT"
+          check "shell-checks" "$SHELL_CHECKS_RESULT"
+          check "spell-check"  "$SPELL_CHECK_RESULT"
+          if [[ "$fail" -ne 0 ]]; then
+            echo "One or more gating jobs did not succeed — blocking merge." >&2
+            exit 1
+          fi
+          echo "All gating jobs succeeded — safe to merge."

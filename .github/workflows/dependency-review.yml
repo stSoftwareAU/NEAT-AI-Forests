@@ -1,0 +1,57 @@
+name: Dependency Review
+
+# Standalone Dependency Review workflow (Issue #62).
+#
+# Why a dedicated workflow? This is now the single dependency-review gate for
+# the repo (Issue #399). It is self-contained and discoverable on its own, and
+# runs on PRs targeting every branch — including those that bypass the full CI
+# graph (`ci.yml` only fires for PRs into `Develop` and `milestone/*`). The
+# reusable `security.yml` used to run the same action inside CI as well, but
+# that duplicated the verdict on the dominant Develop / milestone path, so its
+# caller (`ci.yml`) now passes `include-dependency-review: false`.
+#
+# What it does: `actions/dependency-review-action` diffs the PR's manifest
+# (Cargo.toml / Cargo.lock here) against the base branch and fails the run
+# if any newly introduced dependency carries a known vulnerability or
+# disallowed licence — surfacing supply-chain risk before merge.
+#
+# Trigger: pull_request only. The action requires the diff between base and
+# head, which only makes sense on PR events. The filter includes `milestone/**`
+# so the gate also runs on milestone/<slug> sub-issue PRs — a bare "*" glob does
+# not match refs containing a slash (Issue #391), which would otherwise leave
+# milestone PRs with no dependency-review coverage once the reusable path is
+# disabled.
+#
+# Action versions follow `scripts/check-workflow-action-versions.sh`:
+# `actions/checkout@v5` (Node 24 policy) and
+# `actions/dependency-review-action@v5` (Node 24; the prior v4.9 line was a
+# tracked Node 20 exception cleared by Issue #136 once upstream v5.0.0
+# landed on 2026-05-08)
+
+on:
+  pull_request:
+    branches: ["*", "milestone/**"]
+
+permissions:
+  contents: read
+
+# Avoid duplicate runs piling up when a PR is updated rapidly.
+concurrency:
+  group: dependency-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          # dependency-review only diffs the PR manifest against the base and
+          # never pushes back, so the workflow GITHUB_TOKEN must not be written
+          # to .git/config where a later step could read it (Issue #383).
+          persist-credentials: false
+
+      - name: Dependency review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0

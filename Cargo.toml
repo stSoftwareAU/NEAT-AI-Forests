@@ -1,0 +1,23 @@
+[workspace]
+members = ["forests"]
+resolver = "2"
+
+# Dev builds: compile as fast as possible. line-tables-only keeps panic
+# file:line without full DWARF; opt-level and incremental stay at Cargo
+# defaults (0 / on). Mirrors NEAT-AI-Lamarck / NEAT-AI-core.
+[profile.dev]
+debug = "line-tables-only"
+
+# Release builds: most optimised artefact; compile time is irrelevant.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused = "deny"
+
+[workspace.lints.clippy]
+collapsible_if = "deny"
+filter_next = "deny"

@@ -1,0 +1,6 @@
+globs:
+  - "**/*.md"
+  - "**/*.markdown"
+
+ignores:
+  - "target/**"

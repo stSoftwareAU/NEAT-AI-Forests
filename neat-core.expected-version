@@ -1,0 +1,8 @@
+# Last-handled neat-core version.
+#
+# Forests consumes neat-core via an unpinned `path` dependency that tracks head.
+# CI (`scripts/check-neat-core-version.sh`) fails when the sibling neat-core
+# presents a breaking bump above this baseline — pre-1.0 a higher minor, or any
+# higher major — forcing a deliberate upgrade. Clear the gate by updating
+# `forests` for the breaking change and bumping this version to match neat-core.
+0.9.7

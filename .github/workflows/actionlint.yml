@@ -1,0 +1,75 @@
+name: Actionlint
+
+# Standalone GitHub Actions lint gate (Issue #195).
+#
+# Why this exists:
+#   * The repository ships a growing fleet of workflow YAML under
+#     `.github/workflows/` but had no CI job running the standard GitHub
+#     Actions linter (actionlint). actionlint catches workflow regressions
+#     that plain YAML parsing misses — invalid `runs-on` labels, broken
+#     `${{ }}` expressions, unknown `uses:` inputs, shellcheck findings in
+#     `run:` scripts, and more — so lint regressions fail the build before
+#     they reach `Develop`.
+#   * Workflow-sync tooling looks for `actionlint.yml` by filename; the
+#     dedicated file keeps the gate discoverable independent of `ci.yml`.
+#
+# Supply-chain policy (Issues #24, #100, #157, mirrored by
+# `scripts/check-workflow-action-versions.sh`): every `uses:` reference is
+# pinned to a 40-character commit SHA with a trailing `# <version>` comment.
+# actionlint itself is NOT fetched via a third-party action — it is downloaded
+# from a version-pinned upstream release by the official installer script and
+# run as a plain binary, mirroring how `ci.yml` invokes ShellCheck directly
+# (PR #184) rather than through a wrapper action.
+
+on:
+  pull_request:
+    # "*" matches only single-level base branches, so milestone/<slug> sub-issue
+    # PRs would skip this gate; "milestone/**" restores coverage (Issue #390).
+    branches: ["*", "milestone/**"]
+  push:
+    # Lint gates belong on the PR, not on push to the default branch `Develop`
+    # (Issue #369): a post-merge re-run duplicates the check that already gated
+    # the PR, wasting CI minutes and risking a red tick on `Develop` for a
+    # check that already passed. Keep push coverage for non-default branches
+    # only; deploy/release workflows are different and must keep firing on push.
+    branches: [main, master]
+  workflow_dispatch:
+
+# Least-privilege default token scope — actionlint only reads the checked-out
+# workflow files, so read-only access is sufficient.
+permissions:
+  contents: read
+
+# Avoid stacking duplicate runs on rapid pushes; PR runs are deduped per ref.
+concurrency:
+  group: actionlint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: Actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Pinned actionlint release — bumped explicitly in a reviewed PR.
+      ACTIONLINT_VERSION: "1.7.7"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          # This job only reads the tree to lint workflow YAML and never pushes
+          # back or fetches a private submodule, so the workflow GITHUB_TOKEN
+          # must not be written to .git/config where a later step could read it
+          # (Issue #372).
+          persist-credentials: false
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          curl -fsSL -o download-actionlint.bash \
+            "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash"
+          bash download-actionlint.bash "${ACTIONLINT_VERSION}"
+          echo "${PWD}" >> "${GITHUB_PATH}"
+
+      - name: Run actionlint
+        run: actionlint -color

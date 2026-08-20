@@ -24,17 +24,31 @@ Candidate generation may be adventurous. **Acceptance is deliberately boring.**
 
 ## Status
 
-🚧 **Bootstrap / experiment-design stage.**
+🌳 **Implemented through Phase 11 — measuring.**
 
-The implementation is being built as a sequence of small GitHub issues so each idea can be measured before more complexity is added.
+Every issue in the [poor-man's project plan](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues)
+has landed as code: immutable incumbent + scorer parity gate, quantile-bin and
+residual caches, CPU reference stump search with an optional wgpu/WGSL GPU
+accelerator, portable patches grafted as ordinary `IF` structure, depth-1
+stump populations, two-phase screening with authoritative promotion, the
+45-minute evolution loop and journal, depth-2/3 trees, sampling/jitter/random
+"dirty tricks", the XGBoost external control and oblique splits.
 
-The first useful milestone is deliberately modest:
+The first useful milestone remains deliberately modest:
 
 > Given a mature creature and its training corpus, can a single depth-1 decision stump acting as a residual correction produce a full-corpus, scorer-verified improvement?
 
-If the answer is no, that is useful evidence. If the answer is yes, Forests earns the right to try deeper trees and dirtier tricks.
+On synthetic fixtures with a planted residual region the answer is yes (the
+real NEAT-AI-scorer verifies the graft — see `forests/tests/real_scorer.rs`).
+Whether it is yes on the **production** creature is the open experiment:
+[docs/benchmarks.md](docs/benchmarks.md) records the search economics measured
+so far and how to run the production-scale comparison.
 
-See the [project issues](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues) for the current poor-man's project plan.
+Two shared-family prerequisites are still open upstream and Forests carries
+interim local equivalents until they ship:
+
+- [NEAT-AI-core #555](https://github.com/stSoftwareAU/NEAT-AI-core/issues/555) — canonical `IF` fixture/helpers. Forests' `graft` module is the single local interpretation of `IF` synapse roles and pins itself against the documented kernel record by record.
+- [NEAT-AI-scorer #574](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/574) — CPU/GPU parity for `IF`-heavy creatures. Until it lands, production runs should pass `--scorer-arg=--gpu=off` or watch the `baselineDrift` field in the journal.
 
 ---
 
@@ -319,3 +333,193 @@ If the evidence says a clever technique is useless, remove it.
 If dumb luck repeatedly wins, generate more dumb luck.
 
 **The scorer does not care about our theory, and neither should the experiment.** 🌳🧬
+
+---
+
+## Quick start
+
+Forests is a Rust workspace that depends on the sibling
+[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) checkout and
+invokes the [NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer)
+binary (`rust_scorer`) as the judge:
+
+```text
+parent/
+├── NEAT-AI-core/      # path dependency: ../../NEAT-AI-core/neat-core
+├── NEAT-AI-scorer/    # build it: cargo build --release  →  target/release/rust_scorer
+└── NEAT-AI-Forests/
+```
+
+```bash
+cargo build --release                       # CPU build
+cargo build --release --features gpu        # + wgpu/WGSL histogram accumulation
+
+./target/release/neat_ai_forests creature.json training/ \
+  --scorer ../NEAT-AI-scorer/target/release/rust_scorer \
+  --output-dir runs/first --timeout-seconds 2700
+
+./target/release/neat_ai_forests report runs/first/experiments.jsonl
+```
+
+The source `creature.json` is never written to. `best.json` starts as a
+byte-for-byte copy and is only replaced by a creature the scorer verified on
+the full corpus in the same call as its parent.
+
+### Command line
+
+```text
+neat_ai_forests <creature.json> <training-data-dir> [OPTIONS]
+neat_ai_forests report <experiments.jsonl>
+neat_ai_forests <creature.json> <training-data-dir> export-matrix  [--out CSV] [--max-records N] [--output J]
+neat_ai_forests <creature.json> <training-data-dir> import-xgboost --dump dump.json [--output J] [--allow-missing-divergence]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--output-dir` | `.` | `best.json`, `experiments.jsonl`, `winners/`, `workspace/` |
+| `--cache-dir` | training dir | where `forests-bins.cache` / `forests-residuals-*.cache` live |
+| `--scorer` | `rust_scorer` | NEAT-AI-scorer binary |
+| `--scorer-arg` | — | extra scorer argument, repeatable (e.g. `--scorer-arg=--gpu=off`) |
+| `--timeout-seconds` | `2700` | 45-minute wall-clock budget |
+| `--max-iterations` | — | stop after N iterations |
+| `--seed` | drawn | RNG seed; printed for replay |
+| `--min-improvement` | `1e-6` | strict authoritative Δscore required to accept |
+| `--bins` | `256` | quantile bins per observation |
+| `--bin-sample-records` | `65536` | records sampled per feature for quantiles |
+| `--bin-memory-budget-mib` | `256` | memory per bin-cache pass |
+| `--chunk-records` | `4096` | records per streaming chunk |
+| `--analysis-threads` | `4` | threads for residual extraction and CPU histogram accumulation |
+| `--search-records` | `200000` | in-memory search sample (0 = whole corpus) |
+| `--row-sampling` | `stride` | `stride`, `uniform`, `stratified`, `residual-weighted` |
+| `--feature-selection` | `all` | `all`, `random`, `error-ranked` |
+| `--feature-fraction` | `0.25` | fraction kept under random / error-ranked |
+| `--min-leaf-records` | `50` | minimum records in a corrected leaf |
+| `--max-correction` | `1` | clamp on leaf corrections (pre-squash units) |
+| `--min-gain` | `0` | minimum proxy gain reported |
+| `--stump-kinds` | all three | `left-only`, `right-only`, `two-leaf` |
+| `--top-k` | `16` | stumps kept per search |
+| `--max-per-feature` | `2` | diversity cap per feature (0 = off) |
+| `--max-depth` | `1` | tree depth 1–3 |
+| `--growth` | `level-wise` | `level-wise` or `best-first` |
+| `--magnitude-scales` | `1,0.5,1.5,-1` | leaf scales around the analytical optimum |
+| `--threshold-jitter` | `0` | neighbouring bins tried per top stump |
+| `--random-candidates` | `4` | deliberately random stumps per iteration |
+| `--oblique-candidates` | `0` | oblique 2–3 feature splits per iteration |
+| `--candidates` | `64` | maximum grafted candidates per iteration |
+| `--screen-sample-rate` | `0.05` | scorer sample rate for the screen; 0 disables |
+| `--screen-threshold` | `0` | sampled Δ required to promote |
+| `--promote-count` | `8` | candidates promoted to full scoring |
+| `--explore-quota` | `1` | screen rejects fully scored to measure false negatives |
+| `--baseline-drift-epsilon` | `1e-6` | tolerated same-call vs stored baseline disagreement |
+| `--skip-parity` | off | skip the local-MSE vs scorer parity gate (non-MSE costs) |
+| `--parity-abs` / `--parity-rel` | `1e-7` / `1e-4` | parity tolerances |
+| `--gpu` | `off` | `off`, `auto`, `on` (needs the `gpu` cargo feature; CPU measured faster on unified memory) |
+| `--preserve-candidates` | off | keep per-iteration cohort directories |
+| `--max-consecutive-scorer-failures` | `3` | abort after this many failures in a row |
+
+`--help` and `--version` are the usual clap extras. The scorer's own
+`--sample-rate`, `--sample-phase`, `--gpu` and `--cost` flags are passed by
+Forests, not by you.
+
+---
+
+## How a run works
+
+1. **Incumbent** — load through NEAT-AI-core, refuse anything that does not compile or round-trip, checksum it (SHA-256), copy it byte-for-byte into `workspace/incumbent.json` with `incumbent.meta.json`.
+2. **Bin cache** — stream the corpus once per feature block and persist ~256 equal-population quantile edges per observation (`forests-bins.cache`, reused only for the identical corpus/version/bin count).
+3. **Residuals** — run the incumbent over every record; store `target − prediction` and the pre-squash *correction-space* residual in a sidecar keyed by incumbent checksum × corpus identity.
+4. **Baseline** — score the incumbent alone with the full-corpus scorer; compare its `error` with the local MSE (parity gate, fail closed); journal the result.
+5. **Search** — build the quantised search set (sampled rows/features as configured), accumulate per-feature histograms (GPU when available, CPU otherwise), rank stumps; optionally grow depth-2/3 trees and oblique splits.
+6. **Candidates** — expand discoveries into patches (analytical optimum, one-sided variants, magnitude scales, threshold jitter, random controls), graft each onto a clone, discard anything NEAT-AI-core rejects.
+7. **Screen** — the scorer's record-sampling mode ranks the cohort; the top `--promote-count` plus an exploratory bypass quota go on.
+8. **Promote** — full-corpus scorer call with the baseline in the same cohort; accept only `Δscore > --min-improvement` and only if the same-call baseline matches the stored one.
+9. **Repeat** — a winner becomes the experimental incumbent, `best.json` and `winners/winner-NNNN.json` are written, residuals are recomputed, and the loop continues until the budget ends.
+
+---
+
+## Outputs
+
+| Path | Content |
+|---|---|
+| `best.json` | best scorer-verified creature (pretty JSON, original tags preserved, `score`/`error`/`forests` tags upserted) |
+| `experiments.jsonl` | append-only journal, one JSON object per line with a `record` discriminator |
+| `winners/winner-NNNN.json` | every accepted intermediate |
+| `workspace/incumbent.json`, `incumbent.meta.json`, `baseline.json` | immutable copy, checksum metadata, authoritative baseline record |
+| `<cache-dir>/forests-bins.cache` | quantile-bin cache (see [docs/caches.md](docs/caches.md)) |
+| `<cache-dir>/forests-residuals-<checksum>.cache` | residual sidecar per incumbent |
+
+### Journal records
+
+- `runHeader` — timestamp, seed + source, version, incumbent checksum, corpus identity, bin-cache identity, the complete effective configuration.
+- `baseline` — authoritative score/error, scorer identity, cost name, parity verdict (written at start and after every acceptance).
+- `experiment` — per iteration: search backend/set/records/features/strategies, timings, every candidate's patch + provenance, its **screen** score and its **full** score recorded separately, promotion/bypass flags, winner, improvement, acceptance, new incumbent checksum, screen false-positive/false-negative counts, scorer error or baseline veto.
+- `summary` — stop reason, iterations, acceptances, opening/final score, wall time.
+
+`neat_ai_forests report` folds the journal into the economics metrics: cumulative improvement, **improvement per wall-clock hour**, time to first acceptance, candidates per minute, search vs scorer time, screen false-positive/negative rates, and per-strategy / per-backend / per-depth winner counts and accepted gain. `scripts/report-experiments.sh` compares several journals side by side.
+
+---
+
+## Repository layout
+
+```text
+NEAT-AI-Forests/
+├── Cargo.toml                 # workspace
+├── forests/
+│   ├── Cargo.toml             # neat_ai_forests (lib + bin), optional `gpu` feature
+│   ├── src/
+│   │   ├── main.rs            # CLI
+│   │   ├── lib.rs
+│   │   ├── baseline.rs        # authoritative baseline + parity gate (#2)
+│   │   ├── bins.rs            # quantile-bin cache (#3)
+│   │   ├── cancel.rs          # SIGINT/SIGTERM cooperative cancellation
+│   │   ├── candidates.rs      # candidate population (#8)
+│   │   ├── config.rs          # ForestsConfig + validation
+│   │   ├── corpus.rs          # corpus identity + bounded-memory streaming
+│   │   ├── gpu.rs             # wgpu/WGSL histogram accumulation (#6)
+│   │   ├── graft.rs           # patch → IF structure on a clone (#7)
+│   │   ├── histogram.rs       # CPU reference stump search (#5)
+│   │   ├── incumbent.rs       # immutable incumbent + checksum (#2)
+│   │   ├── journal.rs         # experiments.jsonl records (#10)
+│   │   ├── log.rs             # stderr logging
+│   │   ├── meta.rs            # creature tag preservation
+│   │   ├── oblique.rs         # multi-feature linear splits (#14)
+│   │   ├── patch.rs           # portable patch format + evaluator (#7)
+│   │   ├── promote.rs         # screen + authoritative promotion (#9)
+│   │   ├── report.rs          # journal economics report (#15)
+│   │   ├── residuals.rs       # residual extraction + sidecar (#4)
+│   │   ├── run.rs             # the evolution loop (#10)
+│   │   ├── scorer.rs          # rust_scorer integration
+│   │   ├── strategies.rs      # sampling / feature selection (#12)
+│   │   ├── tools.rs           # export-matrix / import-xgboost (#13)
+│   │   ├── tree.rs            # depth-2/3 growth (#11)
+│   │   └── xgboost.rs         # XGBoost dump conversion (#13)
+│   ├── examples/stump_search_bench.rs
+│   └── tests/                 # README contract, real-scorer integration
+├── docs/                      # architecture, caches, patch format, gpu, strategies, xgboost control, benchmarks
+├── scripts/                   # quality helpers, report-experiments.sh, run-benchmark.sh, xgboost-control.py
+├── quality.sh                 # local gate mirroring CI
+└── .github/workflows/         # CI, security, gitleaks, markdown lint, actionlint, dependency review, SBOM, semgrep
+```
+
+## Documentation
+
+- [docs/architecture.md](docs/architecture.md) — module map and data flow.
+- [docs/caches.md](docs/caches.md) — bin-cache and residual-sidecar binary formats and invalidation rules.
+- [docs/patch-format.md](docs/patch-format.md) — patch JSON, `IF` graft layout, exact routing semantics.
+- [docs/gpu.md](docs/gpu.md) — WGSL kernel design, determinism, limits, fallback reporting.
+- [docs/strategies.md](docs/strategies.md) — sampling, jitter, diversity, random controls and how they report themselves.
+- [docs/xgboost-control.md](docs/xgboost-control.md) — the external control experiment.
+- [docs/benchmarks.md](docs/benchmarks.md) — measured economics and the production-run protocol.
+
+## Development
+
+The toolchain is pinned in `rust-toolchain.toml` (the same channel as the
+NEAT-AI Rust family). `./quality.sh` mirrors CI: shellcheck, codespell,
+markdownlint, actionlint, cargo-deny, `cargo fmt --check`, clippy with
+`-D warnings`, tests (`--all-features`) and rustdoc. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Outstanding work
+
+- Run the 45-minute protocol in [docs/benchmarks.md](docs/benchmarks.md) on the production creature and corpus and record the result (positive or negative).
+- Replace the local `IF` graft helper with the canonical one once NEAT-AI-core #555 ships, and drop the `--scorer-arg=--gpu=off` advice once NEAT-AI-scorer #574 lands.

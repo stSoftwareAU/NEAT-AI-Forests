@@ -1,0 +1,46 @@
+[package]
+name = "neat_ai_forests"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Experimental residual decision-tree optimiser for already-fit NEAT-AI creatures."
+repository = "https://github.com/stSoftwareAU/NEAT-AI-Forests"
+readme = "../README.md"
+
+[lints]
+workspace = true
+
+[lib]
+name = "neat_ai_forests"
+path = "src/lib.rs"
+
+[[bin]]
+name = "neat_ai_forests"
+path = "src/main.rs"
+
+[features]
+default = []
+# GPU histogram accumulation via wgpu/WGSL (Issue #6). Off by default so the
+# CPU reference path builds everywhere; `--features gpu` opts in.
+gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
+
+[dependencies]
+# Keep this sibling path aligned with NEAT-AI-scorer / NEAT-AI-Lamarck. CI
+# checks out NEAT-AI-core beside this repo (see .github/actions/setup-neat-core).
+neat-core = { path = "../../NEAT-AI-core/neat-core" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.9"
+sha2 = "0.10"
+wgpu = { version = "29", optional = true }
+pollster = { version = "0.4", optional = true }
+bytemuck = { version = "1", optional = true, features = ["derive"] }
+
+# Graceful SIGINT/SIGTERM cancellation. Unix-only crate; the handler is
+# installed behind `cfg(unix)`.
+[target.'cfg(unix)'.dependencies]
+signal-hook = { version = "0.4", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"

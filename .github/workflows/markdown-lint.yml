@@ -1,0 +1,64 @@
+name: Markdown Lint
+
+# Standalone Markdown Lint workflow (Issue #63).
+#
+# Why this exists:
+#   * The repository ships a `.markdownlint-cli2.yaml` config but had no CI
+#     job enforcing it. This workflow runs `markdownlint-cli2` against every
+#     pull request so style regressions in README/docs surface before merge.
+#   * Workflow-sync tooling looks for `markdown-lint.yml` by filename; the
+#     dedicated file keeps the gate discoverable independent of `ci.yml`.
+#
+# Action pinning policy (Issues #24 and #100, mirrored by
+# `scripts/check-workflow-action-versions.sh`): every `uses:` reference
+# is pinned to a 40-character commit SHA with a trailing `# <version>`
+# comment so a re-tagged or compromised upstream cannot silently re-execute
+# under this workflow's privileges.
+#   * actions/checkout — SHA-pinned to v5 (Node 24).
+#   * actions/setup-node — SHA-pinned to v6 (Node 24).
+
+on:
+  # Issue #371: this is a lint/checker workflow, so it gates the pull request
+  # only. It deliberately has no `push:` trigger — a post-merge push run to the
+  # default branch (`Develop`) would just duplicate the run that already gated
+  # the PR, wasting CI minutes and risking a red tick on the default branch for
+  # a check that already passed. (This reverses the Issue #207 push→Develop
+  # policy; deploy/publish workflows still fire on push, a checker does not.)
+  pull_request:
+    # `*` matches only slash-free branch names, so bare `["*"]` skips
+    # `milestone/<slug>` PRs; the `milestone/*` glob gates them too (Issue #395).
+    branches: ["*", "milestone/*"]
+
+permissions:
+  contents: read
+
+# Avoid stacking duplicate runs on rapid pushes; PR runs are deduped per branch.
+concurrency:
+  group: markdown-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  markdownlint:
+    name: Markdown Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          # This job only reads the tree to lint markdown and never pushes back
+          # or fetches a private submodule, so the workflow GITHUB_TOKEN must not
+          # be written to .git/config where a later step could read it
+          # (Issue #384).
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+        with:
+          node-version: "lts/*"
+
+      - name: Install markdownlint-cli2
+        run: npm install -g markdownlint-cli2
+
+      - name: Run markdownlint-cli2
+        run: markdownlint-cli2

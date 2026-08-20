@@ -1,0 +1,90 @@
+name: Cargo Quality
+
+# Standalone Cargo Format and Clippy workflow (Issue #66).
+#
+# Why a dedicated workflow when ci.yml already runs fmt + clippy?
+#   * ci.yml only triggers on pushes/PRs against `Develop`. This workflow
+#     fires on PRs against ANY branch (`branches: ["**"]`), so feature
+#     branches and stacked PRs targeting non-Develop bases also get fmt
+#     and clippy coverage. `**` is used rather than `*` because GitHub's
+#     `*` glob does not match across `/`, so `["*"]` would silently skip
+#     milestone/<slug> sub-issue PRs (Issue #392); `**` matches nested
+#     branch names too.
+#   * Keeps a small, fast, single-purpose gate that is cheap to re-run
+#     when iterating on style or lint fixes.
+#
+# Coverage is intentionally NOT uploaded here — the suggested template
+# from the workflow-sync issue includes a Codecov step, but this repo
+# has no `CODECOV_TOKEN` configured and adding `codecov/codecov-action`
+# would also require a new entry in
+# `scripts/check-workflow-action-versions.sh`. Coverage upload should be
+# tracked as its own follow-up (see Issue #1636 referenced in the
+# template) rather than smuggled in under the fmt + clippy banner.
+
+on:
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Avoid duplicate scheduled / dispatch runs piling up; PR runs are deduped
+# per-branch.
+concurrency:
+  group: cargo-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "2"
+
+jobs:
+  quality:
+    name: Cargo Format and Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RUSTFLAGS: "-D warnings"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          # This job only runs fmt + clippy — it never pushes back to the repo
+          # nor fetches a private submodule, so the GITHUB_TOKEN must not be
+          # persisted to .git/config where a later step could read it (#374).
+          persist-credentials: false
+
+      # NEAT-AI-core is a path dependency required for `cargo fmt --all` and
+      # `cargo clippy` to resolve the workspace. The checkout + sibling symlink
+      # live in the shared composite action (Issue #401).
+      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
+        uses: ./.github/actions/setup-neat-core
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache dependencies
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-quality-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-quality-
+            ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: |
+          set -euo pipefail
+          cargo clippy --all-targets --all-features -- \
+            -D warnings \
+            -D clippy::filter_next \
+            -D clippy::collapsible_if

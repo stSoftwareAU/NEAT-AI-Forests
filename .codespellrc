@@ -1,0 +1,5 @@
+# codespell configuration — shared by CI and the local preflight script
+# (`scripts/spell-check.sh`). Keep this file as the single source of truth.
+[codespell]
+skip = ./target,./.git,./Cargo.lock,./forests/tests/fixtures
+ignore-words-list = lamarck,crate,ser,ans
