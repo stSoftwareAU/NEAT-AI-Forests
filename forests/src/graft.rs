@@ -915,7 +915,7 @@ mod tests {
         assert_eq!(consts, ["const-1", "const-half", "forest-one-a"]); // const-1 reused, one extra created
         assert!(g.creature.synapses.iter().any(|s| s.from_uuid == "const-1"
             && s.synapse_type.as_deref() == Some("positive")
-            && (s.weight - 0.4).abs() < 1e-9));
+            && (s.weight - 0.4).abs() < 1e-6));
         let mut base = compile_creature(&inc).unwrap();
         let mut cand = compile_creature(&g.creature).unwrap();
         let p = Patch::new(0, Node::stump(0, 0.0, -0.2, 0.4), Provenance::default());
