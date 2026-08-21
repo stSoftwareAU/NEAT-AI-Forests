@@ -281,7 +281,8 @@ mod tests {
         let mut c = parse_creature_json(&identity_creature_json(2, 1)).unwrap();
         c.synapses.push(c.synapses[0].clone());
         let err = validate_creature(&c).unwrap_err().to_string();
-        assert!(err.contains("duplicate synapse"), "{err}");
+        // Either Forests' own guard or (newer) neat-core's compile step rejects it.
+        assert!(err.to_lowercase().contains("duplicate"), "{err}");
     }
 
     #[test]
