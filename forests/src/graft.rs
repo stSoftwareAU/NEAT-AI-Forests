@@ -582,11 +582,10 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
 
     let added_neurons = creature.neurons.len() - incumbent.neurons.len();
     let added_synapses = creature.synapses.len() - incumbent.synapses.len();
-    let incumbent_uuids: HashSet<&str> = existing;
     let added_uuids: Vec<String> = creature
         .neurons
         .iter()
-        .filter(|n| !incumbent_uuids.contains(n.uuid.as_str()))
+        .filter(|n| !existing.contains(n.uuid.as_str()))
         .map(|n| n.uuid.clone())
         .collect();
 
