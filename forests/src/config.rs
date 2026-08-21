@@ -136,6 +136,11 @@ pub struct ForestsConfig {
     pub random_candidates: usize,
     /// Oblique (2–3 feature) candidates per iteration (0 = off).
     pub oblique_candidates: usize,
+    /// Boosting rounds on the in-memory sample: after the best patch is chosen
+    /// its correction is subtracted from the sample residuals and the search
+    /// repeats, producing a bundle whose prefixes are verified in one scorer
+    /// call (1 = off).
+    pub boost_rounds: usize,
     /// Combination candidates: stack the top-2…top-N distinct-feature
     /// discoveries on one clone, and carry forward the previous iteration's
     /// near-winners (0 = off).
@@ -199,6 +204,7 @@ impl Default for ForestsConfig {
             random_candidates: 4,
             oblique_candidates: 0,
             combo_candidates: 4,
+            boost_rounds: 1,
             candidates: 64,
             screen_sample_rate: Some(DEFAULT_SCREEN_SAMPLE_RATE),
             screen_threshold: 0.0,
@@ -230,6 +236,9 @@ impl ForestsConfig {
         }
         if self.max_depth == 0 || self.max_depth > 3 {
             return Err("--max-depth must be 1, 2 or 3".into());
+        }
+        if self.boost_rounds == 0 || self.boost_rounds > 8 {
+            return Err("--boost-rounds must be in 1..=8".into());
         }
         if self.candidates == 0 {
             return Err("--candidates must be > 0".into());

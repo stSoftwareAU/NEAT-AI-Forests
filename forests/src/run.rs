@@ -444,6 +444,64 @@ pub fn run_forests(
         // previous iteration's near-winners forward onto the new incumbent
         // (alone, together, and together with this iteration's best).
         let mut combo_groups: Vec<Vec<Patch>> = Vec::new();
+        // Boosting rounds (#40): subtract the best patch from the sample
+        // residuals, search again, and verify the bundle's prefixes together.
+        if cfg.boost_rounds > 1
+            && let Some(first) = patches.first().cloned()
+        {
+            let boost_started = Instant::now();
+            let mut boosted = set.clone();
+            let mut bundle = vec![first];
+            for round in 2..=cfg.boost_rounds {
+                let Some(last) = bundle.last() else { break };
+                if crate::strategies::apply_patch_residuals(&mut boosted, &bins, &last.root)
+                    .is_err()
+                {
+                    break;
+                }
+                let (h, _) = crate::gpu::accumulate(
+                    cfg.gpu,
+                    &boosted.source,
+                    &bins_per_feature,
+                    cfg.analysis_threads,
+                )?;
+                let Some(best) = search_stumps(&h, &threshold, &controls, &backend_label)
+                    .into_iter()
+                    .next()
+                else {
+                    break;
+                };
+                let d =
+                    Discovery::from_stump(&best, boosted.feature_map[best.feature], &backend_label);
+                let mut p = Patch::new(
+                    output,
+                    d.root.clone(),
+                    crate::patch::Provenance {
+                        strategy: "boost-round".into(),
+                        backend: d.backend.clone(),
+                        predicted_gain: d.gain,
+                        affected_records: d.affected as u64,
+                        search_records: boosted.records(),
+                        incumbent_checksum: state.incumbent.checksum.clone(),
+                        seed: Some(iteration_seed),
+                        notes: vec![format!("boost-round={round}")],
+                    },
+                );
+                p.provenance.notes.extend(boosted.notes.iter().cloned());
+                bundle.push(p);
+            }
+            for k in 2..=bundle.len() {
+                combo_groups.push(bundle[..k].to_vec());
+            }
+            if bundle.len() > 1 {
+                strategies.push(format!("boost-rounds/{}", bundle.len()));
+                log::detail(&format!(
+                    "boosting: {} rounds in {} ms",
+                    bundle.len(),
+                    boost_started.elapsed().as_millis()
+                ));
+            }
+        }
         if cfg.combo_candidates > 0 {
             let ranked: Vec<Patch> = patches.iter().take(discoveries.len()).cloned().collect();
             combo_groups.extend(crate::candidates::top_k_groups(
@@ -569,8 +627,15 @@ pub fn run_forests(
             stop_reason = StopReason::Cancelled;
             break;
         }
+        // Frugal screen (#40): the screen exists to choose `promote_count`
+        // candidates; when the cohort already fits, go straight to the full call.
+        let screen_rate = if candidates.len() <= cfg.promote_count {
+            None
+        } else {
+            cfg.screen_sample_rate
+        };
         let promote_cfg = PromoteConfig {
-            screen_sample_rate: cfg.screen_sample_rate,
+            screen_sample_rate: screen_rate,
             screen_phase: iterations,
             screen_threshold: cfg.screen_threshold,
             promote_count: cfg.promote_count,
@@ -1033,6 +1098,50 @@ mod tests {
             read_journal(&r.journal_path).unwrap().last().unwrap(),
             JournalLine::Summary(_)
         ));
+    }
+
+    #[test]
+    fn boost_rounds_produce_verified_bundles() {
+        let (_tmp, mut cfg) = fixture();
+        cfg.max_iterations = Some(1);
+        cfg.boost_rounds = 3;
+        cfg.screen_sample_rate = None;
+        let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
+        let lines = read_journal(&r.journal_path).unwrap();
+        let exp = lines
+            .iter()
+            .find_map(|l| {
+                if let JournalLine::Experiment(e) = l {
+                    Some(e)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert!(
+            exp.strategies
+                .iter()
+                .any(|s| s.starts_with("boost-rounds/")),
+            "{:?}",
+            exp.strategies
+        );
+        let bundles: Vec<_> = exp
+            .candidates
+            .iter()
+            .filter(|c| {
+                c.combo
+                    .iter()
+                    .any(|p| p.provenance.strategy == "boost-round")
+            })
+            .collect();
+        assert!(!bundles.is_empty());
+        assert!(
+            bundles.iter().all(|c| c.full_score.is_some()),
+            "bundles must be fully scored"
+        );
+        // The two planted stumps are found by successive rounds.
+        assert!(bundles.iter().any(|c| c.features.len() >= 2));
+        assert!(r.acceptances >= 1);
     }
 
     #[test]

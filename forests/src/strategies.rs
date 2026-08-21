@@ -292,6 +292,77 @@ pub fn project_features(set: &mut SearchSet, selected: &[usize]) {
     set.feature_map = selected.iter().map(|&f| set.feature_map[f]).collect();
 }
 
+/// Route one record (its bin row, set-feature space) through an axis-aligned
+/// tree whose thresholds are bin edges. Returns the correction, or `None` when
+/// the tree cannot be evaluated exactly from bins (oblique split, threshold
+/// not an edge, feature not in the set).
+pub fn evaluate_on_bins(
+    node: &crate::patch::Node,
+    row: &[u8],
+    cache: &BinCache,
+    set_index_of: &dyn Fn(usize) -> Option<usize>,
+) -> Option<f32> {
+    match node {
+        crate::patch::Node::Leaf { correction } => Some(*correction),
+        crate::patch::Node::Split {
+            condition,
+            left,
+            right,
+        } => {
+            if !condition.is_axis_aligned() {
+                return None;
+            }
+            let feature = condition.terms[0].feature;
+            let edges = &cache.edges[feature];
+            let bin = edges.partition_point(|&e| e < condition.threshold);
+            if edges.get(bin).copied() != Some(condition.threshold) {
+                return None;
+            }
+            let col = set_index_of(feature)?;
+            if usize::from(row[col]) > bin {
+                evaluate_on_bins(right, row, cache, set_index_of)
+            } else {
+                evaluate_on_bins(left, row, cache, set_index_of)
+            }
+        }
+    }
+}
+
+/// Subtract a patch's correction from every record's residual in the set
+/// (XGBoost-style boosting round on the sample). Fails if the patch cannot be
+/// evaluated exactly from bins; the set is then unchanged.
+pub fn apply_patch_residuals(
+    set: &mut SearchSet,
+    cache: &BinCache,
+    root: &crate::patch::Node,
+) -> Result<(), String> {
+    let inverse: std::collections::HashMap<usize, usize> = set
+        .feature_map
+        .iter()
+        .enumerate()
+        .map(|(i, &f)| (f, i))
+        .collect();
+    let lookup = |f: usize| inverse.get(&f).copied();
+    let nf = set.feature_map.len();
+    let mut updates: Vec<Vec<f32>> = Vec::with_capacity(set.source.chunks.len());
+    for chunk in &set.source.chunks {
+        let mut u = Vec::with_capacity(chunk.records);
+        for r in 0..chunk.records {
+            u.push(
+                evaluate_on_bins(root, &chunk.bins[r * nf..(r + 1) * nf], cache, &lookup)
+                    .ok_or("patch is not exactly evaluable from bins")?,
+            );
+        }
+        updates.push(u);
+    }
+    for (chunk, u) in set.source.chunks.iter_mut().zip(updates) {
+        for (res, c) in chunk.residual.iter_mut().zip(u) {
+            *res -= c;
+        }
+    }
+    Ok(())
+}
+
 /// Raw feature values for a subset of features over the search-set records
 /// (used by oblique search, which cannot work on bins).
 #[derive(Debug, Clone)]
@@ -451,6 +522,39 @@ mod tests {
             }
             assert!(a.notes.iter().any(|n| n.contains("row-sampling")));
         }
+    }
+
+    #[test]
+    fn bin_space_evaluation_matches_patch_and_updates_residuals() {
+        let (tmp, cache, res) = fixture(300);
+        let cfg = ForestsConfig {
+            search_records: 0,
+            ..Default::default()
+        };
+        let mut set = build_search_set(&cfg, &cache, &res, tmp.path(), 0, 1).unwrap();
+        let t = cache.edges[1][cache.edges[1].len() / 2];
+        let root = crate::patch::Node::stump(1, t, -0.1, 0.25);
+        let raw = raw_sample(&set, &[0, 1, 2], tmp.path(), &cache, 1, 64).unwrap();
+        let before: Vec<f32> = set
+            .source
+            .chunks
+            .iter()
+            .flat_map(|c| c.residual.clone())
+            .collect();
+        apply_patch_residuals(&mut set, &cache, &root).unwrap();
+        let after: Vec<f32> = set
+            .source
+            .chunks
+            .iter()
+            .flat_map(|c| c.residual.clone())
+            .collect();
+        for i in 0..before.len() {
+            let x = &raw.values[i * 3..(i + 1) * 3];
+            assert!((before[i] - after[i] - root.evaluate(x)).abs() < 1e-6);
+        }
+        // Not exactly evaluable: threshold that is not an edge.
+        let bad = crate::patch::Node::stump(1, t + 1e-3, 0.0, 1.0);
+        assert!(apply_patch_residuals(&mut set, &cache, &bad).is_err());
     }
 
     #[test]
