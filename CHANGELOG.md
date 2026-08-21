@@ -5,7 +5,22 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- CI auto-increments the crate version on every PR (#45). The unattended
+  machines rebuild only when `forests/Cargo.toml`'s version changes, so a PR
+  that lands code at an unchanged version ships nothing. The new
+  `version-increment` job runs `scripts/auto-version.sh`, which bumps the patch
+  (in the manifest and `Cargo.lock`) when the PR is level with the base branch,
+  leaves a version the author already bumped alone, and fails loud on a
+  downgrade.
+
 ### Fixed
+
+- `graft.rs` compiles against neat-core 0.9.9, which added the optional
+  `NeuronExport::id` and `CreatureExport::memetic` fields (NEAT-AI-core #559).
+  Grafted neurons carry no runtime id and no memetic record, so both are
+  `None`.
 
 - Grafts no longer create a constant per leaf (#43): leaves are synapse weights
   from two shared bias-1 constants, reused from the creature when it already
