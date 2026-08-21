@@ -26,6 +26,12 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Added
 
+- Frugal verification (#40): `--boost-rounds K` re-searches the sample after
+  subtracting the chosen patch (XGBoost-style rounds) and verifies the
+  bundle's prefixes in one full-corpus call; the sample screen is skipped when
+  the cohort already fits `--promote-count`. The check-in contract is
+  unchanged: only same-call full-scorer winners become `best.json`.
+
 - `tests/ts_parity.rs` + `scripts/ts-parity.sh`: optional rust_scorer vs
   NEAT-AI TypeScript `Creature.scoreDir` parity check on grafted fixtures,
   including a synapse-count-after-`fromJSON` assertion (#35).
