@@ -547,5 +547,5 @@ flowchart LR
 
 - Tune the screen: the production run's exploratory bypasses show a 52 % false-negative rate at `--screen-sample-rate 0.05`.
 - Measure depth-2/3 trees and oblique splits on the production creature now that stumps are proven.
-- Finish the canonical adoption: nested trees and `IF`-output wiring need typed outward edges and a batched tree graft that NEAT-AI-core's helper does not yet offer (#42).
+- Finish the canonical adoption: nested trees and `IF`-output wiring need typed outward edges and a batched tree graft that NEAT-AI-core's helper does not yet offer ([#48](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/48)).
 - Drop the `--scorer-arg=--gpu=off` advice once NEAT-AI-scorer #574 lands.

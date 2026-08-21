@@ -16,7 +16,8 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
   of two. Two shapes the helper cannot yet express — a child node feeding its
   parent's branch, and the typed pair an `IF` output needs — are still written
   out locally and pinned against the helper's own output by
-  `local_emission_matches_the_canonical_helper`.
+  `local_emission_matches_the_canonical_helper`; finishing that adoption needs
+  new capability upstream and is tracked in #48.
 
 - `check_no_duplicate_synapses` is now a wrapper over NEAT-AI-core's
   `validate_no_duplicate_synapses` (NEAT-AI-core #556) rather than a second
