@@ -7,6 +7,11 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Fixed
 
+- Grafts no longer create a constant per leaf (#43): leaves are synapse weights
+  from two shared bias-1 constants, reused from the creature when it already
+  has them (constants are never mutated by evolution; weights are), else
+  created once per creature. A stump now adds 2 neurons instead of 4.
+
 - **Grafts no longer repeat a (from, to) synapse pair.** NEAT-AI's TypeScript
   loader collapses duplicates while `rust_scorer` sums them, so the first
   production creature scored +1.8e-3 under `rust_scorer` but ≈ −1.2e-5 under

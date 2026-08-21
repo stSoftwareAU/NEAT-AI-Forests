@@ -7,12 +7,14 @@
 //! duplicates, which `rust_scorer` does not:
 //!
 //! ```text
-//! per leaf:   kN      type "constant", bias = correction          (activation == correction)
+//! shared:     one_a, one_b   constant, bias 1.0 — reused from the creature when it has
+//!                            bias-1 constants, else created once (`forest-one-a/b`);
+//!                            never per patch (#43)
 //! per split:  thrN    hidden IDENTITY, bias = -threshold, inward input-f (weight w_f per term)
 //!             ifN     hidden IF, bias 0
-//!                 condition:  thrN (weight 1)          → Σ w·x − threshold
-//!                 positive:   right child (kN or ifN, weight 1)
-//!                 negative:   left  child (kN or ifN, weight 1)
+//!                 condition:  thrN  (weight 1)                  → Σ w·x − threshold
+//!                 positive:   right child ifN (weight 1)  |  one_a (weight = right leaf)
+//!                 negative:   left  child ifN (weight 1)  |  one_b (weight = left leaf)
 //! root ifN ──(weight 1, untyped)──▶ output-j            (point-wise output squash)
 //! root ifN ──(positive)──▶ output-j  and  root ifN → relayN (IDENTITY) ──(negative)──▶ output-j   (IF output)
 //! ```
@@ -113,6 +115,11 @@ impl std::error::Error for GraftError {}
 
 struct Emitter<'a> {
     prefix: String,
+    /// Shared bias-1 constants: positive leaves hang off `one_a`, negative
+    /// leaves off `one_b`, so a leaf is a synapse *weight* and no (from, to)
+    /// pair repeats. Reused from the creature when it already has them.
+    one_a: String,
+    one_b: String,
     neurons: Vec<NeuronExport>,
     synapses: Vec<SynapseExport>,
     counter: usize,
@@ -148,27 +155,36 @@ impl Emitter<'_> {
         });
     }
 
-    /// A neuron whose activation is exactly `value`: a `constant` with that bias.
-    fn value_source(&mut self, value: f64) -> Result<String, GraftError> {
-        let uuid = self.fresh("k")?;
-        self.neuron(&uuid, "constant", value, None);
-        Ok(uuid)
+    /// Source feeding a parent's branch: a leaf is `(shared constant, weight =
+    /// correction)`, a split is `(its IF neuron, 1.0)`. `positive` selects the
+    /// constant so the two leaves of one IF never share a source.
+    fn branch_source(&mut self, node: &Node, positive: bool) -> Result<(String, f64), GraftError> {
+        match node {
+            Node::Leaf { correction } => {
+                let one = if positive {
+                    self.one_a.clone()
+                } else {
+                    self.one_b.clone()
+                };
+                Ok((one, f64::from(*correction)))
+            }
+            Node::Split { .. } => Ok((self.emit(node)?, 1.0)),
+        }
     }
 
-    /// Emit `node`; returns the uuid of a neuron whose activation is the
-    /// node's correction. Every (from, to) pair emitted is unique — NEAT-AI's
-    /// TypeScript keys synapses by that pair and collapses duplicates, so the
-    /// threshold and each leaf get their own source neuron.
+    /// Emit a split; returns the uuid of its IF neuron. Every (from, to) pair
+    /// emitted is unique — NEAT-AI's TypeScript keys synapses by that pair and
+    /// collapses duplicates.
     fn emit(&mut self, node: &Node) -> Result<String, GraftError> {
         match node {
-            Node::Leaf { correction } => self.value_source(f64::from(*correction)),
+            Node::Leaf { .. } => Err(GraftError::RootIsLeaf),
             Node::Split {
                 condition,
                 left,
                 right,
             } => {
-                let left_src = self.emit(left)?;
-                let right_src = self.emit(right)?;
+                let (left_src, left_w) = self.branch_source(left, false)?;
+                let (right_src, right_w) = self.branch_source(right, true)?;
                 // Condition: thr = Σ w·x − threshold via one IDENTITY neuron.
                 let thr = self.fresh("thr")?;
                 self.neuron(
@@ -201,8 +217,8 @@ impl Emitter<'_> {
                 let uuid = self.fresh("if")?;
                 self.neuron(&uuid, "hidden", 0.0, Some("IF"));
                 self.synapse(&thr, &uuid, 1.0, Some("condition"));
-                self.synapse(&right_src, &uuid, 1.0, Some("positive"));
-                self.synapse(&left_src, &uuid, 1.0, Some("negative"));
+                self.synapse(&right_src, &uuid, right_w, Some("positive"));
+                self.synapse(&left_src, &uuid, left_w, Some("negative"));
                 Ok(uuid)
             }
         }
@@ -264,9 +280,37 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
     let target_uuid = incumbent.neurons[first_output + patch.output].uuid.clone();
     let existing: HashSet<&str> = incumbent.neurons.iter().map(|x| x.uuid.as_str()).collect();
     let prefix = format!("forest-{}", patch.id());
+    // Shared bias-1 constants (#43): reuse the creature's own where present
+    // (constants are never mutated; evolution tunes the synapse weights), else
+    // create at most two, named without the patch id so later grafts share them.
+    let mut ones: Vec<String> = incumbent
+        .neurons
+        .iter()
+        .filter(|n| n.neuron_type == "constant" && n.bias == 1.0 && n.squash.is_none())
+        .map(|n| n.uuid.clone())
+        .take(2)
+        .collect();
+    let mut new_constants = Vec::new();
+    for name in ["forest-one-a", "forest-one-b"] {
+        if ones.len() >= 2 {
+            break;
+        }
+        if existing.contains(name) {
+            return Err(GraftError::UuidCollision(name.into()));
+        }
+        new_constants.push(NeuronExport {
+            neuron_type: "constant".into(),
+            uuid: name.into(),
+            bias: 1.0,
+            squash: None,
+        });
+        ones.push(name.into());
+    }
     let mut em = Emitter {
         prefix,
-        neurons: Vec::new(),
+        one_a: ones[0].clone(),
+        one_b: ones[1].clone(),
+        neurons: new_constants,
         synapses: Vec::new(),
         counter: 0,
         input: incumbent.input,
@@ -593,8 +637,24 @@ mod tests {
         let patch = Patch::new(0, Node::stump(2, 0.1, 0.0, 0.013), Provenance::default());
         assert_graft_matches_evaluator(&inc, &patch, 1e-6);
         let g = graft_patch(&inc, &patch).unwrap();
-        assert_eq!(g.added_neurons, 4); // kL, kR, thr, if
-        assert_eq!(g.added_synapses, 5); // input→thr, thr→if, kR→if, kL→if, if→output
+        assert_eq!(g.added_neurons, 4); // one_a, one_b (first graft only), thr, if
+        assert_eq!(g.added_synapses, 5); // input→thr, thr→if, one_a→if, one_b→if, if→output
+        // A second graft reuses the shared constants.
+        let again = graft_patch(
+            &g.creature,
+            &Patch::new(0, Node::stump(1, 0.3, 0.0, 0.02), Provenance::default()),
+        )
+        .unwrap();
+        assert_eq!(again.added_neurons, 2);
+        assert_eq!(
+            again
+                .creature
+                .neurons
+                .iter()
+                .filter(|n| n.neuron_type == "constant")
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -682,7 +742,16 @@ mod tests {
         let b = Patch::new(0, Node::stump(1, 0.2, -0.05, 0.0), Provenance::default());
         let (creature, added) = graft_patches(&inc, &[a.clone(), b.clone()]).unwrap();
         assert_eq!(added.len(), 2);
-        assert!(added.iter().all(|u| u.len() == 4));
+        assert_eq!(added[0].len(), 4);
+        assert_eq!(added[1].len(), 2); // shared constants already present
+        assert_eq!(
+            creature
+                .neurons
+                .iter()
+                .filter(|n| n.neuron_type == "constant")
+                .count(),
+            2
+        );
         let mut base = compile_creature(&inc).unwrap();
         let mut cand = compile_creature(&creature).unwrap();
         for rec in records(200, 4) {
@@ -796,6 +865,64 @@ mod tests {
             ),
             Err(GraftError::DuplicateSynapse(_))
         ));
+    }
+
+    #[test]
+    fn existing_bias_one_constants_are_reused() {
+        let mut inc = identity_creature(2, 1);
+        inc.neurons.insert(
+            0,
+            NeuronExport {
+                neuron_type: "constant".into(),
+                uuid: "const-1".into(),
+                bias: 1.0,
+                squash: None,
+            },
+        );
+        inc.neurons.insert(
+            1,
+            NeuronExport {
+                neuron_type: "constant".into(),
+                uuid: "const-half".into(),
+                bias: 0.5,
+                squash: None,
+            },
+        );
+        inc.synapses.push(SynapseExport {
+            from_uuid: "const-1".into(),
+            to_uuid: "output-0".into(),
+            weight: 0.1,
+            synapse_type: None,
+        });
+        inc.synapses.push(SynapseExport {
+            from_uuid: "const-half".into(),
+            to_uuid: "output-0".into(),
+            weight: 0.1,
+            synapse_type: None,
+        });
+        let g = graft_patch(
+            &inc,
+            &Patch::new(0, Node::stump(0, 0.0, -0.2, 0.4), Provenance::default()),
+        )
+        .unwrap();
+        let consts: Vec<_> = g
+            .creature
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "constant")
+            .map(|n| n.uuid.as_str())
+            .collect();
+        assert_eq!(consts, ["const-1", "const-half", "forest-one-a"]); // const-1 reused, one extra created
+        assert!(g.creature.synapses.iter().any(|s| s.from_uuid == "const-1"
+            && s.synapse_type.as_deref() == Some("positive")
+            && (s.weight - 0.4).abs() < 1e-6));
+        let mut base = compile_creature(&inc).unwrap();
+        let mut cand = compile_creature(&g.creature).unwrap();
+        let p = Patch::new(0, Node::stump(0, 0.0, -0.2, 0.4), Provenance::default());
+        for rec in records(100, 2) {
+            let d = cand.activate(&rec, 1)[0] - base.activate(&rec, 1)[0];
+            assert!((d - p.evaluate(&rec)).abs() < 1e-6);
+        }
     }
 
     #[test]
