@@ -59,12 +59,13 @@ gains the fleet's TypeScript re-score could not see). Layout per patch `P`,
 inserted before the first output neuron so listed order stays topological:
 
 ```text
-per leaf:   forest-P-kN      constant, bias = correction      (activation == correction)
+shared:     one_a / one_b    bias-1 constants reused from the creature, else created once
+                             (`forest-one-a/b`); a leaf is the synapse WEIGHT from one of them (#43)
 per split:  forest-P-thrN    hidden IDENTITY, bias = -threshold, inward input-f weight w_f (one per term)
             forest-P-ifN     hidden IF, bias 0
                 condition:   thrN  (weight 1)   → Σ w·x − threshold > 0 ⇔ right
-                positive:    right child (kN or ifN, weight 1)
-                negative:    left  child (kN or ifN, weight 1)
+                positive:    right child ifN (weight 1)  |  one_a (weight = right leaf)
+                negative:    left  child ifN (weight 1)  |  one_b (weight = left leaf)
 root ifN ──(weight 1, untyped)──▶ output-j                       point-wise output squash
 root ifN ──(positive)──▶ output-j,  root ifN → relayN (IDENTITY) ──(negative)──▶ output-j    IF output
 ```
@@ -93,8 +94,8 @@ Pre-existing neurons and synapses are never edited, reordered or removed.
 ## Cost of a graft under the scorer
 
 NEAT-AI-scorer charges `growthCost × (hidden + synapses/10 + …)` and an extra
-`3 × growthCost / 100` per `IF` neuron (≈ `3e-9`). A stump adds 4 neurons and
-5 synapses (6 neurons / 7 synapses into an `IF` output), so its complexity penalty is ≈ `5e-7`; an accepted patch must
+`3 × growthCost / 100` per `IF` neuron (≈ `3e-9`). A stump adds 2 neurons and
+5 synapses (3 neurons / 7 synapses into an `IF` output; plus the two shared constants once per creature), so its complexity penalty is ≈ `5e-7`; an accepted patch must
 beat that *and* `--min-improvement` on the authoritative score.
 
 ## XGBoost mapping
