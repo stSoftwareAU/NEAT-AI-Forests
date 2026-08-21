@@ -1,0 +1,61 @@
+name: Cargo Dependency Updates
+
+# Weekly dependency refresh (Issue #16), mirroring GRQ's `cargo-upgrade.yml`:
+# `cargo upgrade` (compatible bumps) + `cargo update`, raised as a PR so the
+# normal CI gate (clippy -D warnings, tests, cargo-deny) judges it. Every
+# action is SHA-pinned; the sibling NEAT-AI-core checkout is required for the
+# lockfile to resolve (path dependency).
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_EDIT_VERSION: "0.13.6"
+
+concurrency:
+  group: cargo-upgrade
+  cancel-in-progress: true
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          persist-credentials: false
+
+      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
+        uses: ./.github/actions/setup-neat-core
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
+
+      - name: Install cargo-edit (prebuilt binary)
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
+        with:
+          tool: cargo-edit@${{ env.CARGO_EDIT_VERSION }}
+
+      - name: cargo upgrade (compatible) and cargo update
+        run: |
+          set -euo pipefail
+          cargo upgrade --incompatible=ignore --pinned=ignore
+          cargo update
+          git diff --stat -- Cargo.toml forests/Cargo.toml Cargo.lock || true
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v7
+        with:
+          token: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update Cargo dependencies"
+          title: "chore: update Cargo dependencies"
+          branch: chore/cargo-upgrade
+          base: Develop
+          body: "Automated weekly Cargo dependency update via cargo-edit (Issue #16). CI decides."

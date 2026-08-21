@@ -26,6 +26,12 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Added
 
+- `tests/ts_parity.rs` + `scripts/ts-parity.sh`: optional rust_scorer vs
+  NEAT-AI TypeScript `Creature.scoreDir` parity check on grafted fixtures,
+  including a synapse-count-after-`fromJSON` assertion (#35).
+- Weekly `cargo-upgrade.yml` dependency-update workflow (#16); CI pins
+  `markdownlint-cli2@0.22.1` (#36).
+
 - Combination candidates (`--combo-candidates`): the top-k distinct
   discoveries stacked on one clone, and the previous iteration's positive
   full-scored non-winners carried forward (alone, together, and with the new

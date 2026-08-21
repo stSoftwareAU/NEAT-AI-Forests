@@ -58,7 +58,7 @@ jobs:
           node-version: "lts/*"
 
       - name: Install markdownlint-cli2
-        run: npm install -g markdownlint-cli2
+        run: npm install -g markdownlint-cli2@0.22.1  # pinned (Issue #36)
 
       - name: Run markdownlint-cli2
         run: markdownlint-cli2
