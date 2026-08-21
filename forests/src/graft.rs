@@ -1,5 +1,7 @@
 //! Graft a [`Patch`] onto a **clone** of an incumbent as ordinary NEAT-AI `IF`
-//! structure (Issue #7).
+//! structure (Issue #7), described with NEAT-AI-core's canonical
+//! [`IfNodeSpec`] and emitted by its canonical helper wherever that helper can
+//! place the node (Issue #42).
 //!
 //! Layout appended for each patch (all UUIDs prefixed `forest-<patch id>-`),
 //! chosen so that **no (from, to) synapse pair is ever repeated** — NEAT-AI's
@@ -7,24 +9,23 @@
 //! duplicates, which `rust_scorer` does not:
 //!
 //! ```text
-//! shared:     one_a, one_b   constant, bias 1.0 — reused from the creature when it has
-//!                            bias-1 constants, else created once (`forest-one-a/b`);
-//!                            never per patch (#43)
-//! per split:  thrN    hidden IDENTITY, bias = -threshold, inward input-f (weight w_f per term)
-//!             ifN     hidden IF, bias 0
-//!                 condition:  thrN  (weight 1)                  → Σ w·x − threshold
-//!                 positive:   right child ifN (weight 1)  |  one_a (weight = right leaf)
-//!                 negative:   left  child ifN (weight 1)  |  one_b (weight = left leaf)
+//! shared:     one_c, one_p, one_n   constant, bias 1.0 — one per synapse role, reused
+//!                            from the creature when it has bias-1 constants, else
+//!                            created once (`forest-one-a/b/c`); never per patch (#43)
+//! per split:  ifN     hidden IF, bias 0
+//!                 condition:  input-f (weight w_f per term)  and  one_c (weight = −threshold)
+//!                 positive:   right child ifN (weight 1)  |  one_p (weight = right leaf)
+//!                 negative:   left  child ifN (weight 1)  |  one_n (weight = left leaf)
 //! root ifN ──(weight 1, untyped)──▶ output-j            (point-wise output squash)
 //! root ifN ──(positive)──▶ output-j  and  root ifN → relayN (IDENTITY) ──(negative)──▶ output-j   (IF output)
 //! ```
 //!
-//! This relies only on the documented NEAT-AI-core kernel
-//! (`condition_sum > 0 ? positive_sum + bias : negative_sum + bias`, no squash on
-//! `IF`) and the structural validator (≥3 inward, one of each role). Because the
-//! root feeds the output neuron's *pre-squash* sum with weight 1, a leaf of
-//! exactly `0.0` leaves every record in that region bit-identical to the
-//! incumbent.
+//! That condition shape — the split point as a **weight** on a shared bias-1
+//! constant rather than the bias of a per-split IDENTITY neuron — is
+//! NEAT-AI-core's own (`neat_core::decision_tree`, NEAT-AI-core #555), which
+//! keeps every threshold and leaf where training can reach it. Because the root
+//! feeds the output neuron's *pre-squash* sum with weight 1, a leaf of exactly
+//! `0.0` leaves every record in that region bit-identical to the incumbent.
 //!
 //! The finished creature is emitted in NEAT-AI's canonical order — new
 //! constants ahead of the first hidden neuron, synapses ascending by
@@ -34,17 +35,32 @@
 //! rather than surfacing downstream; see `docs/architecture.md`, *Creature
 //! validation*, for the reject-and-journal failure policy.
 //!
-//! Until `NEAT-AI-core#555` ships canonical helpers, this module is the single
-//! place in Forests that interprets `IF` synapse roles, and its tests pin the
-//! grafted creature against the abstract evaluator record by record.
+//! ## What NEAT-AI-core emits, and what is still emitted here
+//!
+//! Every node is described as an [`IfNodeSpec`] — the canonical description of
+//! an `IF` node — so the synapse-role strings come from NEAT-AI-core, not from
+//! this module. A single-split patch entering a point-wise output is then built
+//! by [`neat_core::graft_if_node`] itself. Two shapes the helper cannot yet
+//! express are still written out here by [`write_spec`]:
+//!
+//! * a **child node feeding its parent's branch** — the helper requires every
+//!   outward edge to name a neuron that already exists, so a nested tree cannot
+//!   be grafted node by node; and
+//! * the **`IF`-output relay**, whose two outward edges must carry the
+//!   `positive` / `negative` roles, where the helper only emits untyped ones.
+//!
+//! [`write_spec`] is pinned to the helper by
+//! `local_emission_matches_the_canonical_helper`, and every grafted creature is
+//! pinned against the abstract evaluator record by record.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use neat_core::topology_ops::{STRUCTURAL_VALID, validate_structural_integrity};
 use neat_core::{
-    CompiledNetwork, CreatureExport, NeuronExport, SynapseExport, ValidateOptions,
-    ValidationFailure, compile_creature, creature_validate,
+    CompiledNetwork, CreatureExport, IfNodeSpec, NeuronExport, SquashType, SynapseExport,
+    SynapseType, ValidateOptions, ValidationFailure, compile_creature, creature_validate,
+    graft_if_node, squash_name_from, synapse_type_name_from, validate_no_duplicate_synapses,
 };
 
 use crate::patch::{Node, Patch};
@@ -91,6 +107,9 @@ pub enum GraftError {
     /// The shared creature validator (`neat_core::creature_validate`) rejected
     /// the finished candidate (Issue #39). Boxed to keep `GraftError` small.
     Invalid(Box<ValidationFailure>),
+    /// NEAT-AI-core's canonical `IF` graft helper refused the node, carrying
+    /// its `neat_core::GraftError` text verbatim (Issue #42).
+    Canonical(String),
 }
 
 impl fmt::Display for GraftError {
@@ -135,21 +154,36 @@ impl fmt::Display for GraftError {
                 }
                 Ok(())
             }
+            Self::Canonical(m) => {
+                write!(f, "NEAT-AI-core refused the canonical IF graft: {m}")
+            }
         }
     }
 }
 
 impl std::error::Error for GraftError {}
 
+/// The three shared bias-1 constants a graft's `IF` nodes hang off — one per
+/// synapse role.
+///
+/// A creature may not carry two synapses between the same ordered pair of
+/// neurons, so one node's three roles need three distinct sources; the same
+/// rule NEAT-AI-core's canonical fixtures encode as `const-condition` /
+/// `const-positive` / `const-negative`. Thresholds and leaves are therefore
+/// synapse *weights*, which is what training adjusts (#43, NEAT-AI-core #555).
+#[derive(Debug, Clone)]
+struct SharedOnes {
+    condition: String,
+    positive: String,
+    negative: String,
+}
+
+/// Describes a patch as a post-order list of canonical [`IfNodeSpec`]s — a
+/// child is described before the parent whose branch reads it.
 struct Emitter<'a> {
     prefix: String,
-    /// Shared bias-1 constants: positive leaves hang off `one_a`, negative
-    /// leaves off `one_b`, so a leaf is a synapse *weight* and no (from, to)
-    /// pair repeats. Reused from the creature when it already has them.
-    one_a: String,
-    one_b: String,
-    neurons: Vec<NeuronExport>,
-    synapses: Vec<SynapseExport>,
+    ones: SharedOnes,
+    specs: Vec<IfNodeSpec>,
     counter: usize,
     input: usize,
     existing: &'a HashSet<&'a str>,
@@ -165,25 +199,6 @@ impl Emitter<'_> {
         Ok(uuid)
     }
 
-    fn neuron(&mut self, uuid: &str, neuron_type: &str, bias: f64, squash: Option<&str>) {
-        self.neurons.push(NeuronExport {
-            id: None,
-            neuron_type: neuron_type.into(),
-            uuid: uuid.into(),
-            bias,
-            squash: squash.map(str::to_string),
-        });
-    }
-
-    fn synapse(&mut self, from: &str, to: &str, weight: f64, role: Option<&str>) {
-        self.synapses.push(SynapseExport {
-            from_uuid: from.into(),
-            to_uuid: to.into(),
-            weight,
-            synapse_type: role.map(str::to_string),
-        });
-    }
-
     /// Source feeding a parent's branch: a leaf is `(shared constant, weight =
     /// correction)`, a split is `(its IF neuron, 1.0)`. `positive` selects the
     /// constant so the two leaves of one IF never share a source.
@@ -191,9 +206,9 @@ impl Emitter<'_> {
         match node {
             Node::Leaf { correction } => {
                 let one = if positive {
-                    self.one_a.clone()
+                    self.ones.positive.clone()
                 } else {
-                    self.one_b.clone()
+                    self.ones.negative.clone()
                 };
                 Ok((one, f64::from(*correction)))
             }
@@ -201,9 +216,9 @@ impl Emitter<'_> {
         }
     }
 
-    /// Emit a split; returns the uuid of its IF neuron. Every (from, to) pair
-    /// emitted is unique — NEAT-AI's TypeScript keys synapses by that pair and
-    /// collapses duplicates.
+    /// Describe a split; returns the uuid of its `IF` neuron. Every (from, to)
+    /// pair described is unique — NEAT-AI's TypeScript keys synapses by that
+    /// pair and collapses duplicates.
     fn emit(&mut self, node: &Node) -> Result<String, GraftError> {
         match node {
             Node::Leaf { .. } => Err(GraftError::RootIsLeaf),
@@ -214,14 +229,8 @@ impl Emitter<'_> {
             } => {
                 let (left_src, left_w) = self.branch_source(left, false)?;
                 let (right_src, right_w) = self.branch_source(right, true)?;
-                // Condition: thr = Σ w·x − threshold via one IDENTITY neuron.
-                let thr = self.fresh("thr")?;
-                self.neuron(
-                    &thr,
-                    "hidden",
-                    f64::from(-condition.threshold),
-                    Some("IDENTITY"),
-                );
+                let uuid = self.fresh("if")?;
+                let mut spec = IfNodeSpec::new(uuid.clone(), 0.0);
                 let mut seen = HashSet::new();
                 for t in &condition.terms {
                     if t.feature >= self.input {
@@ -232,26 +241,66 @@ impl Emitter<'_> {
                     }
                     if !seen.insert(t.feature) {
                         return Err(GraftError::DuplicateSynapse(format!(
-                            "input-{} → {thr}",
+                            "input-{} → {uuid}",
                             t.feature
                         )));
                     }
-                    self.synapse(
-                        &format!("input-{}", t.feature),
-                        &thr,
-                        f64::from(t.weight),
-                        None,
-                    );
+                    spec = spec.with_condition(format!("input-{}", t.feature), f64::from(t.weight));
                 }
-                let uuid = self.fresh("if")?;
-                self.neuron(&uuid, "hidden", 0.0, Some("IF"));
-                self.synapse(&thr, &uuid, 1.0, Some("condition"));
-                self.synapse(&right_src, &uuid, right_w, Some("positive"));
-                self.synapse(&left_src, &uuid, left_w, Some("negative"));
+                // The split point rides as a weight on the shared condition
+                // constant: Σ w·x − threshold > 0 ⇔ right.
+                spec = spec
+                    .with_condition(self.ones.condition.clone(), f64::from(-condition.threshold))
+                    .with_positive(right_src, right_w)
+                    .with_negative(left_src, left_w);
+                self.specs.push(spec);
                 Ok(uuid)
             }
         }
     }
+}
+
+/// Write one canonical [`IfNodeSpec`] out as its neuron and typed synapses.
+///
+/// Only for the two shapes [`neat_core::graft_if_node`] cannot place — a child
+/// feeding its parent's branch, and the `IF`-output relay (see the module
+/// documentation). The role strings still come from NEAT-AI-core, and
+/// `local_emission_matches_the_canonical_helper` pins the result against the
+/// helper's own output for a shape both can build.
+fn write_spec(spec: &IfNodeSpec) -> (NeuronExport, Vec<SynapseExport>) {
+    let neuron = NeuronExport {
+        id: None,
+        neuron_type: "hidden".into(),
+        uuid: spec.uuid.clone(),
+        bias: spec.bias,
+        squash: Some(squash_name_from(SquashType::If).to_string()),
+    };
+    let mut synapses = Vec::with_capacity(
+        spec.condition.len() + spec.positive.len() + spec.negative.len() + spec.targets.len(),
+    );
+    for (role, edges) in [
+        (SynapseType::Condition, &spec.condition),
+        (SynapseType::Positive, &spec.positive),
+        (SynapseType::Negative, &spec.negative),
+    ] {
+        for edge in edges {
+            synapses.push(SynapseExport {
+                from_uuid: edge.uuid.clone(),
+                to_uuid: spec.uuid.clone(),
+                weight: edge.weight,
+                synapse_type: synapse_type_name_from(role).map(str::to_string),
+            });
+        }
+    }
+    for edge in &spec.targets {
+        synapses.push(SynapseExport {
+            from_uuid: spec.uuid.clone(),
+            to_uuid: edge.uuid.clone(),
+            weight: edge.weight,
+            synapse_type: None,
+        });
+    }
+    (neuron, synapses)
 }
 
 /// Resolve every neuron uuid to its index in the compiled ordering: implicit
@@ -332,17 +381,55 @@ fn assert_valid(creature: &CreatureExport) -> Result<(), GraftError> {
 /// Reject any repeated (from, to) synapse pair — NEAT-AI's TypeScript loader
 /// keys synapses by that pair, so a creature with duplicates scores
 /// differently there than under `rust_scorer`.
+///
+/// The rule itself is NEAT-AI-core's
+/// [`neat_core::validate_no_duplicate_synapses`] (NEAT-AI-core #556), which
+/// `compile_creature` now applies too; this wrapper only restates the failure
+/// as a [`GraftError`] so a caller sees one error type.
 pub fn check_no_duplicate_synapses(creature: &CreatureExport) -> Result<(), GraftError> {
-    let mut seen = HashSet::with_capacity(creature.synapses.len());
-    for s in &creature.synapses {
-        if !seen.insert((s.from_uuid.as_str(), s.to_uuid.as_str())) {
-            return Err(GraftError::DuplicateSynapse(format!(
-                "{} → {}",
-                s.from_uuid, s.to_uuid
-            )));
-        }
+    validate_no_duplicate_synapses(creature)
+        .map_err(|e| GraftError::DuplicateSynapse(e.to_string()))
+}
+
+/// One untyped synapse — the additive edge into a point-wise neuron.
+fn untyped(from: &str, to: &str, weight: f64) -> SynapseExport {
+    SynapseExport {
+        from_uuid: from.into(),
+        to_uuid: to.into(),
+        weight,
+        synapse_type: None,
     }
-    Ok(())
+}
+
+/// One synapse carrying a NEAT-AI-core [`SynapseType`] role.
+fn typed(from: &str, to: &str, weight: f64, role: SynapseType) -> SynapseExport {
+    SynapseExport {
+        from_uuid: from.into(),
+        to_uuid: to.into(),
+        weight,
+        synapse_type: synapse_type_name_from(role).map(str::to_string),
+    }
+}
+
+/// Clone `incumbent` with `constants` listed ahead of its first non-constant
+/// neuron, which is where `creature_validate` rule 11 requires them.
+///
+/// `first_output` is the index of the incumbent's first output neuron, so a
+/// creature made entirely of constants and outputs still lands them correctly.
+fn with_constants(
+    incumbent: &CreatureExport,
+    constants: Vec<NeuronExport>,
+    first_output: usize,
+) -> CreatureExport {
+    let first_hidden = incumbent.neurons[..first_output]
+        .iter()
+        .position(|n| n.neuron_type != "constant")
+        .unwrap_or(first_output);
+    let mut creature = incumbent.clone();
+    creature
+        .neurons
+        .splice(first_hidden..first_hidden, constants);
+    creature
 }
 
 /// Result of a graft: the new creature plus what was appended.
@@ -386,17 +473,17 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
     let prefix = format!("forest-{}", patch.id());
     // Shared bias-1 constants (#43): reuse the creature's own where present
     // (constants are never mutated; evolution tunes the synapse weights), else
-    // create at most two, named without the patch id so later grafts share them.
+    // create the rest, named without the patch id so later grafts share them.
     let mut ones: Vec<String> = incumbent
         .neurons
         .iter()
         .filter(|n| n.neuron_type == "constant" && n.bias == 1.0 && n.squash.is_none())
         .map(|n| n.uuid.clone())
-        .take(2)
+        .take(3)
         .collect();
     let mut new_constants = Vec::new();
-    for name in ["forest-one-a", "forest-one-b"] {
-        if ones.len() >= 2 {
+    for name in ["forest-one-a", "forest-one-b", "forest-one-c"] {
+        if ones.len() >= 3 {
             break;
         }
         if existing.contains(name) {
@@ -413,10 +500,12 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
     }
     let mut em = Emitter {
         prefix,
-        one_a: ones[0].clone(),
-        one_b: ones[1].clone(),
-        neurons: Vec::new(),
-        synapses: Vec::new(),
+        ones: SharedOnes {
+            condition: ones[0].clone(),
+            positive: ones[1].clone(),
+            negative: ones[2].clone(),
+        },
+        specs: Vec::new(),
         counter: 0,
         input: incumbent.input,
         existing: &existing,
@@ -434,45 +523,72 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
         .unwrap_or("IDENTITY");
     let parsed = neat_core::parse_squash_name(target_squash)
         .map_err(|e| GraftError::Compile(e.to_string()))?;
-    if parsed == neat_core::SquashType::If {
-        let relay = em.fresh("relay")?;
-        em.neuron(&relay, "hidden", 0.0, Some("IDENTITY"));
-        em.synapse(&root_uuid, &relay, 1.0, None);
-        em.synapse(&root_uuid, &target_uuid, 1.0, Some("positive"));
-        em.synapse(&relay, &target_uuid, 1.0, Some("negative"));
-    } else if parsed.is_aggregate() {
+    let target_is_if = parsed == neat_core::SquashType::If;
+    if !target_is_if && parsed.is_aggregate() {
         return Err(GraftError::UnsupportedOutputSquash(
             target_squash.to_string(),
         ));
+    }
+    let mut relay_neuron = None;
+    let mut relay_synapses = Vec::new();
+    if target_is_if {
+        let relay = em.fresh("relay")?;
+        relay_synapses.push(untyped(&root_uuid, &relay, 1.0));
+        relay_synapses.push(typed(&root_uuid, &target_uuid, 1.0, SynapseType::Positive));
+        relay_synapses.push(typed(&relay, &target_uuid, 1.0, SynapseType::Negative));
+        relay_neuron = Some(NeuronExport {
+            id: None,
+            neuron_type: "hidden".into(),
+            uuid: relay,
+            bias: 0.0,
+            squash: Some(squash_name_from(SquashType::Identity).to_string()),
+        });
     } else {
-        em.synapse(&root_uuid, &target_uuid, 1.0, None);
+        let root = em
+            .specs
+            .last_mut()
+            .expect("a split patch describes at least one node");
+        *root = root.clone().with_target(target_uuid.clone(), 1.0);
     }
 
-    let mut creature = incumbent.clone();
-    let added_neurons = new_constants.len() + em.neurons.len();
-    let added_synapses = em.synapses.len();
-    let added_uuids: Vec<String> = new_constants
+    // New constants go in front of the first non-constant neuron:
+    // `creature_validate` rule 11 rejects a constant that follows a hidden one.
+    let base = with_constants(incumbent, new_constants, first_output);
+    // A lone split entering a point-wise output is exactly the shape
+    // NEAT-AI-core's canonical helper covers — let it build the node (Issue
+    // #42). Anything nested, or wired into an `IF` output, still needs the
+    // typed edges the helper cannot emit.
+    let mut creature = if em.specs.len() == 1 && !target_is_if {
+        graft_if_node(&base, &em.specs[0]).map_err(|e| GraftError::Canonical(e.to_string()))?
+    } else {
+        let mut creature = base;
+        let mut new_neurons = Vec::with_capacity(em.specs.len() + 1);
+        let mut new_synapses = Vec::new();
+        for spec in &em.specs {
+            let (neuron, synapses) = write_spec(spec);
+            new_neurons.push(neuron);
+            new_synapses.extend(synapses);
+        }
+        new_neurons.extend(relay_neuron);
+        new_synapses.extend(relay_synapses);
+        // New hidden neurons go before the first output, so listed order stays
+        // `constant, hidden, output` and remains topological.
+        let at = creature.neurons.len() - creature.output;
+        creature.neurons.splice(at..at, new_neurons);
+        creature.synapses.extend(new_synapses);
+        creature
+    };
+    sort_synapses_canonically(&mut creature);
+
+    let added_neurons = creature.neurons.len() - incumbent.neurons.len();
+    let added_synapses = creature.synapses.len() - incumbent.synapses.len();
+    let incumbent_uuids: HashSet<&str> = existing;
+    let added_uuids: Vec<String> = creature
+        .neurons
         .iter()
-        .chain(em.neurons.iter())
+        .filter(|n| !incumbent_uuids.contains(n.uuid.as_str()))
         .map(|n| n.uuid.clone())
         .collect();
-    // Listed order must stay `constant, hidden, output` — `creature_validate`
-    // rule 11 rejects a constant that follows a hidden neuron. New constants go
-    // in front of the first non-constant, new hidden neurons before the first
-    // output, so the result is topological *and* correctly ordered.
-    let first_hidden = incumbent.neurons[..first_output]
-        .iter()
-        .position(|n| n.neuron_type != "constant")
-        .unwrap_or(first_output);
-    let mut neurons = Vec::with_capacity(incumbent.neurons.len() + added_neurons);
-    neurons.extend_from_slice(&incumbent.neurons[..first_hidden]);
-    neurons.extend(new_constants);
-    neurons.extend_from_slice(&incumbent.neurons[first_hidden..first_output]);
-    neurons.extend(em.neurons);
-    neurons.extend_from_slice(&incumbent.neurons[first_output..]);
-    creature.neurons = neurons;
-    creature.synapses.extend(em.synapses);
-    sort_synapses_canonically(&mut creature);
 
     check_no_duplicate_synapses(&creature)?;
     let network = compile_creature(&creature).map_err(|e| GraftError::Compile(e.to_string()))?;
@@ -853,15 +969,15 @@ mod tests {
         let patch = Patch::new(0, Node::stump(2, 0.1, 0.0, 0.013), Provenance::default());
         assert_graft_matches_evaluator(&inc, &patch, 1e-6);
         let g = graft_patch(&inc, &patch).unwrap();
-        assert_eq!(g.added_neurons, 4); // one_a, one_b (first graft only), thr, if
-        assert_eq!(g.added_synapses, 5); // input→thr, thr→if, one_a→if, one_b→if, if→output
-        // A second graft reuses the shared constants.
+        assert_eq!(g.added_neurons, 4); // three shared constants (first graft only) + if
+        assert_eq!(g.added_synapses, 5); // input→if, one_c→if, one_p→if, one_n→if, if→output
+        // A second graft reuses the shared constants and adds only its node.
         let again = graft_patch(
             &g.creature,
             &Patch::new(0, Node::stump(1, 0.3, 0.0, 0.02), Provenance::default()),
         )
         .unwrap();
-        assert_eq!(again.added_neurons, 2);
+        assert_eq!(again.added_neurons, 1);
         assert_eq!(
             again
                 .creature
@@ -869,7 +985,7 @@ mod tests {
                 .iter()
                 .filter(|n| n.neuron_type == "constant")
                 .count(),
-            2
+            3
         );
     }
 
@@ -959,14 +1075,14 @@ mod tests {
         let (creature, added) = graft_patches(&inc, &[a.clone(), b.clone()]).unwrap();
         assert_eq!(added.len(), 2);
         assert_eq!(added[0].len(), 4);
-        assert_eq!(added[1].len(), 2); // shared constants already present
+        assert_eq!(added[1].len(), 1); // shared constants already present
         assert_eq!(
             creature
                 .neurons
                 .iter()
                 .filter(|n| n.neuron_type == "constant")
                 .count(),
-            2
+            3
         );
         let mut base = compile_creature(&inc).unwrap();
         let mut cand = compile_creature(&creature).unwrap();
@@ -987,16 +1103,17 @@ mod tests {
         let json = neat_core::creature_to_json(&g.creature).unwrap();
         let back = neat_core::parse_creature_json(&json).unwrap();
         assert_eq!(back, g.creature);
-        // All three roles survive the round trip. Their *listed* order follows
-        // the canonical `(from, to)` synapse order (Issue #39), not the order
-        // the emitter wrote them in, so compare the set.
+        // All three roles survive the round trip — two condition edges, since
+        // the split point rides on the shared condition constant (Issue #42).
+        // Their *listed* order follows the canonical `(from, to)` synapse order
+        // (Issue #39), not the order they were described in, so compare the set.
         let mut roles: Vec<_> = back
             .synapses
             .iter()
             .filter_map(|s| s.synapse_type.clone())
             .collect();
         roles.sort();
-        assert_eq!(roles, ["condition", "negative", "positive"]);
+        assert_eq!(roles, ["condition", "condition", "negative", "positive"]);
         assert!(json.contains("\"IF\""));
     }
 
@@ -1134,10 +1251,28 @@ mod tests {
             .filter(|n| n.neuron_type == "constant")
             .map(|n| n.uuid.as_str())
             .collect();
-        assert_eq!(consts, ["const-1", "const-half", "forest-one-a"]); // const-1 reused, one extra created
-        assert!(g.creature.synapses.iter().any(|s| s.from_uuid == "const-1"
-            && s.synapse_type.as_deref() == Some("positive")
-            && (s.weight - 0.4).abs() < 1e-6));
+        // `const-1` is reused for the condition role; two more are created.
+        assert_eq!(
+            consts,
+            ["const-1", "const-half", "forest-one-a", "forest-one-b"]
+        );
+        // The reused constant takes the first role (condition); the positive
+        // leaf is a weight on the next shared constant.
+        assert!(
+            g.creature
+                .synapses
+                .iter()
+                .any(|s| s.from_uuid == "const-1"
+                    && s.synapse_type.as_deref() == Some("condition"))
+        );
+        assert!(
+            g.creature
+                .synapses
+                .iter()
+                .any(|s| s.from_uuid == "forest-one-a"
+                    && s.synapse_type.as_deref() == Some("positive")
+                    && (s.weight - 0.4).abs() < 1e-6)
+        );
         let mut base = compile_creature(&inc).unwrap();
         let mut cand = compile_creature(&g.creature).unwrap();
         let p = Patch::new(0, Node::stump(0, 0.0, -0.2, 0.4), Provenance::default());
@@ -1220,15 +1355,15 @@ mod tests {
             panic!("expected a validation failure, got {err}");
         };
         assert_eq!(failure.reason, "NEURON_ORDER");
-        // `const-1` — the misplaced constant — is index 4: two implicit inputs,
-        // the shared constant the graft created, then `hidden-0`.
-        assert_eq!(failure.neuron_index, Some(4));
+        // `const-1` — the misplaced constant — is index 5: two implicit inputs,
+        // the two shared constants the graft created, then `hidden-0`.
+        assert_eq!(failure.neuron_index, Some(5));
         assert!(failure.message.contains("const-1"), "{}", failure.message);
         // The reason, message and offending index all reach the caller's text.
         let text = err.to_string();
         assert!(text.contains("NEURON_ORDER"), "{text}");
         assert!(text.contains(&failure.message), "{text}");
-        assert!(text.contains("neuron index 4"), "{text}");
+        assert!(text.contains("neuron index 5"), "{text}");
     }
 
     /// Issue #39 — the acceptance-criteria case: a hidden neuron left with no
@@ -1259,9 +1394,204 @@ mod tests {
         .expect_err("a hidden neuron nothing reads must fail the graft");
         assert!(
             err.to_string().contains("dangling")
-                || matches!(err, GraftError::Structural { .. } | GraftError::Invalid(_)),
+                || matches!(
+                    err,
+                    GraftError::Structural { .. }
+                        | GraftError::Invalid(_)
+                        | GraftError::Canonical(_)
+                ),
             "{err}"
         );
+    }
+
+    /// Every inward synapse of `node`, as `(source uuid, weight)` pairs for one
+    /// role, in listed order.
+    fn inward<'a>(creature: &'a CreatureExport, node: &str, role: &str) -> Vec<(&'a str, f64)> {
+        creature
+            .synapses
+            .iter()
+            .filter(|s| s.to_uuid == node && s.synapse_type.as_deref() == Some(role))
+            .map(|s| (s.from_uuid.as_str(), s.weight))
+            .collect()
+    }
+
+    /// Issue #42 — a grafted split carries NEAT-AI-core's canonical `IF` shape
+    /// (`neat_core::decision_tree`): the split point rides as a **weight** on a
+    /// shared bias-1 constant, so no per-split IDENTITY threshold neuron is
+    /// emitted and every threshold and leaf stays trainable.
+    #[test]
+    fn grafted_split_uses_the_canonical_condition_shape() {
+        let inc = identity_creature(2, 1);
+        let patch = Patch::new(0, Node::stump(0, 0.25, -0.1, 0.4), Provenance::default());
+        let g = graft_patch(&inc, &patch).unwrap();
+        let added: Vec<&NeuronExport> = g
+            .creature
+            .neurons
+            .iter()
+            .filter(|n| !inc.neurons.contains(n))
+            .collect();
+        let constants: Vec<&&NeuronExport> = added
+            .iter()
+            .filter(|n| n.neuron_type == "constant" && n.bias == 1.0 && n.squash.is_none())
+            .collect();
+        assert_eq!(
+            constants.len(),
+            3,
+            "one shared bias-1 constant per synapse role"
+        );
+        let nodes: Vec<&&NeuronExport> = added
+            .iter()
+            .filter(|n| n.squash.as_deref() == Some("IF"))
+            .collect();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(
+            added.len(),
+            4,
+            "three constants and the IF node — no IDENTITY threshold neuron"
+        );
+        let node = nodes[0].uuid.as_str();
+        assert_eq!(nodes[0].bias, 0.0);
+
+        let condition = inward(&g.creature, node, "condition");
+        assert_eq!(condition.len(), 2, "one term plus the threshold offset");
+        assert!(
+            condition.contains(&("input-0", 1.0)),
+            "the split feature enters the condition sum directly: {condition:?}"
+        );
+        let offset = condition
+            .iter()
+            .find(|(from, _)| *from != "input-0")
+            .expect("threshold offset edge");
+        assert!(
+            constants.iter().any(|c| c.uuid == offset.0),
+            "the offset hangs off a shared bias-1 constant: {offset:?}"
+        );
+        assert!(
+            (offset.1 - -0.25).abs() < 1e-9,
+            "offset weight is -threshold"
+        );
+
+        // Leaves are weights on two further shared constants, so no (from, to)
+        // pair repeats.
+        let positive = inward(&g.creature, node, "positive");
+        let negative = inward(&g.creature, node, "negative");
+        assert_eq!(positive.len(), 1);
+        assert_eq!(negative.len(), 1);
+        assert!((positive[0].1 - 0.4).abs() < 1e-6);
+        assert!((negative[0].1 - -0.1).abs() < 1e-6);
+        let sources = [offset.0, positive[0].0, negative[0].0];
+        assert_eq!(
+            sources.iter().collect::<HashSet<_>>().len(),
+            3,
+            "the three roles take three distinct constants: {sources:?}"
+        );
+    }
+
+    /// A bias-1 constant neuron.
+    fn one(uuid: &str) -> NeuronExport {
+        NeuronExport {
+            id: None,
+            neuron_type: "constant".into(),
+            uuid: uuid.into(),
+            bias: 1.0,
+            squash: None,
+        }
+    }
+
+    /// Issue #42 — a lone split entering a point-wise output is *built by*
+    /// NEAT-AI-core's canonical helper, not by this module: the grafted
+    /// creature is exactly what `graft_if_node` returns for the same spec.
+    #[test]
+    fn stump_graft_is_built_by_the_canonical_helper() {
+        let inc = small_mlp(3);
+        let patch = Patch::new(0, Node::stump(1, 0.2, -0.1, 0.35), Provenance::default());
+        let ours = graft_patch(&inc, &patch).unwrap();
+
+        let base = with_constants(
+            &inc,
+            vec![
+                one("forest-one-a"),
+                one("forest-one-b"),
+                one("forest-one-c"),
+            ],
+            inc.neurons.len() - inc.output,
+        );
+        let spec = IfNodeSpec::new(format!("forest-{}-if0", patch.id()), 0.0)
+            .with_condition("input-1", 1.0)
+            .with_condition("forest-one-a", f64::from(-0.2f32))
+            .with_positive("forest-one-b", f64::from(0.35f32))
+            .with_negative("forest-one-c", f64::from(-0.1f32))
+            .with_target("output-0", 1.0);
+        let mut expected = graft_if_node(&base, &spec).expect("canonical helper builds the stump");
+        sort_synapses_canonically(&mut expected);
+        assert_eq!(ours.creature, expected);
+    }
+
+    /// Issue #42 — the local renderer used for the shapes the helper cannot
+    /// place emits exactly what the helper emits for a shape both can build,
+    /// so the nested and `IF`-output paths cannot drift from the canonical one.
+    #[test]
+    fn local_emission_matches_the_canonical_helper() {
+        let base = with_constants(
+            &identity_creature(2, 1),
+            vec![one("c-cond"), one("c-pos"), one("c-neg")],
+            0,
+        );
+        let spec = IfNodeSpec::new("node", 0.0)
+            .with_condition("input-0", 1.0)
+            .with_condition("c-cond", -0.25)
+            .with_positive("c-pos", 0.4)
+            .with_negative("c-neg", -0.1)
+            .with_target("output-0", 1.0);
+        let canonical = graft_if_node(&base, &spec).unwrap();
+
+        let (neuron, synapses) = write_spec(&spec);
+        let mut local = base.clone();
+        let at = local.neurons.len() - local.output;
+        local.neurons.insert(at, neuron);
+        local.synapses.extend(synapses);
+
+        // The helper places the node as early as the edges allow and this
+        // module places it before the first output, so compare by content.
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v
+        };
+        let describe_neurons =
+            |c: &CreatureExport| sorted(c.neurons.iter().map(|n| format!("{n:?}")).collect());
+        let describe_synapses =
+            |c: &CreatureExport| sorted(c.synapses.iter().map(|s| format!("{s:?}")).collect());
+        assert_eq!(describe_neurons(&local), describe_neurons(&canonical));
+        assert_eq!(describe_synapses(&local), describe_synapses(&canonical));
+    }
+
+    /// Issue #42 — a Forests stump reproduces NEAT-AI-core's own canonical
+    /// residual-correction fixture record for record, so the two readings of
+    /// `IF` cannot drift apart.
+    #[test]
+    fn stump_reproduces_the_canonical_residual_fixture() {
+        use neat_core::decision_tree::{
+            RESIDUAL_CASES, RESIDUAL_THRESHOLD, RESIDUAL_VALUE, residual_correction_creature,
+        };
+        let base = neat_core::linear_base_creature();
+        let patch = Patch::new(
+            0,
+            Node::stump(0, RESIDUAL_THRESHOLD as f32, 0.0, RESIDUAL_VALUE as f32),
+            Provenance::default(),
+        );
+        let g = graft_patch(&base, &patch).unwrap();
+        let mut ours = compile_creature(&g.creature).unwrap();
+        let mut canonical = compile_creature(&residual_correction_creature()).unwrap();
+        for case in RESIDUAL_CASES {
+            let got = ours.activate(case.inputs, 1)[0];
+            let want = canonical.activate(case.inputs, 1)[0];
+            assert!(
+                (got - want).abs() < 1e-6 && (got - case.expected).abs() < 1e-6,
+                "{}: forests {got} vs canonical {want} (documented {})",
+                case.branch,
+                case.expected
+            );
+        }
     }
 
     /// Issue #39 — the emitted synapse list is in NEAT-AI's canonical
