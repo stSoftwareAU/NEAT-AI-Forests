@@ -54,7 +54,7 @@ flowchart LR
 | `tree` | level-wise / best-first growth on path-masked histograms, depth ≤ 3 | — |
 | `oblique` | 2–3 feature linear conditions on a raw sample; projection sort + coordinate jitter | — |
 | `patch` | portable `Leaf` / `Split(Condition{terms, threshold})` tree, `f32` evaluator mirroring the `IF` kernel, provenance, content id | — |
-| `graft` | patch → `constant` + `IF` neurons + typed synapses merged into a clone in canonical order; NEAT-AI-core compile, structural validation and `creature_validate` | NEAT-AI-core |
+| `graft` | patch → canonical `neat_core::IfNodeSpec` per node, built by `neat_core::graft_if_node` where it covers the shape, merged into a clone in canonical order; NEAT-AI-core compile, structural validation and `creature_validate` | NEAT-AI-core |
 | `candidates` | analytical optimum, one-sided variants, magnitude scales, threshold jitter, random stumps; dedup + cap + graft | — |
 | `promote` | screen (scorer sample mode) → full-corpus cohort with baseline; strict threshold; same-call baseline drift veto; FP/FN bookkeeping | **scorer** |
 | `run` | the loop, outputs, journal, promotion of winners, residual recomputation | — |

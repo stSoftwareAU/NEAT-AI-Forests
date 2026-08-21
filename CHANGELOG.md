@@ -5,6 +5,23 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Grafts are described with NEAT-AI-core's canonical `IfNodeSpec` and built by
+  `neat_core::graft_if_node` wherever that helper covers the shape (#42,
+  NEAT-AI-core #555). The per-split IDENTITY threshold neuron is gone: the split
+  point now rides as a **weight** on a shared bias-1 constant, so thresholds and
+  leaves are all trainable and a stump costs one neuron fewer. Grafted creatures
+  therefore carry three shared bias-1 constants (one per synapse role) instead
+  of two. Two shapes the helper cannot yet express — a child node feeding its
+  parent's branch, and the typed pair an `IF` output needs — are still written
+  out locally and pinned against the helper's own output by
+  `local_emission_matches_the_canonical_helper`.
+
+- `check_no_duplicate_synapses` is now a wrapper over NEAT-AI-core's
+  `validate_no_duplicate_synapses` (NEAT-AI-core #556) rather than a second
+  implementation of the same rule.
+
 ### Added
 
 - Every new creature is validated with `neat_core::creature_validate` before

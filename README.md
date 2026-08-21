@@ -45,10 +45,8 @@ final creature re-verified by NEAT-AI's TypeScript scorer, finishing at
 0.355655238 (Δ +2.50e-3). Details, the duplicate-synapse lesson, economics
 and follow-ups are in [docs/benchmarks.md](docs/benchmarks.md).
 
-Two shared-family prerequisites are still open upstream and Forests carries
-interim local equivalents until they ship:
+NEAT-AI-core's canonical `IF` helpers ([#555](https://github.com/stSoftwareAU/NEAT-AI-core/issues/555)) have landed and Forests' `graft` module now describes every node as a `neat_core::IfNodeSpec` and lets `neat_core::graft_if_node` build the shape it covers (#42). Two shapes the helper cannot yet express — a child node feeding its parent's branch, and the typed pair an `IF` output needs — are still written out locally and pinned against the helper's own output. One shared-family prerequisite is still open upstream:
 
-- [NEAT-AI-core #555](https://github.com/stSoftwareAU/NEAT-AI-core/issues/555) — canonical `IF` fixture/helpers. Forests' `graft` module is the single local interpretation of `IF` synapse roles and pins itself against the documented kernel record by record.
 - [NEAT-AI-scorer #574](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/574) — CPU/GPU parity for `IF`-heavy creatures. Until it lands, production runs should pass `--scorer-arg=--gpu=off` or watch the `baselineDrift` field in the journal.
 
 ---
@@ -549,4 +547,5 @@ flowchart LR
 
 - Tune the screen: the production run's exploratory bypasses show a 52 % false-negative rate at `--screen-sample-rate 0.05`.
 - Measure depth-2/3 trees and oblique splits on the production creature now that stumps are proven.
-- Replace the local `IF` graft helper with the canonical one once NEAT-AI-core #555 ships, and drop the `--scorer-arg=--gpu=off` advice once NEAT-AI-scorer #574 lands.
+- Finish the canonical adoption: nested trees and `IF`-output wiring need typed outward edges and a batched tree graft that NEAT-AI-core's helper does not yet offer (#42).
+- Drop the `--scorer-arg=--gpu=off` advice once NEAT-AI-scorer #574 lands.

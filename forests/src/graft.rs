@@ -41,7 +41,7 @@
 //! an `IF` node — so the synapse-role strings come from NEAT-AI-core, not from
 //! this module. A single-split patch entering a point-wise output is then built
 //! by [`neat_core::graft_if_node`] itself. Two shapes the helper cannot yet
-//! express are still written out here by [`write_spec`]:
+//! express are still written out here by `write_spec`:
 //!
 //! * a **child node feeding its parent's branch** — the helper requires every
 //!   outward edge to name a neuron that already exists, so a nested tree cannot
@@ -49,7 +49,7 @@
 //! * the **`IF`-output relay**, whose two outward edges must carry the
 //!   `positive` / `negative` roles, where the helper only emits untyped ones.
 //!
-//! [`write_spec`] is pinned to the helper by
+//! `write_spec` is pinned to the helper by
 //! `local_emission_matches_the_canonical_helper`, and every grafted creature is
 //! pinned against the abstract evaluator record by record.
 

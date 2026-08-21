@@ -60,18 +60,27 @@ new hidden neurons are inserted before the first output neuron so listed order
 stays topological, and new constants ahead of the first hidden neuron:
 
 ```text
-shared:     one_a / one_b    bias-1 constants reused from the creature, else created once
-                             (`forest-one-a/b`); a leaf is the synapse WEIGHT from one of them (#43)
-per split:  forest-P-thrN    hidden IDENTITY, bias = -threshold, inward input-f weight w_f (one per term)
-            forest-P-ifN     hidden IF, bias 0
-                condition:   thrN  (weight 1)   → Σ w·x − threshold > 0 ⇔ right
-                positive:    right child ifN (weight 1)  |  one_a (weight = right leaf)
-                negative:    left  child ifN (weight 1)  |  one_b (weight = left leaf)
+shared:     one_c / one_p / one_n    bias-1 constants, one per synapse role, reused from the
+                             creature where it has them, else created once (`forest-one-a/b/c`);
+                             a threshold or leaf is the synapse WEIGHT from one of them (#43)
+per split:  forest-P-ifN     hidden IF, bias 0
+                condition:   input-f (weight w_f, one per term)  and  one_c (weight = −threshold)
+                             → Σ w·x − threshold > 0 ⇔ right
+                positive:    right child ifN (weight 1)  |  one_p (weight = right leaf)
+                negative:    left  child ifN (weight 1)  |  one_n (weight = left leaf)
 root ifN ──(weight 1, untyped)──▶ output-j                       point-wise output squash
 root ifN ──(positive)──▶ output-j,  root ifN → relayN (IDENTITY) ──(negative)──▶ output-j    IF output
 ```
 
-`check_no_duplicate_synapses` runs on every grafted creature, and a condition
+That is NEAT-AI-core's own canonical shape (`neat_core::decision_tree`,
+NEAT-AI-core #555): every node is described as a `neat_core::IfNodeSpec` and a
+lone split entering a point-wise output is built by `neat_core::graft_if_node`
+itself (#42). The helper cannot yet emit a typed outward edge, so a child
+feeding its parent's branch and the `IF`-output relay are still written out by
+`graft::write_spec`, which is pinned against the helper's own output.
+
+`check_no_duplicate_synapses` — a wrapper over NEAT-AI-core's
+`validate_no_duplicate_synapses` (#556) — runs on every grafted creature, and a condition
 naming the same feature twice is refused. Other aggregate outputs
 (`MINIMUM`/`MAXIMUM`/`MEAN`/`HYPOT`) are not additive in a new synapse and the
 graft is refused.
@@ -102,8 +111,8 @@ enforces.
 ## Cost of a graft under the scorer
 
 NEAT-AI-scorer charges `growthCost × (hidden + synapses/10 + …)` and an extra
-`3 × growthCost / 100` per `IF` neuron (≈ `3e-9`). A stump adds 2 neurons and
-5 synapses (3 neurons / 7 synapses into an `IF` output; plus the two shared constants once per creature), so its complexity penalty is ≈ `5e-7`; an accepted patch must
+`3 × growthCost / 100` per `IF` neuron (≈ `3e-9`). A stump adds 1 neuron and
+5 synapses (2 neurons / 7 synapses into an `IF` output; plus the three shared constants once per creature), so its complexity penalty is ≈ `5e-7`; an accepted patch must
 beat that *and* `--min-improvement` on the authoritative score.
 
 ## XGBoost mapping
