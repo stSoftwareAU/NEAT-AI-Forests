@@ -7,6 +7,9 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Fixed
 
+- One-sided stump variants now report the records of the kept side as
+  `affectedRecords` instead of inheriting the two-leaf parent's count.
+
 - Creatures whose output neuron is an `IF` aggregate (the production
   champion): correction-space residuals are now the output-space residuals
   (no `unsquash`), and grafts feed the output through both a `positive` and a

@@ -38,11 +38,12 @@ The first useful milestone remains deliberately modest:
 
 > Given a mature creature and its training corpus, can a single depth-1 decision stump acting as a residual correction produce a full-corpus, scorer-verified improvement?
 
-On synthetic fixtures with a planted residual region the answer is yes (the
-real NEAT-AI-scorer verifies the graft — see `forests/tests/real_scorer.rs`).
-Whether it is yes on the **production** creature is the open experiment:
-[docs/benchmarks.md](docs/benchmarks.md) records the search economics measured
-so far and how to run the production-scale comparison.
+**Yes.** On the production champion (authoritative score 0.353158958) a
+45-minute CPU run accepted 23 of 23 sequential stump grafts, every one
+verified by the full-corpus NEAT-AI-scorer, finishing at 0.355033979
+(Δ +1.875e-3, ≈2.4e-3 per wall-clock hour). Details, economics and the
+follow-ups the evidence points at are in
+[docs/benchmarks.md](docs/benchmarks.md).
 
 Two shared-family prerequisites are still open upstream and Forests carries
 interim local equivalents until they ship:
@@ -521,5 +522,6 @@ markdownlint, actionlint, cargo-deny, `cargo fmt --check`, clippy with
 
 ## Outstanding work
 
-- Run the 45-minute protocol in [docs/benchmarks.md](docs/benchmarks.md) on the production creature and corpus and record the result (positive or negative).
+- Tune the screen: the production run's exploratory bypasses show a 52 % false-negative rate at `--screen-sample-rate 0.05`.
+- Measure depth-2/3 trees and oblique splits on the production creature now that stumps are proven.
 - Replace the local `IF` graft helper with the canonical one once NEAT-AI-core #555 ships, and drop the `--scorer-arg=--gpu=off` advice once NEAT-AI-scorer #574 lands.

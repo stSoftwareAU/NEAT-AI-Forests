@@ -68,6 +68,8 @@ pub struct Discovery {
     pub gain: f64,
     /// Affected records.
     pub affected: f64,
+    /// Records on the (left, right) side of the root split, when known.
+    pub side_records: Option<(f64, f64)>,
     /// Notes.
     pub notes: Vec<String>,
 }
@@ -81,6 +83,7 @@ impl Discovery {
             backend: backend.into(),
             gain: s.gain,
             affected: s.affected_records,
+            side_records: Some((s.left_records, s.right_records)),
             notes: vec![format!("kind={:?} bin={}", s.kind, s.bin)],
         }
     }
@@ -93,6 +96,7 @@ impl Discovery {
             backend: backend.into(),
             gain: t.gain,
             affected: t.affected_records,
+            side_records: None,
             notes: vec![format!("growth={}", t.growth)],
         }
     }
@@ -105,6 +109,7 @@ impl Discovery {
             backend: "cpu-raw-sample".into(),
             gain: o.gain,
             affected: o.affected_records,
+            side_records: None,
             notes: vec![format!("origin={}", o.origin)],
         }
     }
@@ -174,7 +179,7 @@ pub fn expand_discoveries(
     for d in discoveries {
         for right in [false, true] {
             if let Some(root) = zero_side(&d.root, right) {
-                out.push(Patch::new(
+                let mut p = Patch::new(
                     output,
                     root,
                     prov(
@@ -182,7 +187,12 @@ pub fn expand_discoveries(
                         format!("{}/one-sided", d.strategy),
                         vec![format!("zeroed={}", if right { "right" } else { "left" })],
                     ),
-                ));
+                );
+                // Only the kept side is affected now.
+                if let Some((l, r)) = d.side_records {
+                    p.provenance.affected_records = if right { l } else { r } as u64;
+                }
+                out.push(p);
             }
         }
     }
