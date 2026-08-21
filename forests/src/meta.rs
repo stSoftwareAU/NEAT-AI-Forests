@@ -1,9 +1,19 @@
-//! Creature metadata (`tags`) preservation.
+//! Creature metadata preservation.
 //!
-//! `neat_core::CreatureExport` drops `uuid` and `tags`. When Forests writes a
-//! new `best.json` it re-attaches the original tags and upserts `score`,
-//! `error` and a `forests` progress tag. The `uuid` is dropped on an accepted
-//! candidate because the content changed (NEAT-AI derives it from content).
+//! `neat_core::CreatureExport` carries only structure. When Forests writes a
+//! creature it re-attaches from the source JSON everything that is still
+//! meaningful:
+//!
+//! - creature-level `tags` (with `score`, `error` and `forests` upserted);
+//! - **per-neuron `tags`**, keyed by neuron uuid (discovery / intelligent-design
+//!   provenance on mature neurons must not be lost);
+//! - a `forests` tag on every neuron Forests itself appended, saying which
+//!   run/iteration/patch created it.
+//!
+//! Deliberately dropped: the creature `uuid` (NEAT-AI derives it from content,
+//! which changed) and `memetic` (lineage of a structure that no longer exists).
+
+use std::collections::BTreeMap;
 
 use neat_core::CreatureExport;
 use serde_json::{Map, Value};
@@ -17,40 +27,81 @@ pub struct Tag {
     pub value: String,
 }
 
-/// Tags parsed from creature JSON.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct CreatureTags {
-    /// Tags in original order.
-    pub tags: Vec<Tag>,
+impl Tag {
+    /// Convenience constructor.
+    pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+        }
+    }
 }
 
-impl CreatureTags {
-    /// Parse `tags` from raw creature JSON (tolerant of missing/odd shapes).
+fn parse_tags(v: Option<&Value>) -> Vec<Tag> {
+    let mut out = Vec::new();
+    if let Some(Value::Array(tags)) = v {
+        for t in tags {
+            if let Value::Object(o) = t
+                && let Some(Value::String(name)) = o.get("name")
+            {
+                let value = match o.get("value") {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(v) => v.to_string(),
+                    None => String::new(),
+                };
+                out.push(Tag {
+                    name: name.clone(),
+                    value,
+                });
+            }
+        }
+    }
+    out
+}
+
+fn tags_value(tags: &[Tag]) -> Value {
+    Value::Array(
+        tags.iter()
+            .map(|t| serde_json::json!({"name": t.name, "value": t.value}))
+            .collect(),
+    )
+}
+
+/// Metadata carried alongside a creature.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CreatureMeta {
+    /// Creature-level tags in original order.
+    pub tags: Vec<Tag>,
+    /// Per-neuron tags keyed by neuron uuid.
+    pub neuron_tags: BTreeMap<String, Vec<Tag>>,
+}
+
+/// Backwards-compatible alias.
+pub type CreatureTags = CreatureMeta;
+
+impl CreatureMeta {
+    /// Parse creature-level and per-neuron tags from raw creature JSON.
     pub fn from_json(text: &str) -> Self {
         let mut out = Self::default();
-        if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(text)
-            && let Some(Value::Array(tags)) = map.get("tags")
-        {
-            for t in tags {
-                if let Value::Object(o) = t
-                    && let Some(Value::String(name)) = o.get("name")
-                {
-                    let value = match o.get("value") {
-                        Some(Value::String(s)) => s.clone(),
-                        Some(v) => v.to_string(),
-                        None => String::new(),
-                    };
-                    out.tags.push(Tag {
-                        name: name.clone(),
-                        value,
-                    });
+        if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(text) {
+            out.tags = parse_tags(map.get("tags"));
+            if let Some(Value::Array(neurons)) = map.get("neurons") {
+                for n in neurons {
+                    if let Value::Object(o) = n
+                        && let Some(Value::String(uuid)) = o.get("uuid")
+                    {
+                        let tags = parse_tags(o.get("tags"));
+                        if !tags.is_empty() {
+                            out.neuron_tags.insert(uuid.clone(), tags);
+                        }
+                    }
                 }
             }
         }
         out
     }
 
-    /// Replace or append a tag.
+    /// Replace or append a creature-level tag.
     pub fn upsert(&mut self, name: &str, value: String) {
         if let Some(t) = self.tags.iter_mut().find(|t| t.name == name) {
             t.value = value;
@@ -62,7 +113,21 @@ impl CreatureTags {
         }
     }
 
-    /// Serialise `creature` with these tags attached.
+    /// Attach tags to a neuron (appending to any it already has).
+    pub fn tag_neuron(&mut self, uuid: &str, tags: Vec<Tag>) {
+        self.neuron_tags
+            .entry(uuid.to_string())
+            .or_default()
+            .extend(tags);
+    }
+
+    /// Count of neurons carrying tags.
+    pub fn tagged_neurons(&self) -> usize {
+        self.neuron_tags.len()
+    }
+
+    /// Serialise `creature` with creature-level and per-neuron tags attached.
+    /// Neuron tags whose uuid is not in the creature are dropped silently.
     pub fn serialize_with(
         &self,
         creature: &CreatureExport,
@@ -72,15 +137,19 @@ impl CreatureTags {
         let mut value: Map<String, Value> =
             serde_json::from_str(&text).map_err(|e| e.to_string())?;
         if !self.tags.is_empty() {
-            value.insert(
-                "tags".into(),
-                Value::Array(
-                    self.tags
-                        .iter()
-                        .map(|t| serde_json::json!({"name": t.name, "value": t.value}))
-                        .collect(),
-                ),
-            );
+            value.insert("tags".into(), tags_value(&self.tags));
+        }
+        if !self.neuron_tags.is_empty()
+            && let Some(Value::Array(neurons)) = value.get_mut("neurons")
+        {
+            for n in neurons.iter_mut() {
+                if let Value::Object(o) = n
+                    && let Some(Value::String(uuid)) = o.get("uuid")
+                    && let Some(tags) = self.neuron_tags.get(uuid)
+                {
+                    o.insert("tags".into(), tags_value(tags));
+                }
+            }
         }
         let v = Value::Object(value);
         if pretty {
@@ -97,17 +166,26 @@ mod tests {
     use super::*;
     use crate::graft::fixtures::identity_creature;
 
+    const SRC: &str = r#"{"input":1,"output":1,"uuid":"abc","memetic":{"x":1},
+        "tags":[{"name":"score","value":"0.5"},{"name":"x","value":3}],
+        "neurons":[{"type":"output","uuid":"output-0","bias":0,"squash":"IDENTITY",
+                    "tags":[{"name":"discovered","value":"ReLU6"},{"name":"intelligentDesign","value":"SELU -> BENT"}]}],
+        "synapses":[{"fromUUID":"input-0","toUUID":"output-0","weight":1}]}"#;
+
     #[test]
-    fn tags_survive_and_upsert_replaces() {
-        let mut tags = CreatureTags::from_json(
-            r#"{"input":1,"tags":[{"name":"score","value":"0.5"},{"name":"x","value":3}]}"#,
-        );
-        assert_eq!(tags.tags.len(), 2);
-        assert_eq!(tags.tags[1].value, "3");
-        tags.upsert("score", "0.6".into());
-        tags.upsert("forests", "hi".into());
-        let json = tags.serialize_with(&identity_creature(1, 1), true).unwrap();
-        let back = CreatureTags::from_json(&json);
+    fn creature_and_neuron_tags_survive_uuid_and_memetic_do_not() {
+        let mut meta = CreatureMeta::from_json(SRC);
+        assert_eq!(meta.tags.len(), 2);
+        assert_eq!(meta.tags[1].value, "3");
+        assert_eq!(meta.neuron_tags["output-0"].len(), 2);
+        meta.upsert("score", "0.6".into());
+        meta.upsert("forests", "hi".into());
+        meta.tag_neuron("output-0", vec![Tag::new("forests", "touched")]);
+        meta.tag_neuron("ghost", vec![Tag::new("forests", "dropped")]);
+        let json = meta.serialize_with(&identity_creature(1, 1), true).unwrap();
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert!(v.get("uuid").is_none() && v.get("memetic").is_none());
+        let back = CreatureMeta::from_json(&json);
         assert_eq!(
             back.tags
                 .iter()
@@ -116,6 +194,12 @@ mod tests {
             ["score", "x", "forests"]
         );
         assert_eq!(back.tags[0].value, "0.6");
+        let nt = &back.neuron_tags["output-0"];
+        assert_eq!(
+            nt.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            ["discovered", "intelligentDesign", "forests"]
+        );
+        assert!(!back.neuron_tags.contains_key("ghost"));
         neat_core::parse_creature_json(&json).unwrap();
     }
 }

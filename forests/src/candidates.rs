@@ -47,12 +47,62 @@ pub struct CandidateConfig {
 /// A grafted candidate.
 #[derive(Debug, Clone)]
 pub struct Candidate {
-    /// Patch id.
+    /// Candidate id (the patch id, or a hash of the member ids for a combination).
     pub id: String,
-    /// The patch.
+    /// Primary patch (first member for a combination).
     pub patch: Patch,
+    /// Further patches stacked on top of `patch` (empty for a single graft).
+    pub combo: Vec<Patch>,
     /// Complete candidate creature.
     pub creature: CreatureExport,
+    /// Neuron uuids appended, per member patch (`patch` first).
+    pub added_uuids: Vec<Vec<String>>,
+}
+
+impl Candidate {
+    /// Every member patch, primary first.
+    pub fn patches(&self) -> impl Iterator<Item = &Patch> {
+        std::iter::once(&self.patch).chain(self.combo.iter())
+    }
+
+    /// Strategy label (`combo/<k>` for combinations).
+    pub fn strategy(&self) -> String {
+        if self.combo.is_empty() {
+            self.patch.provenance.strategy.clone()
+        } else {
+            format!(
+                "combo/{}:{}",
+                self.combo.len() + 1,
+                self.patch.provenance.strategy
+            )
+        }
+    }
+
+    /// Sum of member proxy gains.
+    pub fn predicted_gain(&self) -> f64 {
+        self.patches().map(|p| p.provenance.predicted_gain).sum()
+    }
+
+    /// Largest member affected-record count.
+    pub fn affected_records(&self) -> u64 {
+        self.patches()
+            .map(|p| p.provenance.affected_records)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Deepest member.
+    pub fn depth(&self) -> usize {
+        self.patches().map(|p| p.root.depth()).max().unwrap_or(0)
+    }
+
+    /// Union of member features, ascending.
+    pub fn features(&self) -> Vec<usize> {
+        let mut f: Vec<usize> = self.patches().flat_map(|p| p.root.features()).collect();
+        f.sort_unstable();
+        f.dedup();
+        f
+    }
 }
 
 /// A discovery waiting to become a candidate.
@@ -341,12 +391,76 @@ pub fn generate_candidates(
             Ok(g) => out.push(Candidate {
                 id,
                 patch,
+                combo: Vec::new(),
                 creature: g.creature,
+                added_uuids: vec![g.added_uuids],
             }),
             Err(e) => discarded.push((id, e.to_string())),
         }
     }
     (out, discarded)
+}
+
+/// Id of a combination: hash of the member ids in order.
+pub fn combo_id(patches: &[Patch]) -> String {
+    let ids: Vec<String> = patches.iter().map(Patch::id).collect();
+    crate::incumbent::sha256_hex(ids.join("+").as_bytes())[..16].to_string()
+}
+
+/// Build combination candidates: each `groups[i]` is stacked onto one clone.
+/// Groups with fewer than two distinct members, or that fail to graft, are
+/// discarded with a reason. Strategy labels become `combo/<k>:<primary>`.
+pub fn generate_combos(
+    incumbent: &Incumbent,
+    groups: Vec<Vec<Patch>>,
+    strategy_note: &str,
+) -> (Vec<Candidate>, Vec<(String, String)>) {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    let mut discarded = Vec::new();
+    for mut group in groups {
+        let mut ids = HashSet::new();
+        group.retain(|p| ids.insert(p.id()));
+        if group.len() < 2 {
+            continue;
+        }
+        let id = combo_id(&group);
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        match crate::graft::graft_patches(&incumbent.creature, &group) {
+            Ok((creature, added_uuids)) => {
+                let mut it = group.into_iter();
+                let mut patch = it.next().unwrap();
+                patch.provenance.notes.push(strategy_note.to_string());
+                out.push(Candidate {
+                    id,
+                    patch,
+                    combo: it.collect(),
+                    creature,
+                    added_uuids,
+                });
+            }
+            Err(e) => discarded.push((id, e.to_string())),
+        }
+    }
+    (out, discarded)
+}
+
+/// Combination groups from ranked discoveries: the top-2, top-3, … top-`max`
+/// patches on **distinct features**, stacked cumulatively.
+pub fn top_k_groups(ranked: &[Patch], max: usize) -> Vec<Vec<Patch>> {
+    let mut picked: Vec<Patch> = Vec::new();
+    let mut used: HashSet<Vec<usize>> = HashSet::new();
+    for p in ranked {
+        if picked.len() >= max {
+            break;
+        }
+        if used.insert(p.root.features()) {
+            picked.push(p.clone());
+        }
+    }
+    (2..=picked.len()).map(|k| picked[..k].to_vec()).collect()
 }
 
 #[cfg(test)]

@@ -51,6 +51,9 @@ pub struct CandidateRecord {
     pub full_delta: Option<f64>,
     /// The patch itself (complete provenance).
     pub patch: Patch,
+    /// Further patches stacked on `patch` for a combination candidate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub combo: Vec<Patch>,
 }
 
 /// Screen stage summary.

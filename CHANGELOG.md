@@ -18,6 +18,15 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Added
 
+- Combination candidates (`--combo-candidates`): the top-k distinct
+  discoveries stacked on one clone, and the previous iteration's positive
+  full-scored non-winners carried forward (alone, together, and with the new
+  best). Journal records `combo` members; strategy `combo/<k>:<primary>`.
+- `best.json` preserves per-neuron `tags` by uuid, tags every grafted neuron
+  with `forests` / `forests-patch` provenance, and the creature-level
+  `forests` tag is a Lamarck-style run summary usable as a commit subject
+  (`🌳 Forests · N accepts / M iters · last: … · 🎯 output · score: … improved by …`).
+
 - Rust workspace, `forests` crate, quality gate and CI hygiene (#1).
 - Immutable incumbent workspace, checksum and authoritative scorer baseline
   with local-MSE parity gate (#2).

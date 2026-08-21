@@ -198,6 +198,7 @@ pub fn import_xgboost(
                     .as_ref()
                     .and_then(|f| f.scores.get(&c.id).map(|r| r.score - f.baseline_score)),
                 patch: c.patch.clone(),
+                combo: c.combo.clone(),
             })
             .collect(),
         screen: outcome.screen.as_ref().map(|s| ScreenSummary {

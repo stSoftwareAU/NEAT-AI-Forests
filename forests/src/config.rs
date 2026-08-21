@@ -136,6 +136,10 @@ pub struct ForestsConfig {
     pub random_candidates: usize,
     /// Oblique (2–3 feature) candidates per iteration (0 = off).
     pub oblique_candidates: usize,
+    /// Combination candidates: stack the top-2…top-N distinct-feature
+    /// discoveries on one clone, and carry forward the previous iteration's
+    /// near-winners (0 = off).
+    pub combo_candidates: usize,
     /// Maximum candidates grafted per iteration.
     pub candidates: usize,
     /// Screen sample rate (`None` = no screen; every candidate is fully scored).
@@ -194,6 +198,7 @@ impl Default for ForestsConfig {
             threshold_jitter: 0,
             random_candidates: 4,
             oblique_candidates: 0,
+            combo_candidates: 4,
             candidates: 64,
             screen_sample_rate: Some(DEFAULT_SCREEN_SAMPLE_RATE),
             screen_threshold: 0.0,

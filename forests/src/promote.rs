@@ -276,7 +276,9 @@ mod tests {
             Candidate {
                 id,
                 patch: p,
+                combo: Vec::new(),
                 creature,
+                added_uuids: Vec::new(),
             }
         };
         let cands = vec![

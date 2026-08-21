@@ -303,6 +303,7 @@ mod tests {
             full_score: full.map(|d| 0.5 + d),
             full_delta: full,
             patch: Patch::new(0, Node::stump(0, 0.0, 0.0, 1.0), Provenance::default()),
+            combo: Vec::new(),
         }
     }
 

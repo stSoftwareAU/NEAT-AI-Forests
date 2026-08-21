@@ -406,6 +406,7 @@ neat_ai_forests <creature.json> <training-data-dir> import-xgboost --dump dump.j
 | `--threshold-jitter` | `0` | neighbouring bins tried per top stump |
 | `--random-candidates` | `4` | deliberately random stumps per iteration |
 | `--oblique-candidates` | `0` | oblique 2–3 feature splits per iteration |
+| `--combo-candidates` | `4` | combinations: top-2…top-N distinct discoveries stacked on one clone, plus last iteration's near-winners carried forward |
 | `--candidates` | `64` | maximum grafted candidates per iteration |
 | `--screen-sample-rate` | `0.05` | scorer sample rate for the screen; 0 disables |
 | `--screen-threshold` | `0` | sampled Δ required to promote |

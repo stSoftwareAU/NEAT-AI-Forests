@@ -185,6 +185,8 @@ pub struct Grafted {
     pub added_neurons: usize,
     /// Synapses appended.
     pub added_synapses: usize,
+    /// UUIDs of the neurons appended, in listed order.
+    pub added_uuids: Vec<String>,
 }
 
 /// Graft `patch` onto a clone of `incumbent`. The incumbent is never modified.
@@ -264,6 +266,7 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
     let mut creature = incumbent.clone();
     let added_neurons = em.neurons.len();
     let added_synapses = em.synapses.len();
+    let added_uuids: Vec<String> = em.neurons.iter().map(|n| n.uuid.clone()).collect();
     // Insert before the first output so listed order stays topological.
     let tail = creature.neurons.split_off(first_output);
     creature.neurons.extend(em.neurons);
@@ -276,7 +279,25 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
         creature,
         added_neurons,
         added_synapses,
+        added_uuids,
     })
+}
+
+/// Graft several patches in sequence onto one clone (a *combination*
+/// candidate). Returns the final creature and, per patch, the neuron uuids it
+/// added. Patch ids must be distinct (they prefix the uuids).
+pub fn graft_patches(
+    incumbent: &CreatureExport,
+    patches: &[Patch],
+) -> Result<(CreatureExport, Vec<Vec<String>>), GraftError> {
+    let mut creature = incumbent.clone();
+    let mut added = Vec::with_capacity(patches.len());
+    for p in patches {
+        let g = graft_patch(&creature, p)?;
+        creature = g.creature;
+        added.push(g.added_uuids);
+    }
+    Ok((creature, added))
 }
 
 /// Run NEAT-AI-core's structural validator over a compiled creature.
@@ -615,6 +636,22 @@ mod tests {
             graft_patch(&max_out, &patch),
             Err(GraftError::UnsupportedOutputSquash(_))
         ));
+    }
+
+    #[test]
+    fn combined_patches_stack_additively() {
+        let inc = identity_creature(4, 1);
+        let a = Patch::new(0, Node::stump(0, 0.0, 0.0, 0.1), Provenance::default());
+        let b = Patch::new(0, Node::stump(1, 0.2, -0.05, 0.0), Provenance::default());
+        let (creature, added) = graft_patches(&inc, &[a.clone(), b.clone()]).unwrap();
+        assert_eq!(added.len(), 2);
+        assert!(added.iter().all(|u| u.len() == 2));
+        let mut base = compile_creature(&inc).unwrap();
+        let mut cand = compile_creature(&creature).unwrap();
+        for rec in records(200, 4) {
+            let delta = cand.activate(&rec, 1)[0] - base.activate(&rec, 1)[0];
+            assert!((delta - (a.evaluate(&rec) + b.evaluate(&rec))).abs() < 1e-6);
+        }
     }
 
     #[test]

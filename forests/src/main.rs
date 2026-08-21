@@ -115,6 +115,9 @@ struct Cli {
     /// Oblique (multi-feature) split candidates per iteration (0 = off).
     #[arg(long, default_value_t = 0)]
     oblique_candidates: usize,
+    /// Combination candidates per iteration: top-2…top-N discoveries stacked, plus carried-forward near-winners (0 = off).
+    #[arg(long, default_value_t = 4)]
+    combo_candidates: usize,
     /// Maximum candidates grafted per iteration.
     #[arg(long, default_value_t = 64)]
     candidates: usize,
@@ -249,6 +252,7 @@ fn main() -> ExitCode {
         threshold_jitter: cli.threshold_jitter,
         random_candidates: cli.random_candidates,
         oblique_candidates: cli.oblique_candidates,
+        combo_candidates: cli.combo_candidates,
         candidates: cli.candidates,
         screen_sample_rate: if cli.screen_sample_rate > 0.0 && cli.screen_sample_rate < 1.0 {
             Some(cli.screen_sample_rate)

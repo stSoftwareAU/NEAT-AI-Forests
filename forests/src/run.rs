@@ -35,8 +35,9 @@ use crate::journal::{
     append_journal_line,
 };
 use crate::log;
-use crate::meta::CreatureTags;
+use crate::meta::{CreatureMeta, Tag};
 use crate::oblique::{ObliqueControls, search_oblique};
+use crate::patch::Patch;
 use crate::promote::{PromoteConfig, screen_and_promote};
 use crate::residuals::{ResidualCache, ensure_residual_cache};
 use crate::scorer::DirectoryScorer;
@@ -99,7 +100,37 @@ struct State {
     incumbent: Incumbent,
     baseline: AuthoritativeBaseline,
     residuals: ResidualCache,
-    tags: CreatureTags,
+    meta: CreatureMeta,
+    /// Strategy of the last accepted candidate.
+    last_strategy: String,
+    /// Output neuron uuid of the last accepted candidate.
+    last_target: String,
+    /// Full-scored non-winners with a positive authoritative Δ from the last
+    /// iteration, carried forward as combination material.
+    runner_ups: Vec<Patch>,
+}
+
+/// Lamarck-style run summary used as the GRQ commit subject.
+fn forests_tag(
+    acceptances: u64,
+    iterations: u64,
+    last_strategy: &str,
+    last_target: &str,
+    opening: f64,
+    score: f64,
+) -> String {
+    let mut s = format!(
+        "🌳 Forests · {acceptances} accepts / {iterations} iters · last: {} · 🎯 {last_target} · score: {score:.6}",
+        if last_strategy.is_empty() {
+            "none"
+        } else {
+            last_strategy
+        }
+    );
+    if score > opening {
+        s.push_str(&format!(" improved by {:.2e}", score - opening));
+    }
+    s
 }
 
 fn write_best(
@@ -109,18 +140,21 @@ fn write_best(
     acceptances: u64,
     iterations: u64,
 ) -> Result<(), String> {
-    let mut tags = state.tags.clone();
-    tags.upsert("score", format!("{}", state.baseline.score));
-    tags.upsert("error", format!("{}", state.baseline.error));
-    tags.upsert(
+    let mut meta = state.meta.clone();
+    meta.upsert("score", format!("{}", state.baseline.score));
+    meta.upsert("error", format!("{}", state.baseline.error));
+    meta.upsert(
         "forests",
-        format!(
-            "v{} accepted {acceptances} graft(s) over {iterations} iteration(s); score {opening} → {}",
-            env!("CARGO_PKG_VERSION"),
-            state.baseline.score
+        forests_tag(
+            acceptances,
+            iterations,
+            &state.last_strategy,
+            &state.last_target,
+            opening,
+            state.baseline.score,
         ),
     );
-    let text = tags.serialize_with(&state.incumbent.creature, true)?;
+    let text = meta.serialize_with(&state.incumbent.creature, true)?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
@@ -232,12 +266,15 @@ pub fn run_forests(
     ));
     append_journal_line(&journal_path, &JournalLine::Baseline(baseline.clone()))?;
     let opening_score = baseline.score;
-    let tags = CreatureTags::from_json(&incumbent.text);
+    let meta = CreatureMeta::from_json(&incumbent.text);
     let mut state = State {
         incumbent,
         baseline,
         residuals,
-        tags,
+        meta,
+        last_strategy: String::new(),
+        last_target: String::new(),
+        runner_ups: Vec::new(),
     };
 
     let mut iterations = 0u64;
@@ -403,12 +440,63 @@ pub fn run_forests(
             ));
             strategies.push("random-stump".into());
         }
-        let generated = patches.len() as u64;
-        let (candidates, discarded): (Vec<Candidate>, Vec<(String, String)>) =
-            generate_candidates(&state.incumbent, patches, &cand_cfg);
+        // Combinations: stack the top-k distinct discoveries, and carry the
+        // previous iteration's near-winners forward onto the new incumbent
+        // (alone, together, and together with this iteration's best).
+        let mut combo_groups: Vec<Vec<Patch>> = Vec::new();
+        if cfg.combo_candidates > 0 {
+            let ranked: Vec<Patch> = patches.iter().take(discoveries.len()).cloned().collect();
+            combo_groups.extend(crate::candidates::top_k_groups(
+                &ranked,
+                cfg.combo_candidates.max(2),
+            ));
+            if !state.runner_ups.is_empty() {
+                let carried: Vec<Patch> = state
+                    .runner_ups
+                    .iter()
+                    .map(|p| {
+                        let mut p = p.clone();
+                        p.provenance.strategy = format!("carry-forward:{}", p.provenance.strategy);
+                        p.provenance
+                            .notes
+                            .push(format!("carried from iteration {}", iterations - 1));
+                        p
+                    })
+                    .collect();
+                // Each runner-up alone on the new incumbent.
+                patches.extend(carried.iter().cloned());
+                if carried.len() >= 2 {
+                    combo_groups.push(carried.clone());
+                }
+                if let Some(best) = ranked.first() {
+                    let mut g = vec![best.clone()];
+                    g.extend(carried.iter().cloned());
+                    combo_groups.push(g);
+                }
+                strategies.push("carry-forward".into());
+            }
+            strategies.push("combo".into());
+        }
+        let generated = (patches.len() + combo_groups.len()) as u64;
+        let (mut candidates, mut discarded): (Vec<Candidate>, Vec<(String, String)>) =
+            crate::candidates::generate_combos(&state.incumbent, combo_groups, "combination");
+        let combos_kept = candidates.len();
+        let room = cfg.candidates.saturating_sub(candidates.len());
+        let single_cfg = CandidateConfig {
+            max_candidates: room,
+            ..cand_cfg.clone()
+        };
+        let (singles, single_discarded) =
+            generate_candidates(&state.incumbent, patches, &single_cfg);
+        // Singles first (rank order), then combinations.
+        let combos: Vec<Candidate> = std::mem::take(&mut candidates);
+        candidates = singles;
+        candidates.extend(combos);
+        discarded.extend(single_discarded);
         for (id, why) in &discarded {
             log::detail(&format!("discarded {id}: {why}"));
         }
+        log::detail(&format!("{combos_kept} combination candidate(s)"));
         let graft_ms = graft_started.elapsed().as_millis() as u64;
         log::detail(&format!(
             "search {search_ms} ms on {} records × {} features via {backend_label}: {} stumps, {} discoveries, {} candidates ({} discarded)",
@@ -439,14 +527,14 @@ pub fn run_forests(
                 .iter()
                 .map(|c| CandidateRecord {
                     id: c.id.clone(),
-                    strategy: c.patch.provenance.strategy.clone(),
+                    strategy: c.strategy(),
                     backend: c.patch.provenance.backend.clone(),
-                    depth: c.patch.root.depth(),
-                    features: c.patch.root.features(),
-                    predicted_gain: c.patch.provenance.predicted_gain,
-                    affected_records: c.patch.provenance.affected_records,
+                    depth: c.depth(),
+                    features: c.features(),
+                    predicted_gain: c.predicted_gain(),
+                    affected_records: c.affected_records(),
                     affected_fraction: if set.records() > 0 {
-                        c.patch.provenance.affected_records as f64 / set.records() as f64
+                        c.affected_records() as f64 / set.records() as f64
                     } else {
                         0.0
                     },
@@ -457,6 +545,7 @@ pub fn run_forests(
                     full_score: None,
                     full_delta: None,
                     patch: c.patch.clone(),
+                    combo: c.combo.clone(),
                 })
                 .collect(),
             screen: None,
@@ -602,6 +691,72 @@ pub fn run_forests(
                 append_journal_line(&journal_path, &JournalLine::Baseline(new_baseline.clone()))?;
                 // Promote atomically: write winner file, then best.json.
                 std::fs::create_dir_all(&winners_dir).map_err(|e| e.to_string())?;
+                // Tag every neuron this winner appended with its provenance.
+                let target_uuid = {
+                    let n = state.incumbent.creature.neurons.len();
+                    state.incumbent.creature.neurons
+                        [n - state.incumbent.creature.output + winner.patch.output]
+                        .uuid
+                        .clone()
+                };
+                for (p, uuids) in winner.patches().zip(&winner.added_uuids) {
+                    let describe = match &p.root {
+                        crate::patch::Node::Split {
+                            condition,
+                            left,
+                            right,
+                        } if condition.is_axis_aligned() => format!(
+                            "input-{} > {} ? {} : {}",
+                            condition.terms[0].feature,
+                            condition.threshold,
+                            match &**right {
+                                crate::patch::Node::Leaf { correction } => correction.to_string(),
+                                _ => "subtree".into(),
+                            },
+                            match &**left {
+                                crate::patch::Node::Leaf { correction } => correction.to_string(),
+                                _ => "subtree".into(),
+                            },
+                        ),
+                        _ => format!(
+                            "depth {} tree over inputs {:?}",
+                            p.root.depth(),
+                            p.root.features()
+                        ),
+                    };
+                    for uuid in uuids {
+                        state.meta.tag_neuron(
+                            uuid,
+                            vec![
+                                Tag::new(
+                                    "forests",
+                                    format!(
+                                        "neat_ai_forests v{} iteration {iterations} patch {} ({}, {}) → {target_uuid}: {describe}; Δscore {improvement:+.3e} verified by NEAT-AI-scorer",
+                                        env!("CARGO_PKG_VERSION"),
+                                        p.id(),
+                                        p.provenance.strategy,
+                                        p.provenance.backend
+                                    ),
+                                ),
+                                Tag::new("forests-patch", p.id()),
+                            ],
+                        );
+                    }
+                }
+                state.last_strategy = winner.strategy();
+                state.last_target = target_uuid;
+                // Near-winners: fully scored, positive Δ, not the winner → carry forward.
+                state.runner_ups = candidates
+                    .iter()
+                    .filter(|c| &c.id != id && c.combo.is_empty())
+                    .filter(|c| {
+                        full.scores
+                            .get(&c.id)
+                            .is_some_and(|r| r.score - full.baseline_score > 0.0)
+                    })
+                    .take(cfg.combo_candidates)
+                    .map(|c| c.patch.clone())
+                    .collect();
                 state.incumbent = new_incumbent;
                 state.baseline = new_baseline;
                 let winner_path = winners_dir.join(format!("winner-{acceptances:04}.json"));
@@ -619,6 +774,23 @@ pub fn run_forests(
                 .map_err(|e| e.to_string())?;
             }
             _ => {
+                state.runner_ups = outcome
+                    .full
+                    .as_ref()
+                    .map(|f| {
+                        candidates
+                            .iter()
+                            .filter(|c| c.combo.is_empty())
+                            .filter(|c| {
+                                f.scores
+                                    .get(&c.id)
+                                    .is_some_and(|r| r.score - f.baseline_score > 0.0)
+                            })
+                            .take(cfg.combo_candidates)
+                            .map(|c| c.patch.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let best_delta = outcome.full.as_ref().and_then(|f| {
                     f.scores
                         .iter()
@@ -753,6 +925,20 @@ mod tests {
         let c = neat_core::parse_creature_json(&best).unwrap();
         assert!(c.neurons.iter().any(|n| n.squash.as_deref() == Some("IF")));
         assert!(best.contains("\"forests\""));
+        let meta = crate::meta::CreatureMeta::from_json(&best);
+        assert!(meta.tags.iter().any(|t| t.name == "forests"
+            && t.value.starts_with("🌳 Forests · ")
+            && t.value.contains("improved by")));
+        assert!(
+            meta.tagged_neurons() >= 2,
+            "grafted neurons must carry provenance tags"
+        );
+        assert!(
+            meta.neuron_tags
+                .values()
+                .flatten()
+                .any(|t| t.name == "forests" && t.value.contains("verified by NEAT-AI-scorer"))
+        );
         assert!(tmp.path().join("out/winners/winner-0001.json").exists());
         // Journal: header, baseline, experiments, baselines after accepts, summary.
         let lines = read_journal(&r.journal_path).unwrap();
