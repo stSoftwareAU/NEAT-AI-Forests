@@ -99,6 +99,11 @@ pub struct IncumbentMeta {
 /// Validate a parsed creature: compiles, round-trips, outputs are trailing.
 pub fn validate_creature(creature: &CreatureExport) -> Result<(), IncumbentError> {
     compile_creature(creature).map_err(|e| IncumbentError::Creature(e.to_string()))?;
+    // NEAT-AI's TypeScript loader silently drops repeated (from, to) synapses,
+    // so a creature carrying them means two different creatures to the two
+    // judges. Refuse rather than optimise something the fleet cannot score.
+    crate::graft::check_no_duplicate_synapses(creature)
+        .map_err(|e| IncumbentError::Creature(e.to_string()))?;
     // serde_json's default float parser (used by NEAT-AI-core) is not
     // correctly rounded, so a round trip may move a weight by one ulp. The
     // contract is therefore structural equality with a 1e-12 relative
@@ -269,6 +274,14 @@ mod tests {
             load_incumbent(&src),
             Err(IncumbentError::Creature(_))
         ));
+    }
+
+    #[test]
+    fn duplicate_synapses_are_refused() {
+        let mut c = parse_creature_json(&identity_creature_json(2, 1)).unwrap();
+        c.synapses.push(c.synapses[0].clone());
+        let err = validate_creature(&c).unwrap_err().to_string();
+        assert!(err.contains("duplicate synapse"), "{err}");
     }
 
     #[test]
