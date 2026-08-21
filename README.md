@@ -499,6 +499,7 @@ NEAT-AI-Forests/
 │   ├── examples/stump_search_bench.rs
 │   └── tests/                 # README contract, real-scorer integration
 ├── docs/                      # architecture, caches, patch format, gpu, strategies, xgboost control, benchmarks
+│   └── archive/pr-summaries/  # one summary per merged PR
 ├── scripts/                   # quality helpers, auto-version.sh, report-experiments.sh, run-benchmark.sh, xgboost-control.py
 ├── quality.sh                 # local gate mirroring CI
 └── .github/workflows/         # CI, security, gitleaks, markdown lint, actionlint, dependency review, SBOM, semgrep
@@ -513,6 +514,7 @@ NEAT-AI-Forests/
 - [docs/strategies.md](docs/strategies.md) — sampling, jitter, diversity, random controls and how they report themselves.
 - [docs/xgboost-control.md](docs/xgboost-control.md) — the external control experiment.
 - [docs/benchmarks.md](docs/benchmarks.md) — measured economics and the production-run protocol.
+- [docs/archive/pr-summaries/](docs/archive/pr-summaries/) — the PR summary for each merged change.
 
 ## Development
 
