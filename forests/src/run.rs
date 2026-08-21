@@ -662,7 +662,7 @@ pub fn run_forests(
                 acceptances += 1;
                 log::ok(&format!(
                     "iteration {iterations}: accepted {id} ({}) Δscore {improvement:+.3e} → {:.9}; affected {} of {} search records",
-                    winner.patch.provenance.strategy,
+                    winner.strategy(),
                     result.score,
                     winner.patch.provenance.affected_records,
                     set.records()

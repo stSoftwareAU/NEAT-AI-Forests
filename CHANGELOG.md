@@ -7,6 +7,14 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Fixed
 
+- **Grafts no longer repeat a (from, to) synapse pair.** NEAT-AI's TypeScript
+  loader collapses duplicates while `rust_scorer` sums them, so the first
+  production creature scored +1.8e-3 under `rust_scorer` but ≈ −1.2e-5 under
+  the fleet's TypeScript re-score. Thresholds now live in a per-split IDENTITY
+  neuron, each leaf in its own constant, and an `IF` output's negative branch
+  is fed through an identity relay; `check_no_duplicate_synapses` guards every
+  candidate. Verified against `Creature.scoreDir` on fixtures (1e-7).
+
 - One-sided stump variants now report the records of the kept side as
   `affectedRecords` instead of inheriting the two-leaf parent's count.
 

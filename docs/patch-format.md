@@ -51,24 +51,26 @@ strict comparison agrees between the evaluator and the compiled network.
 
 ## Graft layout
 
-For a patch with id `P` the following is appended to a **clone** of the
-incumbent, inserted immediately before the first output neuron so listed order
-stays topological:
+NEAT-AI's TypeScript loader keys synapses by `(from, to)` and silently
+collapses duplicates; `rust_scorer` does not. A graft must therefore never
+repeat a pair, or the two judges disagree (this bit the first production run:
+three synapses from one constant into each `IF` made `rust_scorer` report
+gains the fleet's TypeScript re-score could not see). Layout per patch `P`,
+inserted before the first output neuron so listed order stays topological:
 
 ```text
-forest-P-one            type "constant", bias 1.0, no squash, no inward synapses
-forest-P-ifN            type "hidden", squash "IF", bias 0   (children emitted before parents)
-    condition:  input-f  weight w_f   (one per term)
-    condition:  forest-P-one  weight -threshold
-    positive:   right child   (child IF, weight 1.0  |  forest-P-one, weight right_leaf)
-    negative:   left  child   (child IF, weight 1.0  |  forest-P-one, weight left_leaf)
-root IF ──(weight 1.0, untyped)──▶ output-j
+per leaf:   forest-P-kN      constant, bias = correction      (activation == correction)
+per split:  forest-P-thrN    hidden IDENTITY, bias = -threshold, inward input-f weight w_f (one per term)
+            forest-P-ifN     hidden IF, bias 0
+                condition:   thrN  (weight 1)   → Σ w·x − threshold > 0 ⇔ right
+                positive:    right child (kN or ifN, weight 1)
+                negative:    left  child (kN or ifN, weight 1)
+root ifN ──(weight 1, untyped)──▶ output-j                       point-wise output squash
+root ifN ──(positive)──▶ output-j,  root ifN → relayN (IDENTITY) ──(negative)──▶ output-j    IF output
 ```
 
-When the target output neuron is itself an **`IF` aggregate** (as the
-production champion's is), an untyped synapse would feed only its positive
-branch, so the root is wired in twice — once `positive`, once `negative` —
-and the correction reaches every record. Other aggregate outputs
+`check_no_duplicate_synapses` runs on every grafted creature, and a condition
+naming the same feature twice is refused. Other aggregate outputs
 (`MINIMUM`/`MAXIMUM`/`MEAN`/`HYPOT`) are not additive in a new synapse and the
 graft is refused.
 
@@ -78,18 +80,21 @@ and it enters the output neuron's pre-squash sum with weight 1. A leaf of
 `0.0` therefore leaves that region's behaviour unchanged (up to one ulp of
 SIMD summation order inside NEAT-AI-core, which the scorer sees identically).
 
-Every graft must (a) compile through `neat_core::compile_creature` and
+Every graft must (a) compile through `neat_core::compile_creature`,
 (b) pass `neat_core::topology_ops::validate_structural_integrity` (≥ 3 inward
 synapses per `IF`, one each of condition / positive / negative, constants with
-no inward links). Anything else fails closed before the scorer is involved.
+no inward links) and (c) contain no repeated `(from, to)` pair. Anything else
+fails closed before the scorer is involved. Parity between `rust_scorer` and
+the TypeScript `Creature.scoreDir` was checked by hand on stump / depth-2 /
+oblique fixtures (agreement to 1e-7); see Forests issue on automating it.
 
 Pre-existing neurons and synapses are never edited, reordered or removed.
 
 ## Cost of a graft under the scorer
 
 NEAT-AI-scorer charges `growthCost × (hidden + synapses/10 + …)` and an extra
-`3 × growthCost / 100` per `IF` neuron (≈ `3e-9`). A stump adds 2 neurons and
-5 synapses, so its complexity penalty is ≈ `2.5e-7`; an accepted patch must
+`3 × growthCost / 100` per `IF` neuron (≈ `3e-9`). A stump adds 4 neurons and
+5 synapses (6 neurons / 7 synapses into an `IF` output), so its complexity penalty is ≈ `5e-7`; an accepted patch must
 beat that *and* `--min-improvement` on the authoritative score.
 
 ## XGBoost mapping

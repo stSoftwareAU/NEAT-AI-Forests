@@ -1,15 +1,20 @@
 //! Graft a [`Patch`] onto a **clone** of an incumbent as ordinary NEAT-AI `IF`
 //! structure (Issue #7).
 //!
-//! Layout appended for each patch (all UUIDs prefixed `forest-<patch id>-`):
+//! Layout appended for each patch (all UUIDs prefixed `forest-<patch id>-`),
+//! chosen so that **no (from, to) synapse pair is ever repeated** — NEAT-AI's
+//! TypeScript loader keys synapses by that pair and silently collapses
+//! duplicates, which `rust_scorer` does not:
 //!
 //! ```text
-//! const   bias=1.0                       (type "constant", no squash, no inward)
-//! IF node per split, children first:
-//!     condition:  input-f  (weight w_f) …,  const (weight -threshold)
-//!     positive:   right child  (child IF weight 1.0  |  const weight right_leaf)
-//!     negative:   left  child  (child IF weight 1.0  |  const weight left_leaf)
-//! root IF ──(weight 1.0, untyped)──▶ output-j
+//! per leaf:   kN      type "constant", bias = correction          (activation == correction)
+//! per split:  thrN    hidden IDENTITY, bias = -threshold, inward input-f (weight w_f per term)
+//!             ifN     hidden IF, bias 0
+//!                 condition:  thrN (weight 1)          → Σ w·x − threshold
+//!                 positive:   right child (kN or ifN, weight 1)
+//!                 negative:   left  child (kN or ifN, weight 1)
+//! root ifN ──(weight 1, untyped)──▶ output-j            (point-wise output squash)
+//! root ifN ──(positive)──▶ output-j  and  root ifN → relayN (IDENTITY) ──(negative)──▶ output-j   (IF output)
 //! ```
 //!
 //! This relies only on the documented NEAT-AI-core kernel
@@ -54,6 +59,8 @@ pub enum GraftError {
     NonFinite,
     /// A generated UUID already exists in the creature.
     UuidCollision(String),
+    /// A (from, to) synapse pair would be repeated.
+    DuplicateSynapse(String),
     /// Output neurons are not trailing.
     OutputsNotLast,
     /// NEAT-AI-core refused to compile the result.
@@ -82,6 +89,10 @@ impl fmt::Display for GraftError {
             Self::RootIsLeaf => write!(f, "patch root is a leaf; refusing a split-free graft"),
             Self::NonFinite => write!(f, "patch contains non-finite values"),
             Self::UuidCollision(u) => write!(f, "uuid `{u}` already exists in the incumbent"),
+            Self::DuplicateSynapse(p) => write!(
+                f,
+                "duplicate synapse {p}; NEAT-AI collapses repeated (from, to) pairs"
+            ),
             Self::OutputsNotLast => write!(
                 f,
                 "output neurons are not the trailing entries of `neurons`"
@@ -102,7 +113,6 @@ impl std::error::Error for GraftError {}
 
 struct Emitter<'a> {
     prefix: String,
-    const_uuid: String,
     neurons: Vec<NeuronExport>,
     synapses: Vec<SynapseExport>,
     counter: usize,
@@ -120,18 +130,54 @@ impl Emitter<'_> {
         Ok(uuid)
     }
 
-    /// Returns `(source uuid, weight)` that yields the node's correction.
-    fn emit(&mut self, node: &Node) -> Result<(String, f64), GraftError> {
+    fn neuron(&mut self, uuid: &str, neuron_type: &str, bias: f64, squash: Option<&str>) {
+        self.neurons.push(NeuronExport {
+            neuron_type: neuron_type.into(),
+            uuid: uuid.into(),
+            bias,
+            squash: squash.map(str::to_string),
+        });
+    }
+
+    fn synapse(&mut self, from: &str, to: &str, weight: f64, role: Option<&str>) {
+        self.synapses.push(SynapseExport {
+            from_uuid: from.into(),
+            to_uuid: to.into(),
+            weight,
+            synapse_type: role.map(str::to_string),
+        });
+    }
+
+    /// A neuron whose activation is exactly `value`: a `constant` with that bias.
+    fn value_source(&mut self, value: f64) -> Result<String, GraftError> {
+        let uuid = self.fresh("k")?;
+        self.neuron(&uuid, "constant", value, None);
+        Ok(uuid)
+    }
+
+    /// Emit `node`; returns the uuid of a neuron whose activation is the
+    /// node's correction. Every (from, to) pair emitted is unique — NEAT-AI's
+    /// TypeScript keys synapses by that pair and collapses duplicates, so the
+    /// threshold and each leaf get their own source neuron.
+    fn emit(&mut self, node: &Node) -> Result<String, GraftError> {
         match node {
-            Node::Leaf { correction } => Ok((self.const_uuid.clone(), f64::from(*correction))),
+            Node::Leaf { correction } => self.value_source(f64::from(*correction)),
             Node::Split {
                 condition,
                 left,
                 right,
             } => {
-                let (left_src, left_w) = self.emit(left)?;
-                let (right_src, right_w) = self.emit(right)?;
-                let uuid = self.fresh("if")?;
+                let left_src = self.emit(left)?;
+                let right_src = self.emit(right)?;
+                // Condition: thr = Σ w·x − threshold via one IDENTITY neuron.
+                let thr = self.fresh("thr")?;
+                self.neuron(
+                    &thr,
+                    "hidden",
+                    f64::from(-condition.threshold),
+                    Some("IDENTITY"),
+                );
+                let mut seen = HashSet::new();
                 for t in &condition.terms {
                     if t.feature >= self.input {
                         return Err(GraftError::FeatureOutOfRange {
@@ -139,41 +185,44 @@ impl Emitter<'_> {
                             input: self.input,
                         });
                     }
-                    self.synapses.push(SynapseExport {
-                        from_uuid: format!("input-{}", t.feature),
-                        to_uuid: uuid.clone(),
-                        weight: f64::from(t.weight),
-                        synapse_type: Some("condition".into()),
-                    });
+                    if !seen.insert(t.feature) {
+                        return Err(GraftError::DuplicateSynapse(format!(
+                            "input-{} → {thr}",
+                            t.feature
+                        )));
+                    }
+                    self.synapse(
+                        &format!("input-{}", t.feature),
+                        &thr,
+                        f64::from(t.weight),
+                        None,
+                    );
                 }
-                self.synapses.push(SynapseExport {
-                    from_uuid: self.const_uuid.clone(),
-                    to_uuid: uuid.clone(),
-                    weight: f64::from(-condition.threshold),
-                    synapse_type: Some("condition".into()),
-                });
-                self.synapses.push(SynapseExport {
-                    from_uuid: right_src,
-                    to_uuid: uuid.clone(),
-                    weight: right_w,
-                    synapse_type: Some("positive".into()),
-                });
-                self.synapses.push(SynapseExport {
-                    from_uuid: left_src,
-                    to_uuid: uuid.clone(),
-                    weight: left_w,
-                    synapse_type: Some("negative".into()),
-                });
-                self.neurons.push(NeuronExport {
-                    neuron_type: "hidden".into(),
-                    uuid: uuid.clone(),
-                    bias: 0.0,
-                    squash: Some("IF".into()),
-                });
-                Ok((uuid, 1.0))
+                let uuid = self.fresh("if")?;
+                self.neuron(&uuid, "hidden", 0.0, Some("IF"));
+                self.synapse(&thr, &uuid, 1.0, Some("condition"));
+                self.synapse(&right_src, &uuid, 1.0, Some("positive"));
+                self.synapse(&left_src, &uuid, 1.0, Some("negative"));
+                Ok(uuid)
             }
         }
     }
+}
+
+/// Reject any repeated (from, to) synapse pair — NEAT-AI's TypeScript loader
+/// keys synapses by that pair, so a creature with duplicates scores
+/// differently there than under `rust_scorer`.
+pub fn check_no_duplicate_synapses(creature: &CreatureExport) -> Result<(), GraftError> {
+    let mut seen = HashSet::with_capacity(creature.synapses.len());
+    for s in &creature.synapses {
+        if !seen.insert((s.from_uuid.as_str(), s.to_uuid.as_str())) {
+            return Err(GraftError::DuplicateSynapse(format!(
+                "{} → {}",
+                s.from_uuid, s.to_uuid
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Result of a graft: the new creature plus what was appended.
@@ -215,29 +264,20 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
     let target_uuid = incumbent.neurons[first_output + patch.output].uuid.clone();
     let existing: HashSet<&str> = incumbent.neurons.iter().map(|x| x.uuid.as_str()).collect();
     let prefix = format!("forest-{}", patch.id());
-    let const_uuid = format!("{prefix}-one");
-    if existing.contains(const_uuid.as_str()) {
-        return Err(GraftError::UuidCollision(const_uuid));
-    }
     let mut em = Emitter {
         prefix,
-        const_uuid: const_uuid.clone(),
-        neurons: vec![NeuronExport {
-            neuron_type: "constant".into(),
-            uuid: const_uuid,
-            bias: 1.0,
-            squash: None,
-        }],
+        neurons: Vec::new(),
         synapses: Vec::new(),
         counter: 0,
         input: incumbent.input,
         existing: &existing,
     };
-    let (root_uuid, root_w) = em.emit(&patch.root)?;
+    let root_uuid = em.emit(&patch.root)?;
     // How the correction enters the output depends on the output's squash:
     // * point-wise squash: one untyped synapse adds to the pre-squash sum;
     // * `IF` output: an untyped synapse would feed only the positive branch,
-    //   so the correction is wired into BOTH branches (positive + negative);
+    //   so the root feeds the positive branch directly and an IDENTITY relay
+    //   feeds the negative branch (two distinct (from, to) pairs);
     // * other aggregates (MIN/MAX/MEAN/HYPOT): not additive — fail closed.
     let target_squash = incumbent.neurons[first_output + patch.output]
         .squash
@@ -245,22 +285,18 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
         .unwrap_or("IDENTITY");
     let parsed = neat_core::parse_squash_name(target_squash)
         .map_err(|e| GraftError::Compile(e.to_string()))?;
-    let roles: &[Option<&str>] = if parsed == neat_core::SquashType::If {
-        &[Some("positive"), Some("negative")]
+    if parsed == neat_core::SquashType::If {
+        let relay = em.fresh("relay")?;
+        em.neuron(&relay, "hidden", 0.0, Some("IDENTITY"));
+        em.synapse(&root_uuid, &relay, 1.0, None);
+        em.synapse(&root_uuid, &target_uuid, 1.0, Some("positive"));
+        em.synapse(&relay, &target_uuid, 1.0, Some("negative"));
     } else if parsed.is_aggregate() {
         return Err(GraftError::UnsupportedOutputSquash(
             target_squash.to_string(),
         ));
     } else {
-        &[None]
-    };
-    for role in roles {
-        em.synapses.push(SynapseExport {
-            from_uuid: root_uuid.clone(),
-            to_uuid: target_uuid.clone(),
-            weight: root_w,
-            synapse_type: role.map(str::to_string),
-        });
+        em.synapse(&root_uuid, &target_uuid, 1.0, None);
     }
 
     let mut creature = incumbent.clone();
@@ -273,6 +309,7 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
     creature.neurons.extend(tail);
     creature.synapses.extend(em.synapses);
 
+    check_no_duplicate_synapses(&creature)?;
     let network = compile_creature(&creature).map_err(|e| GraftError::Compile(e.to_string()))?;
     validate_compiled(&network, &creature)?;
     Ok(Grafted {
@@ -556,8 +593,8 @@ mod tests {
         let patch = Patch::new(0, Node::stump(2, 0.1, 0.0, 0.013), Provenance::default());
         assert_graft_matches_evaluator(&inc, &patch, 1e-6);
         let g = graft_patch(&inc, &patch).unwrap();
-        assert_eq!(g.added_neurons, 2);
-        assert_eq!(g.added_synapses, 5);
+        assert_eq!(g.added_neurons, 4); // kL, kR, thr, if
+        assert_eq!(g.added_synapses, 5); // input→thr, thr→if, kR→if, kL→if, if→output
     }
 
     #[test]
@@ -645,7 +682,7 @@ mod tests {
         let b = Patch::new(0, Node::stump(1, 0.2, -0.05, 0.0), Provenance::default());
         let (creature, added) = graft_patches(&inc, &[a.clone(), b.clone()]).unwrap();
         assert_eq!(added.len(), 2);
-        assert!(added.iter().all(|u| u.len() == 2));
+        assert!(added.iter().all(|u| u.len() == 4));
         let mut base = compile_creature(&inc).unwrap();
         let mut cand = compile_creature(&creature).unwrap();
         for rec in records(200, 4) {
@@ -670,7 +707,7 @@ mod tests {
             .iter()
             .filter_map(|s| s.synapse_type.clone())
             .collect();
-        assert_eq!(roles, ["condition", "condition", "positive", "negative"]);
+        assert_eq!(roles, ["condition", "positive", "negative"]);
         assert!(json.contains("\"IF\""));
     }
 
@@ -699,6 +736,66 @@ mod tests {
                 outputs: 1
             }
         );
+    }
+
+    #[test]
+    fn grafts_never_repeat_a_synapse_pair() {
+        for inc in [identity_creature(4, 2), small_mlp(3), if_output_creature(4)] {
+            let root = Node::Split {
+                condition: Condition::axis(0, 0.1),
+                left: Box::new(Node::stump(1, -0.5, -0.2, 0.0)),
+                right: Box::new(Node::Split {
+                    condition: Condition {
+                        terms: vec![
+                            Term {
+                                feature: 1,
+                                weight: 0.7,
+                            },
+                            Term {
+                                feature: 2,
+                                weight: -0.4,
+                            },
+                        ],
+                        threshold: 0.05,
+                    },
+                    left: Box::new(Node::leaf(0.3)),
+                    right: Box::new(Node::leaf(0.0)),
+                }),
+            };
+            let g = graft_patch(&inc, &Patch::new(0, root, Provenance::default())).unwrap();
+            check_no_duplicate_synapses(&g.creature).unwrap();
+        }
+        let mut dup = identity_creature(2, 1);
+        dup.synapses.push(dup.synapses[0].clone());
+        assert!(matches!(
+            check_no_duplicate_synapses(&dup),
+            Err(GraftError::DuplicateSynapse(_))
+        ));
+        // A condition naming the same feature twice is refused.
+        let bad = Node::Split {
+            condition: Condition {
+                terms: vec![
+                    Term {
+                        feature: 0,
+                        weight: 1.0,
+                    },
+                    Term {
+                        feature: 0,
+                        weight: 1.0,
+                    },
+                ],
+                threshold: 0.0,
+            },
+            left: Box::new(Node::leaf(0.0)),
+            right: Box::new(Node::leaf(1.0)),
+        };
+        assert!(matches!(
+            graft_patch(
+                &identity_creature(2, 1),
+                &Patch::new(0, bad, Provenance::default())
+            ),
+            Err(GraftError::DuplicateSynapse(_))
+        ));
     }
 
     #[test]
