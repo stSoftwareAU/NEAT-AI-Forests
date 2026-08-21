@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "neat_ai_forests"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "bytemuck",
  "clap",
