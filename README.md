@@ -433,7 +433,7 @@ Forests, not by you.
 3. **Residuals** — run the incumbent over every record; store `target − prediction` and the pre-squash *correction-space* residual in a sidecar keyed by incumbent checksum × corpus identity.
 4. **Baseline** — score the incumbent alone with the full-corpus scorer; compare its `error` with the local MSE (parity gate, fail closed); journal the result.
 5. **Search** — build the quantised search set (sampled rows/features as configured), accumulate per-feature histograms (GPU when available, CPU otherwise), rank stumps; optionally grow depth-2/3 trees and oblique splits.
-6. **Candidates** — expand discoveries into patches (analytical optimum, one-sided variants, magnitude scales, threshold jitter, random controls), graft each onto a clone, discard anything NEAT-AI-core rejects.
+6. **Candidates** — expand discoveries into patches (analytical optimum, one-sided variants, magnitude scales, threshold jitter, random controls), graft each onto a clone, discard anything NEAT-AI-core rejects — including anything `neat_core::creature_validate` rules invalid, with the reason journalled (see [docs/architecture.md](docs/architecture.md#creature-validation)).
 7. **Screen** — the scorer's record-sampling mode ranks the cohort; the top `--promote-count` plus an exploratory bypass quota go on.
 8. **Promote** — full-corpus scorer call with the baseline in the same cohort; accept only `Δscore > --min-improvement` and only if the same-call baseline matches the stored one.
 9. **Repeat** — a winner becomes the experimental incumbent, `best.json` and `winners/winner-NNNN.json` are written, residuals are recomputed, and the loop continues until the budget ends.
@@ -455,7 +455,7 @@ Forests, not by you.
 
 - `runHeader` — timestamp, seed + source, version, incumbent checksum, corpus identity, bin-cache identity, the complete effective configuration.
 - `baseline` — authoritative score/error, scorer identity, cost name, parity verdict (written at start and after every acceptance).
-- `experiment` — per iteration: search backend/set/records/features/strategies, timings, every candidate's patch + provenance, its **screen** score and its **full** score recorded separately, promotion/bypass flags, winner, improvement, acceptance, new incumbent checksum, screen false-positive/false-negative counts, scorer error or baseline veto.
+- `experiment` — per iteration: search backend/set/records/features/strategies, timings, every candidate's patch + provenance, its **screen** score and its **full** score recorded separately, promotion/bypass flags, winner, improvement, acceptance, new incumbent checksum, screen false-positive/false-negative counts, scorer error or baseline veto, and `discarded` — every rejected candidate with the verbatim graft/validation reason.
 - `summary` — stop reason, iterations, acceptances, opening/final score, wall time.
 
 `neat_ai_forests report` folds the journal into the economics metrics: cumulative improvement, **improvement per wall-clock hour**, time to first acceptance, candidates per minute, search vs scorer time, screen false-positive/negative rates, and per-strategy / per-backend / per-depth winner counts and accepted gain. `scripts/report-experiments.sh` compares several journals side by side.
@@ -479,7 +479,7 @@ NEAT-AI-Forests/
 │   │   ├── config.rs          # ForestsConfig + validation
 │   │   ├── corpus.rs          # corpus identity + bounded-memory streaming
 │   │   ├── gpu.rs             # wgpu/WGSL histogram accumulation (#6)
-│   │   ├── graft.rs           # patch → IF structure on a clone (#7)
+│   │   ├── graft.rs           # patch → IF structure on a clone (#7), validated (#39)
 │   │   ├── histogram.rs       # CPU reference stump search (#5)
 │   │   ├── incumbent.rs       # immutable incumbent + checksum (#2)
 │   │   ├── journal.rs         # experiments.jsonl records (#10)

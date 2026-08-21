@@ -56,6 +56,21 @@ pub struct CandidateRecord {
     pub combo: Vec<Patch>,
 }
 
+/// A candidate that never reached scoring, and why (Issue #39).
+///
+/// The reject-and-journal failure policy depends on this: a candidate the graft
+/// refuses — including one `neat_core::creature_validate` rejected — must stay
+/// visible in the journal with the verbatim reason, never be dropped silently.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscardRecord {
+    /// Candidate id (patch id, or combination id).
+    pub id: String,
+    /// The `GraftError` text, verbatim — for a validation failure this carries
+    /// the class, `reason`, `message` and the offending neuron/synapse index.
+    pub reason: String,
+}
+
 /// Screen stage summary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -120,6 +135,9 @@ pub struct ExperimentRecord {
     pub candidates_generated: u64,
     /// Candidates discarded by graft validation.
     pub candidates_discarded: u64,
+    /// Why each discarded candidate was rejected (Issue #39).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discarded: Vec<DiscardRecord>,
     /// Candidate details.
     pub candidates: Vec<CandidateRecord>,
     /// Screen stage.
@@ -270,5 +288,54 @@ mod tests {
             .write_all(b"{\"record\":\"exp")
             .unwrap();
         assert!(read_journal(&p).unwrap_err().contains("journal line 3"));
+    }
+
+    /// Issue #39 — a rejected candidate stays visible in the journal, reason
+    /// and all, and an older journal without the field still reads.
+    #[test]
+    fn discard_reasons_survive_the_journal() {
+        let record = ExperimentRecord {
+            iteration: 1,
+            timestamp_unix: 1,
+            incumbent_checksum: "abc".into(),
+            baseline_score: 0.5,
+            search_backend: "cpu".into(),
+            search_set: "memory-full".into(),
+            search_records: 1,
+            search_features: 1,
+            strategies: vec![],
+            search_ms: 0,
+            graft_ms: 0,
+            candidates_generated: 1,
+            candidates_discarded: 1,
+            discarded: vec![DiscardRecord {
+                id: "cafe".into(),
+                reason: "grafted creature is invalid: ValidationError (NEURON_ORDER): \
+                         const-1) type constant after hidden neuron [neuron index 4]"
+                    .into(),
+            }],
+            candidates: vec![],
+            screen: None,
+            full: None,
+            winner: None,
+            improvement: None,
+            accepted: false,
+            new_incumbent_checksum: None,
+            screen_false_positives: 0,
+            screen_false_negatives: 0,
+            scorer_error: None,
+        };
+        let line = JournalLine::Experiment(Box::new(record));
+        let text = serde_json::to_string(&line).unwrap();
+        assert!(text.contains("NEURON_ORDER"), "{text}");
+        assert!(text.contains("\"discarded\""), "{text}");
+        assert_eq!(serde_json::from_str::<JournalLine>(&text).unwrap(), line);
+        // A journal written before the field existed still reads.
+        let mut older: serde_json::Value = serde_json::from_str(&text).unwrap();
+        older.as_object_mut().unwrap().remove("discarded");
+        let JournalLine::Experiment(back) = serde_json::from_value(older).unwrap() else {
+            panic!("expected an experiment record");
+        };
+        assert!(back.discarded.is_empty());
     }
 }

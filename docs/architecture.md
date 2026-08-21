@@ -54,12 +54,74 @@ flowchart LR
 | `tree` | level-wise / best-first growth on path-masked histograms, depth ≤ 3 | — |
 | `oblique` | 2–3 feature linear conditions on a raw sample; projection sort + coordinate jitter | — |
 | `patch` | portable `Leaf` / `Split(Condition{terms, threshold})` tree, `f32` evaluator mirroring the `IF` kernel, provenance, content id | — |
-| `graft` | patch → `constant` + `IF` neurons + typed synapses appended before the outputs on a clone; NEAT-AI-core compile + structural validation | NEAT-AI-core |
+| `graft` | patch → `constant` + `IF` neurons + typed synapses merged into a clone in canonical order; NEAT-AI-core compile, structural validation and `creature_validate` | NEAT-AI-core |
 | `candidates` | analytical optimum, one-sided variants, magnitude scales, threshold jitter, random stumps; dedup + cap + graft | — |
 | `promote` | screen (scorer sample mode) → full-corpus cohort with baseline; strict threshold; same-call baseline drift veto; FP/FN bookkeeping | **scorer** |
 | `run` | the loop, outputs, journal, promotion of winners, residual recomputation | — |
 | `journal`, `report` | append-only JSONL; economics aggregation | — |
 | `xgboost`, `tools` | matrix export, dump → patch conversion with exact `>=` mapping, control run through `promote` | **scorer** |
+
+## Creature validation
+
+Forests changes creature structure, so it gates its own output on
+`neat_core::creature_validate` — the shared definition of a valid creature
+(Issue #39). The motivating bug was a grafted creature that was returned
+without anyone noticing it was structurally invalid; the defect only surfaced
+downstream, far from the graft that caused it.
+
+**Where.** `graft::graft_patch` is the single funnel every new creature passes
+through (`graft_patches`, `candidates::generate_candidates` and
+`candidates::generate_combos` all go through it). The call sits after the
+structure is final and before the `Grafted` value is returned, so a violation
+is attributed to the graft that caused it.
+
+**Not on load.** An incumbent is *not* validated when it is read. An
+externally-supplied creature is not this repo's bug to report, and validating
+on ingest would add cost on every read. `incumbent` keeps its existing
+compile + round-trip + trailing-output checks.
+
+**Options.** `ValidateOptions { neurons: None, connections: None,
+feedback_loop: None, forward_only: creature.forward_only }`. The counts are
+left unpinned because the graft *changes* both by construction, so pinning them
+would only restate what it just built. `forward_only` follows the creature's
+own `forwardOnly` declaration: Forests only ever appends feed-forward structure
+(`input → threshold → IF → output`), so for the feed-forward creatures it
+actually optimises this is the strongest gate available — it adds the
+self-connection, acyclicity and structural-integrity rules on top of the
+unconditional ones — while a creature that declares itself recurrent is not
+failed for recursion the graft did not introduce.
+
+**Failure policy — reject and journal, never abort.** A validation failure
+rejects that candidate; the run continues. It is not an abort, because one bad
+graft says nothing about the other candidates in the cohort and killing the run
+would lose the whole iteration's scorer work. The rejection is never silent:
+
+- `graft_patch` returns `GraftError::Invalid`, carrying the `ValidationFailure`
+  class, `reason`, `message` and the offending `neuron_index` / `synapse_index`.
+- `candidates` records that text against the candidate id in its discard list.
+- `run` logs it and writes it to `experiments.jsonl` as a `discarded` entry
+  (`{ "id", "reason" }`) beside the existing `candidatesDiscarded` count, so
+  every rejection is auditable after the run.
+
+```mermaid
+flowchart LR
+    P[patch] --> A[assemble on a clone<br/>constants, IF neurons, synapses]
+    A --> O[canonical order<br/>constant → hidden → output<br/>synapses by from,to]
+    O --> D[no duplicate pairs]
+    D --> C[compile_creature]
+    C --> S[validate_structural_integrity]
+    S --> V[neat_core::creature_validate]
+    V -->|Ok| K[candidate returned]
+    V -->|ValidationFailure| J[GraftError::Invalid<br/>→ discarded + journal reason]
+```
+
+**Canonical order is part of being valid.** Two rules the shared validator
+enforces are ordering rules, so the graft now emits them rather than appending
+blindly: new constants are listed ahead of the first hidden neuron (rule 11 —
+`NEURON_ORDER`), and the assembled synapse list is sorted ascending by
+`(from index, to index)` (rule 25 — `SORT_FAILURE`). Incumbent neurons and
+synapses are preserved unchanged in content and relative order; only their
+position in the list can move.
 
 ## Determinism
 

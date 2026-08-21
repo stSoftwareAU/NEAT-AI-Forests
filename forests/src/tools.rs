@@ -160,6 +160,13 @@ pub fn import_xgboost(
         graft_ms: 0,
         candidates_generated: (candidates.len() + discarded.len()) as u64,
         candidates_discarded: discarded.len() as u64,
+        discarded: discarded
+            .iter()
+            .map(|(id, why)| crate::journal::DiscardRecord {
+                id: id.clone(),
+                reason: why.clone(),
+            })
+            .collect(),
         candidates: candidates
             .iter()
             .map(|c| CandidateRecord {

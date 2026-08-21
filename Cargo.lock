@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "neat-core"
-version = "0.9.9"
+version = "0.9.11"
 dependencies = [
  "serde",
  "serde_json",
@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "neat_ai_forests"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytemuck",
  "clap",

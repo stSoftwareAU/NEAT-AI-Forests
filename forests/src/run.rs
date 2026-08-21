@@ -581,6 +581,13 @@ pub fn run_forests(
             graft_ms,
             candidates_generated: generated,
             candidates_discarded: discarded.len() as u64,
+            discarded: discarded
+                .iter()
+                .map(|(id, why)| crate::journal::DiscardRecord {
+                    id: id.clone(),
+                    reason: why.clone(),
+                })
+                .collect(),
             candidates: candidates
                 .iter()
                 .map(|c| CandidateRecord {
