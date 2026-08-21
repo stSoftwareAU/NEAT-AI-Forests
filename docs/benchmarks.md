@@ -50,35 +50,40 @@ Command: `scripts/run-benchmark.sh 200000 2461 8` → `stump_search_bench`
 
 ## Production evidence (2026-08-21)
 
-The protocol below was run once on the production champion (2511 inputs,
-1 `IF` output, 1761 neurons, 22 928 synapses, authoritative score
-0.353158958) against the current 100 % corpus (2 266 178 records, 21 GB) on
-the M4, CPU only, default flags, `--analysis-threads 8`, 45-minute budget.
-Paths and data are private and are not referenced from this repository.
+Run on the production champion (2511 inputs, 1 `IF` output, 1761 neurons,
+22 928 synapses, authoritative score 0.353158958) against the current 100 %
+corpus (2 266 178 records, 21 GB) on the M4, CPU only, default flags
+(`--combo-candidates 4`), `--analysis-threads 8`, 45-minute budget. Paths and
+data are private and are not referenced from this repository.
+
+**A first run with the pre-fix graft layout claimed +1.875e-3 under
+`rust_scorer` but re-scored at −1.2e-5 under NEAT-AI's TypeScript
+`Creature.scoreDir`**: the layout repeated `(from, to)` synapse pairs, which
+`Creature.fromJSON` silently drops (159 of 23 246 synapses) while
+`rust_scorer` sums them. The numbers below are from the fixed layout and were
+verified by **both** engines.
 
 | Metric | Value |
 |---|---|
-| iterations / acceptances | 23 / 23 |
-| opening → final authoritative score | 0.353158958 → 0.355033979 (**Δ +1.875e-3**) |
-| independent full-corpus CPU re-score of `best.json` | 0.3550339541 (2.5e-8 from the GPU-batch figure; scorer CPU/GPU drift, cf. NEAT-AI-scorer #574) |
-| improvement per wall-clock hour | 2.43e-3 |
-| time to first acceptance | 24 s (after a 100 s start-up: bin cache 3 passes, residuals, baseline) |
-| per-iteration gain | ≈1e-4 early, tapering to ≈4e-5 by iteration 20 (saturation curve visible, not reached) |
-| candidates generated / screened / promoted / fully scored | 2187 / 1472 / 184 / 207 |
-| wall split | search 15 % (≈15 s/iter), screen 21 % (≈17 s), full scorer 63 % (≈51 s) |
-| screen false-positive rate (promoted, failed full) | 7.6 % |
-| screen false-negative rate (bypass, cleared full) | **52 %** — the 5 % sample is too noisy at 1e-5 deltas |
-| winners by strategy | histogram-stump 15, one-sided variant 2, magnitude-scale variant 6, random 0 |
-| concentration | 21 of 23 winners are two-leaf stumps touching every record; two touch 0.8 % and 1.3 % |
-| structure added | +46 neurons (23 constant + 23 `IF`), +138 synapses |
+| iterations / acceptances | 24 / 23 |
+| opening → final authoritative score | 0.353158958 → 0.355655238 (**Δ +2.50e-3**) |
+| TypeScript `ConfirmScore.ts` re-score | ✅ verified 0.3556552382939058; `validate()` passes; 23 229 synapses before and after `fromJSON` |
+| improvement per wall-clock hour | ≈3.2e-3 |
+| winners by strategy | 10 single stumps (3 magnitude-scale variants), 13 combinations (`combo/2` 6, `combo/3` 2, `combo/4` 5) |
+| per-iteration gain | 1–3e-4 while combinations win, tapering to ≈2e-5 by iteration 16 |
+| wall split | search ≈15 %, screen ≈20 %, full scorer ≈65 % |
+| concentration | 21 of 23 winners touch every record; two touch 0.8 % |
+| structure added | 23 patches → +105 neurons, +301 synapses (4 neurons / 5 synapses per stump, +1 relay neuron / +1 synapse into the `IF` output) |
 
-Context: the recent Lamarck sampler check-ins on the same creature family are
-≈1e-5 per 45-minute run. The resulting creature was checked into the GRQ
-sampler population by the operator.
+Context: recent Lamarck sampler check-ins on the same creature family are
+≈1e-5 per 45-minute run. The creature was checked into the GRQ sampler
+population after the TypeScript verification.
 
-Follow-ups the evidence points at: raise the screen sample rate or promotion
-count (half of the exploratory bypasses were real winners), and try depth-2
-trees / oblique splits now that stumps are known to work on this creature.
+Follow-ups: the screen (#17) — on the first-generation run the 5 % sample
+screen rejected half of the exploratory bypasses that later cleared the full
+threshold; a 15-minute sweep showed neither a 20 % sample nor a 16-wide
+promotion improved Δ per hour (both shift time into the scorer). Depth-2
+trees and oblique splits remain unmeasured on the champion.
 
 ## Production run protocol
 

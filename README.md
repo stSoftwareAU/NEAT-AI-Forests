@@ -39,11 +39,11 @@ The first useful milestone remains deliberately modest:
 > Given a mature creature and its training corpus, can a single depth-1 decision stump acting as a residual correction produce a full-corpus, scorer-verified improvement?
 
 **Yes.** On the production champion (authoritative score 0.353158958) a
-45-minute CPU run accepted 23 of 23 sequential stump grafts, every one
-verified by the full-corpus NEAT-AI-scorer, finishing at 0.355033979
-(Δ +1.875e-3, ≈2.4e-3 per wall-clock hour). Details, economics and the
-follow-ups the evidence points at are in
-[docs/benchmarks.md](docs/benchmarks.md).
+45-minute CPU run accepted 23 sequential grafts (stumps and stacked
+combinations), every one verified by the full-corpus NEAT-AI-scorer and the
+final creature re-verified by NEAT-AI's TypeScript scorer, finishing at
+0.355655238 (Δ +2.50e-3). Details, the duplicate-synapse lesson, economics
+and follow-ups are in [docs/benchmarks.md](docs/benchmarks.md).
 
 Two shared-family prerequisites are still open upstream and Forests carries
 interim local equivalents until they ship:
