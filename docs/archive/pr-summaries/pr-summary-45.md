@@ -8,7 +8,7 @@ nothing — the machines keep running the stale build. CI now bumps the version
 when the author has not. Closes #45.
 
 - **`scripts/auto-version.sh`** — the decision, in one testable place:
-  - `head < base` → **fail loud**; a downgrade re-uses a version the machines
+  - `head < base` → **fail loud**; a downgrade reuses a version the machines
     have already built, so the new binary would never install (the merge-conflict
     case that bit NEAT-AI-Discovery).
   - `head > base` → no-op; this PR already bumped it, so no second bump and no

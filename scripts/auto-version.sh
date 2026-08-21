@@ -14,7 +14,7 @@
 #
 #   auto-version.sh <manifest> <base-version> [lockfile]
 #       Compare <manifest>'s version with the base branch's <base-version>:
-#         head < base  → fail loud; a downgrade re-uses a version the machines
+#         head < base  → fail loud; a downgrade reuses a version the machines
 #                        have already built, so the new binary never installs
 #         head > base  → leave it alone; this PR has already bumped it
 #         head == base → bump the patch in <manifest>, and in <lockfile> when
