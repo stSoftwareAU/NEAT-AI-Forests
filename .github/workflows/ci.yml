@@ -7,7 +7,8 @@
 #                └── security ─────────────┤
 #                                          ├──► ci-required  (aggregator)
 #   shell-checks ──────────────────────────┤
-#   spell-check ───────────────────────────┘
+#   spell-check ───────────────────────────┤
+#   version-increment ─────────────────────┘
 name: CI
 
 on:
@@ -155,6 +156,65 @@ jobs:
       - name: Gate on unhandled breaking neat-core bump
         run: ./scripts/check-neat-core-version.sh
 
+  version-increment:
+    name: Auto-increment Version
+    # The unattended machines rebuild only when the crate version changes, so a
+    # PR that lands code at an unchanged version ships nothing. Bump it here
+    # when the author has not (Issue #45).
+    #
+    # Fork PRs are skipped: this workflow cannot push to a fork's branch, and a
+    # skipped job counts as OK in `ci-required`. The bump then rides the
+    # maintainer's own follow-up branch.
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          # The push token is never persisted into .git/config, where any later
+          # build script could read it; it is supplied per step instead.
+          persist-credentials: false
+
+      - name: Bump the crate version when this PR has not already
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PUSH_TOKEN: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          remote="https://x-access-token:${PUSH_TOKEN}@github.com/${REPOSITORY}.git"
+          git fetch --no-tags "$remote" "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          git show "origin/${BASE_REF}:forests/Cargo.toml" > "${RUNNER_TEMP}/base-Cargo.toml"
+          base="$(./scripts/auto-version.sh --print "${RUNNER_TEMP}/base-Cargo.toml")"
+          ./scripts/auto-version.sh forests/Cargo.toml "$base" Cargo.lock
+
+      - name: Commit and push the bump
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          PUSH_TOKEN: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- forests/Cargo.toml Cargo.lock; then
+            echo "Version is already ahead of ${GITHUB_BASE_REF} — nothing to commit"
+            exit 0
+          fi
+          version="$(./scripts/auto-version.sh --print forests/Cargo.toml)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add forests/Cargo.toml Cargo.lock
+          git commit -m "chore: auto-increment crate version to ${version}"
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/${REPOSITORY}.git" \
+            "HEAD:${HEAD_REF}"
+
   shell-checks:
     name: Shell Script Quality
     runs-on: ubuntu-latest
@@ -215,7 +275,8 @@ jobs:
 
   ci-required:
     name: CI Required Checks
-    needs: [validation, quality, security, shell-checks, spell-check]
+    needs:
+      [validation, quality, security, shell-checks, spell-check, version-increment]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -227,6 +288,7 @@ jobs:
           SECURITY_RESULT: ${{ needs.security.result }}
           SHELL_CHECKS_RESULT: ${{ needs.shell-checks.result }}
           SPELL_CHECK_RESULT: ${{ needs.spell-check.result }}
+          VERSION_INCREMENT_RESULT: ${{ needs.version-increment.result }}
         run: |
           set -euo pipefail
           fail=0
@@ -244,6 +306,7 @@ jobs:
           check "security"     "$SECURITY_RESULT"
           check "shell-checks" "$SHELL_CHECKS_RESULT"
           check "spell-check"  "$SPELL_CHECK_RESULT"
+          check "version-increment" "$VERSION_INCREMENT_RESULT"
           if [[ "$fail" -ne 0 ]]; then
             echo "One or more gating jobs did not succeed — blocking merge." >&2
             exit 1

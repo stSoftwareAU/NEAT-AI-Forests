@@ -499,7 +499,8 @@ NEAT-AI-Forests/
 │   ├── examples/stump_search_bench.rs
 │   └── tests/                 # README contract, real-scorer integration
 ├── docs/                      # architecture, caches, patch format, gpu, strategies, xgboost control, benchmarks
-├── scripts/                   # quality helpers, report-experiments.sh, run-benchmark.sh, xgboost-control.py
+│   └── archive/pr-summaries/  # one summary per merged PR
+├── scripts/                   # quality helpers, auto-version.sh, report-experiments.sh, run-benchmark.sh, xgboost-control.py
 ├── quality.sh                 # local gate mirroring CI
 └── .github/workflows/         # CI, security, gitleaks, markdown lint, actionlint, dependency review, SBOM, semgrep
 ```
@@ -513,6 +514,7 @@ NEAT-AI-Forests/
 - [docs/strategies.md](docs/strategies.md) — sampling, jitter, diversity, random controls and how they report themselves.
 - [docs/xgboost-control.md](docs/xgboost-control.md) — the external control experiment.
 - [docs/benchmarks.md](docs/benchmarks.md) — measured economics and the production-run protocol.
+- [docs/archive/pr-summaries/](docs/archive/pr-summaries/) — the PR summary for each merged change.
 
 ## Development
 
@@ -521,6 +523,27 @@ NEAT-AI Rust family). `./quality.sh` mirrors CI: shellcheck, codespell,
 markdownlint, actionlint, cargo-deny, `cargo fmt --check`, clippy with
 `-D warnings`, tests (`--all-features`) and rustdoc. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Versioning
+
+The unattended machines rebuild the binary only when the crate version changes,
+so every PR must leave `forests/Cargo.toml` ahead of the base branch. CI's
+`version-increment` job does that for you: `scripts/auto-version.sh` bumps the
+patch — in the manifest and in `Cargo.lock` — and pushes the bump back onto the
+PR branch. Bump the version yourself (a minor or major, say) and the job leaves
+it alone; let it slip behind the base branch and the job fails rather than
+shipping a version the machines have already built.
+
+```mermaid
+flowchart LR
+    PR[PR commit] --> CMP{"forests/Cargo.toml vs base branch"}
+    CMP -- behind --> FAIL["fail loud:<br/>machines would skip the rebuild"]
+    CMP -- ahead --> KEEP["no-op: the author bumped it"]
+    CMP -- level --> BUMP["bump patch in<br/>Cargo.toml + Cargo.lock"]
+    BUMP --> PUSH["commit and push<br/>onto the PR branch"]
+    PUSH --> BUILD["merged: unattended machines<br/>see a new version and rebuild"]
+    KEEP --> BUILD
+```
 
 ## Outstanding work
 

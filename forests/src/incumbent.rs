@@ -289,6 +289,7 @@ mod tests {
     fn outputs_must_be_trailing() {
         let mut c = parse_creature_json(&identity_creature_json(1, 1)).unwrap();
         c.neurons.push(neat_core::NeuronExport {
+            id: None,
             neuron_type: "hidden".into(),
             uuid: "h".into(),
             bias: 0.0,

@@ -139,6 +139,7 @@ impl Emitter<'_> {
 
     fn neuron(&mut self, uuid: &str, neuron_type: &str, bias: f64, squash: Option<&str>) {
         self.neurons.push(NeuronExport {
+            id: None,
             neuron_type: neuron_type.into(),
             uuid: uuid.into(),
             bias,
@@ -299,6 +300,7 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
             return Err(GraftError::UuidCollision(name.into()));
         }
         new_constants.push(NeuronExport {
+            id: None,
             neuron_type: "constant".into(),
             uuid: name.into(),
             bias: 1.0,
@@ -440,6 +442,7 @@ pub mod fixtures {
     pub fn identity_creature(inputs: usize, outputs: usize) -> CreatureExport {
         let neurons = (0..outputs)
             .map(|j| NeuronExport {
+                id: None,
                 neuron_type: "output".into(),
                 uuid: format!("output-{j}"),
                 bias: 0.0,
@@ -461,6 +464,7 @@ pub mod fixtures {
             synapses,
             semantic_version: Some("4.0.0".into()),
             forward_only: true,
+            memetic: None,
         }
     }
 
@@ -478,6 +482,7 @@ pub mod fixtures {
             input: inputs,
             output: 1,
             neurons: vec![NeuronExport {
+                id: None,
                 neuron_type: "output".into(),
                 uuid: "output-0".into(),
                 bias: 0.01,
@@ -505,6 +510,7 @@ pub mod fixtures {
             ],
             semantic_version: Some("4.0.0".into()),
             forward_only: true,
+            memetic: None,
         }
     }
 
@@ -515,6 +521,7 @@ pub mod fixtures {
         let mut synapses = Vec::new();
         for h in 0..3 {
             neurons.push(NeuronExport {
+                id: None,
                 neuron_type: "hidden".into(),
                 uuid: format!("hidden-{h}"),
                 bias: 0.1 * h as f64,
@@ -530,6 +537,7 @@ pub mod fixtures {
             }
         }
         neurons.push(NeuronExport {
+            id: None,
             neuron_type: "output".into(),
             uuid: "output-0".into(),
             bias: 0.05,
@@ -550,6 +558,7 @@ pub mod fixtures {
             synapses,
             semantic_version: Some("4.0.0".into()),
             forward_only: true,
+            memetic: None,
         }
     }
 }
@@ -873,6 +882,7 @@ mod tests {
         inc.neurons.insert(
             0,
             NeuronExport {
+                id: None,
                 neuron_type: "constant".into(),
                 uuid: "const-1".into(),
                 bias: 1.0,
@@ -882,6 +892,7 @@ mod tests {
         inc.neurons.insert(
             1,
             NeuronExport {
+                id: None,
                 neuron_type: "constant".into(),
                 uuid: "const-half".into(),
                 bias: 0.5,
