@@ -567,4 +567,24 @@ mod tests {
         assert_eq!(d.len(), 2);
         assert!(d[0].1.contains("feature 9"));
     }
+
+    /// Issue #39 — a candidate the shared validator rejects never reaches
+    /// scoring, and its rejection is recorded with the `ValidationFailure`
+    /// detail rather than dropped.
+    #[test]
+    fn validation_failures_are_recorded_against_the_candidate() {
+        let inc = Incumbent::from_creature(
+            crate::graft::fixtures::constant_after_hidden_creature(),
+            "t",
+        )
+        .expect("an invalid-order incumbent still loads — Forests does not validate on ingest");
+        let patch = Patch::new(0, Node::stump(0, 0.0, -0.2, 0.4), Provenance::default());
+        let id = patch.id();
+        let (cands, discarded) = generate_candidates(&inc, vec![patch], &cfg());
+        assert!(cands.is_empty(), "an invalid creature must not be scored");
+        assert_eq!(discarded.len(), 1);
+        assert_eq!(discarded[0].0, id, "the rejection names the candidate");
+        assert!(discarded[0].1.contains("NEURON_ORDER"), "{discarded:?}");
+        assert!(discarded[0].1.contains("neuron index"), "{discarded:?}");
+    }
 }

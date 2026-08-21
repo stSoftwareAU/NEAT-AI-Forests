@@ -26,15 +26,26 @@
 //! exactly `0.0` leaves every record in that region bit-identical to the
 //! incumbent.
 //!
+//! The finished creature is emitted in NEAT-AI's canonical order — new
+//! constants ahead of the first hidden neuron, synapses ascending by
+//! `(from index, to index)` — and gated on `neat_core::creature_validate`
+//! before it is returned (Issue #39). A candidate that breaks the shared
+//! definition of a valid creature is refused here, at the graft that broke it,
+//! rather than surfacing downstream; see `docs/architecture.md`, *Creature
+//! validation*, for the reject-and-journal failure policy.
+//!
 //! Until `NEAT-AI-core#555` ships canonical helpers, this module is the single
 //! place in Forests that interprets `IF` synapse roles, and its tests pin the
 //! grafted creature against the abstract evaluator record by record.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use neat_core::topology_ops::{STRUCTURAL_VALID, validate_structural_integrity};
-use neat_core::{CompiledNetwork, CreatureExport, NeuronExport, SynapseExport, compile_creature};
+use neat_core::{
+    CompiledNetwork, CreatureExport, NeuronExport, SynapseExport, ValidateOptions,
+    ValidationFailure, compile_creature, creature_validate,
+};
 
 use crate::patch::{Node, Patch};
 
@@ -77,6 +88,9 @@ pub enum GraftError {
         /// Neuron/synapse index reported by the validator.
         index: i32,
     },
+    /// The shared creature validator (`neat_core::creature_validate`) rejected
+    /// the finished candidate (Issue #39). Boxed to keep `GraftError` small.
+    Invalid(Box<ValidationFailure>),
 }
 
 impl fmt::Display for GraftError {
@@ -106,6 +120,20 @@ impl fmt::Display for GraftError {
             ),
             Self::Structural { code, index } => {
                 write!(f, "structural validation failed: code {code} at {index}")
+            }
+            Self::Invalid(failure) => {
+                write!(
+                    f,
+                    "grafted creature is invalid: {} ({}): {}",
+                    failure.class, failure.reason, failure.message
+                )?;
+                if let Some(neuron) = failure.neuron_index {
+                    write!(f, " [neuron index {neuron}]")?;
+                }
+                if let Some(synapse) = failure.synapse_index {
+                    write!(f, " [synapse index {synapse}]")?;
+                }
+                Ok(())
             }
         }
     }
@@ -226,6 +254,81 @@ impl Emitter<'_> {
     }
 }
 
+/// Resolve every neuron uuid to its index in the compiled ordering: implicit
+/// input `i` is index `i`, listed neuron `j` is `input + j`. This is the same
+/// derivation `neat_core::compile_creature` and `creature_validate` perform,
+/// and it is what "sorted by (from, to)" is measured against.
+fn uuid_indices(creature: &CreatureExport) -> HashMap<String, u32> {
+    creature
+        .neurons
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.uuid.clone(), (creature.input + i) as u32))
+        .collect()
+}
+
+/// Put the synapse list into NEAT-AI's canonical wire order — ascending by
+/// `(from index, to index)` — which `creature_validate` rule 25 requires of
+/// every valid creature. Appending grafted synapses to the incumbent's list
+/// leaves them out of order, so the assembled candidate is re-sorted rather
+/// than emitted piecemeal.
+///
+/// An endpoint naming no neuron sorts last (`u32::MAX`) instead of being
+/// dropped: `creature_validate` then reports it as `INVALID_SYNAPSE_REFERENCE`
+/// rather than the graft quietly reordering a broken creature.
+fn sort_synapses_canonically(creature: &mut CreatureExport) {
+    let index = uuid_indices(creature);
+    let input = creature.input;
+    let resolve = |uuid: &str| -> u32 {
+        if let Some(i) = index.get(uuid) {
+            return *i;
+        }
+        uuid.strip_prefix("input-")
+            .and_then(|n| n.parse::<usize>().ok())
+            .filter(|n| *n < input)
+            .map_or(u32::MAX, |n| n as u32)
+    };
+    // Stable sort: synapses sharing a (from, to) pair keep their relative
+    // order so `check_no_duplicate_synapses` still names the later one.
+    creature
+        .synapses
+        .sort_by_key(|s| (resolve(&s.from_uuid), resolve(&s.to_uuid)));
+}
+
+/// The [`ValidateOptions`] Forests gates its output with (Issue #39).
+///
+/// * `neurons` / `connections` stay `None`: the graft *changes* both counts by
+///   construction, so pinning them would only restate what it just built.
+/// * `feedback_loop` stays `None` — the creature's own `forwardOnly`
+///   declaration decides, via `forward_only` below.
+/// * `forward_only` follows the creature's declared `forwardOnly`. Forests only
+///   ever appends feed-forward structure (`input → threshold → IF → output`),
+///   so for the feed-forward creatures it actually optimises this is the
+///   strongest gate available: it adds the self-connection, acyclicity and
+///   structural-integrity rules on top of the unconditional ones. A creature
+///   that declares itself recurrent is not failed for recursion the graft did
+///   not introduce.
+fn validate_options(creature: &CreatureExport) -> ValidateOptions {
+    ValidateOptions {
+        neurons: None,
+        connections: None,
+        feedback_loop: None,
+        forward_only: creature.forward_only,
+    }
+}
+
+/// Gate a finished candidate on `neat_core::creature_validate` — the shared
+/// definition of a valid creature — before it can escape the graft.
+///
+/// The failure is returned, never logged and dropped: [`graft_patch`]'s callers
+/// record it against the candidate id (see `docs/architecture.md`, *Creature
+/// validation*).
+fn assert_valid(creature: &CreatureExport) -> Result<(), GraftError> {
+    creature_validate(creature, &validate_options(creature))
+        .map(|_stats| ())
+        .map_err(|failure| GraftError::Invalid(Box::new(failure)))
+}
+
 /// Reject any repeated (from, to) synapse pair — NEAT-AI's TypeScript loader
 /// keys synapses by that pair, so a creature with duplicates scores
 /// differently there than under `rust_scorer`.
@@ -312,7 +415,7 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
         prefix,
         one_a: ones[0].clone(),
         one_b: ones[1].clone(),
-        neurons: new_constants,
+        neurons: Vec::new(),
         synapses: Vec::new(),
         counter: 0,
         input: incumbent.input,
@@ -346,18 +449,38 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
     }
 
     let mut creature = incumbent.clone();
-    let added_neurons = em.neurons.len();
+    let added_neurons = new_constants.len() + em.neurons.len();
     let added_synapses = em.synapses.len();
-    let added_uuids: Vec<String> = em.neurons.iter().map(|n| n.uuid.clone()).collect();
-    // Insert before the first output so listed order stays topological.
-    let tail = creature.neurons.split_off(first_output);
-    creature.neurons.extend(em.neurons);
-    creature.neurons.extend(tail);
+    let added_uuids: Vec<String> = new_constants
+        .iter()
+        .chain(em.neurons.iter())
+        .map(|n| n.uuid.clone())
+        .collect();
+    // Listed order must stay `constant, hidden, output` — `creature_validate`
+    // rule 11 rejects a constant that follows a hidden neuron. New constants go
+    // in front of the first non-constant, new hidden neurons before the first
+    // output, so the result is topological *and* correctly ordered.
+    let first_hidden = incumbent.neurons[..first_output]
+        .iter()
+        .position(|n| n.neuron_type != "constant")
+        .unwrap_or(first_output);
+    let mut neurons = Vec::with_capacity(incumbent.neurons.len() + added_neurons);
+    neurons.extend_from_slice(&incumbent.neurons[..first_hidden]);
+    neurons.extend(new_constants);
+    neurons.extend_from_slice(&incumbent.neurons[first_hidden..first_output]);
+    neurons.extend(em.neurons);
+    neurons.extend_from_slice(&incumbent.neurons[first_output..]);
+    creature.neurons = neurons;
     creature.synapses.extend(em.synapses);
+    sort_synapses_canonically(&mut creature);
 
     check_no_duplicate_synapses(&creature)?;
     let network = compile_creature(&creature).map_err(|e| GraftError::Compile(e.to_string()))?;
     validate_compiled(&network, &creature)?;
+    // Last gate before the candidate escapes: the shared definition of a valid
+    // creature (Issue #39). Anything the graft breaks is attributed here, to
+    // the graft that broke it, instead of surfacing downstream.
+    assert_valid(&creature)?;
     Ok(Grafted {
         creature,
         added_neurons,
@@ -514,6 +637,70 @@ pub mod fixtures {
         }
     }
 
+    /// A creature whose neurons are listed `hidden, constant, output` — the one
+    /// order `creature_validate` rule 11 forbids (Issue #39) and every other
+    /// gate in this module accepts: it compiles, clears
+    /// `validate_structural_integrity`, and repeats no synapse pair. Grafting
+    /// onto it must therefore fail on the shared validator and nothing else.
+    pub fn constant_after_hidden_creature() -> CreatureExport {
+        CreatureExport {
+            input: 2,
+            output: 1,
+            neurons: vec![
+                NeuronExport {
+                    id: None,
+                    neuron_type: "hidden".into(),
+                    uuid: "hidden-0".into(),
+                    bias: 0.0,
+                    squash: Some("TANH".into()),
+                },
+                NeuronExport {
+                    id: None,
+                    neuron_type: "constant".into(),
+                    uuid: "const-1".into(),
+                    bias: 1.0,
+                    squash: None,
+                },
+                NeuronExport {
+                    id: None,
+                    neuron_type: "output".into(),
+                    uuid: "output-0".into(),
+                    bias: 0.0,
+                    squash: Some("IDENTITY".into()),
+                },
+            ],
+            synapses: vec![
+                SynapseExport {
+                    from_uuid: "input-0".into(),
+                    to_uuid: "hidden-0".into(),
+                    weight: 1.0,
+                    synapse_type: None,
+                },
+                SynapseExport {
+                    from_uuid: "input-1".into(),
+                    to_uuid: "hidden-0".into(),
+                    weight: 1.0,
+                    synapse_type: None,
+                },
+                SynapseExport {
+                    from_uuid: "hidden-0".into(),
+                    to_uuid: "output-0".into(),
+                    weight: 1.0,
+                    synapse_type: None,
+                },
+                SynapseExport {
+                    from_uuid: "const-1".into(),
+                    to_uuid: "output-0".into(),
+                    weight: 0.1,
+                    synapse_type: None,
+                },
+            ],
+            semantic_version: Some("4.0.0".into()),
+            forward_only: true,
+            memetic: None,
+        }
+    }
+
     /// A small creature with a hidden TANH layer and a LOGISTIC output, so
     /// tests cover a non-identity output squash.
     pub fn small_mlp(inputs: usize) -> CreatureExport {
@@ -589,20 +776,40 @@ mod tests {
         let grafted = graft_patch(incumbent, patch).unwrap();
         let mut base = compile_creature(incumbent).unwrap();
         let mut cand = compile_creature(&grafted.creature).unwrap();
-        // Prefix invariants: nothing pre-existing changed.
+        // Preservation invariants: nothing pre-existing changed. The graft now
+        // emits NEAT-AI's canonical order (Issue #39) — constants ahead of
+        // hidden neurons, synapses ascending by `(from, to)` — so preservation
+        // is by *content and relative order*, not by list position.
         let n_out = incumbent.output;
         let keep = incumbent.neurons.len() - n_out;
+        let kept: Vec<&NeuronExport> = grafted
+            .creature
+            .neurons
+            .iter()
+            .filter(|n| incumbent.neurons.contains(n))
+            .collect();
         assert_eq!(
-            &grafted.creature.neurons[..keep],
-            &incumbent.neurons[..keep]
+            kept,
+            incumbent.neurons.iter().collect::<Vec<_>>(),
+            "every incumbent neuron survives unchanged, in order"
         );
         assert_eq!(
             &grafted.creature.neurons[grafted.creature.neurons.len() - n_out..],
-            &incumbent.neurons[keep..]
+            &incumbent.neurons[keep..],
+            "outputs stay trailing"
         );
+        for synapse in &incumbent.synapses {
+            assert!(
+                grafted.creature.synapses.contains(synapse),
+                "incumbent synapse {} → {} was altered by the graft",
+                synapse.from_uuid,
+                synapse.to_uuid
+            );
+        }
         assert_eq!(
-            &grafted.creature.synapses[..incumbent.synapses.len()],
-            &incumbent.synapses[..]
+            grafted.creature.synapses.len(),
+            incumbent.synapses.len() + grafted.added_synapses,
+            "the graft only adds synapses"
         );
         let mut left = 0;
         let mut right = 0;
@@ -780,12 +987,16 @@ mod tests {
         let json = neat_core::creature_to_json(&g.creature).unwrap();
         let back = neat_core::parse_creature_json(&json).unwrap();
         assert_eq!(back, g.creature);
-        let roles: Vec<_> = back
+        // All three roles survive the round trip. Their *listed* order follows
+        // the canonical `(from, to)` synapse order (Issue #39), not the order
+        // the emitter wrote them in, so compare the set.
+        let mut roles: Vec<_> = back
             .synapses
             .iter()
             .filter_map(|s| s.synapse_type.clone())
             .collect();
-        assert_eq!(roles, ["condition", "positive", "negative"]);
+        roles.sort();
+        assert_eq!(roles, ["condition", "negative", "positive"]);
         assert!(json.contains("\"IF\""));
     }
 
@@ -946,5 +1157,139 @@ mod tests {
         .unwrap();
         let net = compile_creature(&g.creature).unwrap();
         validate_compiled(&net, &g.creature).unwrap();
+    }
+
+    #[test]
+    fn constant_after_hidden_fixture_clears_every_other_gate() {
+        // Guards the fixture's premise: only `creature_validate` catches it.
+        let inc = constant_after_hidden_creature();
+        let net = compile_creature(&inc).expect("fixture compiles");
+        validate_compiled(&net, &inc).expect("fixture clears structural validation");
+        check_no_duplicate_synapses(&inc).expect("fixture has no duplicate pairs");
+    }
+
+    /// Issue #39 — a valid graft is unaffected: every creature the graft
+    /// returns satisfies the shared definition of a valid creature, singly and
+    /// stacked, whatever the incumbent's own listing order was.
+    #[test]
+    fn every_returned_creature_passes_the_shared_validator() {
+        let patches = [
+            Patch::new(0, Node::stump(0, 0.1, -0.3, 0.4), Provenance::default()),
+            Patch::new(
+                0,
+                Node::Split {
+                    condition: Condition::axis(1, -0.2),
+                    left: Box::new(Node::stump(2, 0.0, 0.2, -0.1)),
+                    right: Box::new(Node::leaf(0.05)),
+                },
+                Provenance {
+                    strategy: "depth2".into(),
+                    ..Default::default()
+                },
+            ),
+        ];
+        for inc in [identity_creature(3, 1), small_mlp(3), if_output_creature(3)] {
+            for patch in &patches {
+                let g = graft_patch(&inc, patch).unwrap();
+                creature_validate(&g.creature, &validate_options(&g.creature))
+                    .expect("a valid graft must satisfy neat_core::creature_validate");
+            }
+            // Stacked grafts stay valid too — each one re-validates.
+            let (stacked, _) = graft_patches(&inc, &patches).unwrap();
+            let stats = creature_validate(&stacked, &validate_options(&stacked))
+                .expect("stacked grafts must satisfy neat_core::creature_validate");
+            assert_eq!(stats.neurons() as usize, inc.input + stacked.neurons.len());
+            assert_eq!(stats.connections as usize, stacked.synapses.len());
+        }
+    }
+
+    /// Issue #39 — a graft that would return an invalid creature fails loudly:
+    /// the `ValidationFailure` is surfaced, never swallowed or downgraded.
+    #[test]
+    fn invalid_creature_is_reported_not_swallowed() {
+        let inc = constant_after_hidden_creature();
+        // Every pre-existing gate accepts it, so only the shared validator can
+        // catch this one.
+        compile_creature(&inc).expect("fixture compiles");
+        let err = graft_patch(
+            &inc,
+            &Patch::new(0, Node::stump(0, 0.0, -0.2, 0.4), Provenance::default()),
+        )
+        .expect_err("an invalid grafted creature must not be returned");
+        let GraftError::Invalid(failure) = &err else {
+            panic!("expected a validation failure, got {err}");
+        };
+        assert_eq!(failure.reason, "NEURON_ORDER");
+        // `const-1` — the misplaced constant — is index 4: two implicit inputs,
+        // the shared constant the graft created, then `hidden-0`.
+        assert_eq!(failure.neuron_index, Some(4));
+        assert!(failure.message.contains("const-1"), "{}", failure.message);
+        // The reason, message and offending index all reach the caller's text.
+        let text = err.to_string();
+        assert!(text.contains("NEURON_ORDER"), "{text}");
+        assert!(text.contains(&failure.message), "{text}");
+        assert!(text.contains("neuron index 4"), "{text}");
+    }
+
+    /// Issue #39 — the acceptance-criteria case: a hidden neuron left with no
+    /// outward connection never escapes the graft.
+    #[test]
+    fn hidden_neuron_without_an_outward_connection_never_escapes() {
+        let mut inc = identity_creature(2, 1);
+        inc.neurons.insert(
+            0,
+            NeuronExport {
+                id: None,
+                neuron_type: "hidden".into(),
+                uuid: "dangling".into(),
+                bias: 0.0,
+                squash: Some("TANH".into()),
+            },
+        );
+        inc.synapses.push(SynapseExport {
+            from_uuid: "input-0".into(),
+            to_uuid: "dangling".into(),
+            weight: 1.0,
+            synapse_type: None,
+        });
+        let err = graft_patch(
+            &inc,
+            &Patch::new(0, Node::stump(0, 0.0, -0.2, 0.4), Provenance::default()),
+        )
+        .expect_err("a hidden neuron nothing reads must fail the graft");
+        assert!(
+            err.to_string().contains("dangling")
+                || matches!(err, GraftError::Structural { .. } | GraftError::Invalid(_)),
+            "{err}"
+        );
+    }
+
+    /// Issue #39 — the emitted synapse list is in NEAT-AI's canonical
+    /// `(from, to)` order, which is what rule 25 is measured against.
+    #[test]
+    fn emitted_synapses_are_in_canonical_order() {
+        let inc = small_mlp(3);
+        let g = graft_patch(
+            &inc,
+            &Patch::new(0, Node::stump(1, 0.2, 0.1, -0.3), Provenance::default()),
+        )
+        .unwrap();
+        let index = uuid_indices(&g.creature);
+        let key = |uuid: &str| -> u32 {
+            index.get(uuid).copied().unwrap_or_else(|| {
+                uuid.strip_prefix("input-")
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .expect("endpoint resolves")
+            })
+        };
+        let keys: Vec<(u32, u32)> = g
+            .creature
+            .synapses
+            .iter()
+            .map(|s| (key(&s.from_uuid), key(&s.to_uuid)))
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        assert_eq!(keys, sorted);
     }
 }

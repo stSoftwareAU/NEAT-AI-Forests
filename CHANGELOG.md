@@ -7,6 +7,14 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Added
 
+- Every new creature is validated with `neat_core::creature_validate` before
+  the graft returns it (#39), so a structurally invalid candidate is caught at
+  the graft that produced it instead of surfacing downstream. The failure
+  policy is reject-and-journal: the candidate is discarded and the
+  `ValidationFailure` class, `reason`, `message` and offending
+  neuron/synapse index are written to `experiments.jsonl` as a `discarded`
+  entry. See [docs/architecture.md](docs/architecture.md#creature-validation).
+
 - CI auto-increments the crate version on every PR (#45). The unattended
   machines rebuild only when `forests/Cargo.toml`'s version changes, so a PR
   that lands code at an unchanged version ships nothing. The new
@@ -16,6 +24,13 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
   downgrade.
 
 ### Fixed
+
+- Grafted creatures are emitted in NEAT-AI's canonical order (#39). New
+  constants are listed ahead of the first hidden neuron and the assembled
+  synapse list is sorted ascending by `(from, to)` index — the two ordering
+  rules `creature_validate` enforces, which appending blindly broke on every
+  graft. Incumbent neurons and synapses keep their content and relative order;
+  only their position in the list can move.
 
 - `graft.rs` compiles against neat-core 0.9.9, which added the optional
   `NeuronExport::id` and `CreatureExport::memetic` fields (NEAT-AI-core #559).

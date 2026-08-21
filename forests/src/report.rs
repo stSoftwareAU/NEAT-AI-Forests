@@ -339,6 +339,7 @@ mod tests {
             graft_ms: 10,
             candidates_generated: 3,
             candidates_discarded: 0,
+            discarded: Vec::new(),
             candidates: vec![
                 cand("w", "histogram-stump", true, Some(0.02)),
                 cand("l", "histogram-stump", true, Some(-0.01)),

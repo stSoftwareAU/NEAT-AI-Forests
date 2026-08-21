@@ -55,8 +55,9 @@ NEAT-AI's TypeScript loader keys synapses by `(from, to)` and silently
 collapses duplicates; `rust_scorer` does not. A graft must therefore never
 repeat a pair, or the two judges disagree (this bit the first production run:
 three synapses from one constant into each `IF` made `rust_scorer` report
-gains the fleet's TypeScript re-score could not see). Layout per patch `P`,
-inserted before the first output neuron so listed order stays topological:
+gains the fleet's TypeScript re-score could not see). Layout per patch `P`;
+new hidden neurons are inserted before the first output neuron so listed order
+stays topological, and new constants ahead of the first hidden neuron:
 
 ```text
 shared:     one_a / one_b    bias-1 constants reused from the creature, else created once
@@ -84,12 +85,19 @@ SIMD summation order inside NEAT-AI-core, which the scorer sees identically).
 Every graft must (a) compile through `neat_core::compile_creature`,
 (b) pass `neat_core::topology_ops::validate_structural_integrity` (≥ 3 inward
 synapses per `IF`, one each of condition / positive / negative, constants with
-no inward links) and (c) contain no repeated `(from, to)` pair. Anything else
-fails closed before the scorer is involved. Parity between `rust_scorer` and
-the TypeScript `Creature.scoreDir` was checked by hand on stump / depth-2 /
+no inward links), (c) contain no repeated `(from, to)` pair, and (d) satisfy
+`neat_core::creature_validate` — the shared definition of a valid creature
+(#39, see [architecture.md](architecture.md#creature-validation)). Anything
+else fails closed before the scorer is involved. Parity between `rust_scorer`
+and the TypeScript `Creature.scoreDir` was checked by hand on stump / depth-2 /
 oblique fixtures (agreement to 1e-7); see Forests issue on automating it.
 
-Pre-existing neurons and synapses are never edited, reordered or removed.
+Pre-existing neurons and synapses are never edited or removed, and their
+relative order is preserved. Their *position* in the list can move: the result
+is emitted in NEAT-AI's canonical order (#39), so new constants are listed
+ahead of the first hidden neuron and the whole synapse list is sorted ascending
+by `(from index, to index)` — the two ordering rules `creature_validate`
+enforces.
 
 ## Cost of a graft under the scorer
 
