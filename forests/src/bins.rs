@@ -241,8 +241,12 @@ impl BinCache {
                 .get(pos..pos + n * 4)
                 .ok_or_else(|| corrupt(&format!("truncated edges for feature {f}")))?;
             let mut e = Vec::with_capacity(n);
-            for c in raw.chunks_exact(4) {
-                e.push(f32::from_le_bytes(c.try_into().unwrap()));
+            // Rust 1.98's clippy::chunks_exact_to_as_chunks: a constant chunk
+            // size is better served by `as_chunks`, which yields `[u8; 4]`
+            // directly — the `try_into().unwrap()` was only ever reconciling a
+            // slice the compiler could already size.
+            for c in raw.as_chunks::<4>().0 {
+                e.push(f32::from_le_bytes(*c));
             }
             if e.windows(2)
                 .any(|w| w[0] >= w[1] || w[0].is_nan() || w[1].is_nan())
