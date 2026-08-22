@@ -79,9 +79,14 @@ itself (#42). The helper cannot yet emit a typed outward edge, so a child
 feeding its parent's branch and the `IF`-output relay are still written out by
 `graft::write_spec`, which is pinned against the helper's own output.
 
-`check_no_duplicate_synapses` — a wrapper over NEAT-AI-core's
-`validate_no_duplicate_synapses` (#556) — runs on every grafted creature, and a condition
-naming the same feature twice is refused. Other aggregate outputs
+The duplicate-pair rule — NEAT-AI-core's `validate_no_duplicate_synapses`
+(#556), wrapped as `check_no_duplicate_synapses` — is part of the validation
+gate every grafted creature clears (Issue #50), and a condition naming the same
+feature twice is refused. The three shared bias-1 constants are what keep the
+three synapse roles of one `IF` node reading three different neurons; a
+creature that already carries the names `forest-one-a/b/c` on neurons the graft
+must not repurpose gets fresh names (`forest-one-a2`, …) rather than a refused
+graft. Other aggregate outputs
 (`MINIMUM`/`MAXIMUM`/`MEAN`/`HYPOT`) are not additive in a new synapse and the
 graft is refused.
 

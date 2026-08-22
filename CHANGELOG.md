@@ -23,6 +23,12 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
   `validate_no_duplicate_synapses` (NEAT-AI-core #556) rather than a second
   implementation of the same rule.
 
+- The duplicate-pair rule is part of the graft's validation gate itself
+  (#50, upstream NEAT-AI-core #572) rather than a separate call beside it, and
+  the gate now runs ahead of `compile_creature`, so every path that validates a
+  grafted creature enforces "at most one synapse per ordered `(from, to)` pair"
+  and a repeat is still reported as `GraftError::DuplicateSynapse`.
+
 ### Added
 
 - Every new creature is validated with `neat_core::creature_validate` before
@@ -42,6 +48,20 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
   downgrade.
 
 ### Fixed
+
+- A graft onto a creature that already carries the name `forest-one-a/b/c` on a
+  neuron the graft cannot reuse — a constant of another bias, a hidden neuron —
+  no longer fails with `UuidCollision`, which would have made *every* later
+  graft on that creature fail too. The shared bias-1 constants take the next
+  free name (`forest-one-a2`, …) instead (#50).
+
+- A graft onto a creature with a constant listed after the three bias-1
+  constants it reuses no longer produces a `constant, hidden, constant`
+  listing, which `creature_validate` rejects under `NEURON_ORDER`.
+  NEAT-AI-core's `graft_if_node` lists the new node immediately after its
+  latest source, so the node is written out locally — ahead of the outputs, and
+  therefore after every constant — whenever the reused constants do not reach
+  the creature's last one (#50).
 
 - Grafted creatures are emitted in NEAT-AI's canonical order (#39). New
   constants are listed ahead of the first hidden neuron and the assembled

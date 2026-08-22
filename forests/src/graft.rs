@@ -11,7 +11,8 @@
 //! ```text
 //! shared:     one_c, one_p, one_n   constant, bias 1.0 — one per synapse role, reused
 //!                            from the creature when it has bias-1 constants, else
-//!                            created once (`forest-one-a/b/c`); never per patch (#43)
+//!                            created once (`forest-one-a/b/c`, or the next free
+//!                            name when one is taken); never per patch (#43, #50)
 //! per split:  ifN     hidden IF, bias 0
 //!                 condition:  input-f (weight w_f per term)  and  one_c (weight = −threshold)
 //!                 positive:   right child ifN (weight 1)  |  one_p (weight = right leaf)
@@ -29,11 +30,13 @@
 //!
 //! The finished creature is emitted in NEAT-AI's canonical order — new
 //! constants ahead of the first hidden neuron, synapses ascending by
-//! `(from index, to index)` — and gated on `neat_core::creature_validate`
-//! before it is returned (Issue #39). A candidate that breaks the shared
-//! definition of a valid creature is refused here, at the graft that broke it,
-//! rather than surfacing downstream; see `docs/architecture.md`, *Creature
-//! validation*, for the reject-and-journal failure policy.
+//! `(from index, to index)` — and gated on `assert_valid` before it is
+//! returned (Issue #39): the duplicate-pair rule and
+//! `neat_core::creature_validate`, one gate rather than two separate checks
+//! (Issue #50). A candidate that breaks the shared definition of a valid
+//! creature is refused here, at the graft that broke it, rather than surfacing
+//! downstream; see `docs/architecture.md`, *Creature validation*, for the
+//! reject-and-journal failure policy.
 //!
 //! ## What NEAT-AI-core emits, and what is still emitted here
 //!
@@ -366,13 +369,26 @@ fn validate_options(creature: &CreatureExport) -> ValidateOptions {
     }
 }
 
-/// Gate a finished candidate on `neat_core::creature_validate` — the shared
-/// definition of a valid creature — before it can escape the graft.
+/// Gate a finished candidate on the shared definition of a valid creature
+/// before it can escape the graft.
+///
+/// Two rules, one gate (Issue #50):
+///
+/// 1. [`check_no_duplicate_synapses`] — no ordered `(from, to)` pair twice.
+///    It runs *first* so a repeat is attributed as
+///    [`GraftError::DuplicateSynapse`], the error the journal already records,
+///    rather than as whichever later rule happens to trip over it.
+/// 2. `neat_core::creature_validate` — every other rule.
+///
+/// Keeping the duplicate rule inside the gate is the point: it is no longer a
+/// check a caller has to remember to run alongside validation, so every path
+/// that validates a grafted creature enforces it.
 ///
 /// The failure is returned, never logged and dropped: [`graft_patch`]'s callers
 /// record it against the candidate id (see `docs/architecture.md`, *Creature
 /// validation*).
 fn assert_valid(creature: &CreatureExport) -> Result<(), GraftError> {
+    check_no_duplicate_synapses(creature)?;
     creature_validate(creature, &validate_options(creature))
         .map(|_stats| ())
         .map_err(|failure| GraftError::Invalid(Box::new(failure)))
@@ -385,10 +401,48 @@ fn assert_valid(creature: &CreatureExport) -> Result<(), GraftError> {
 /// The rule itself is NEAT-AI-core's
 /// [`neat_core::validate_no_duplicate_synapses`] (NEAT-AI-core #556), which
 /// `compile_creature` now applies too; this wrapper only restates the failure
-/// as a [`GraftError`] so a caller sees one error type.
+/// as a [`GraftError`] so a caller sees one error type. `assert_valid`
+/// applies it as part of the validation gate (Issue #50), so a caller that
+/// validates a creature need not call this as well.
 pub fn check_no_duplicate_synapses(creature: &CreatureExport) -> Result<(), GraftError> {
     validate_no_duplicate_synapses(creature)
         .map_err(|e| GraftError::DuplicateSynapse(e.to_string()))
+}
+
+/// `wanted` uuids for shared bias-1 constants that no neuron in the creature
+/// already carries.
+///
+/// The first choices are `forest-one-a/b/c`, so a creature grafted more than
+/// once keeps finding and reusing the same three. A creature that already
+/// carries one of those names — a constant of some other bias, a hidden
+/// neuron, anything this graft must not repurpose — is **not** a reason to
+/// refuse the graft (Issue #50): the taken name is skipped and the next free
+/// one (`forest-one-a2`, `forest-one-b2`, …) is used instead. Refusing would
+/// have made every later graft on that creature fail as well.
+fn free_one_names(existing: &HashSet<&str>, wanted: usize) -> Result<Vec<String>, GraftError> {
+    let mut out: Vec<String> = Vec::with_capacity(wanted);
+    // Every round offers three fresh names, so `existing.len() / 3 + 1` rounds
+    // already exhaust the names in use; the bound just keeps the loop finite.
+    for round in 0..=existing.len() + 1 {
+        if out.len() == wanted {
+            break;
+        }
+        for letter in ['a', 'b', 'c'] {
+            let name = match round {
+                0 => format!("forest-one-{letter}"),
+                r => format!("forest-one-{letter}{}", r + 1),
+            };
+            if out.len() < wanted && !existing.contains(name.as_str()) {
+                out.push(name);
+            }
+        }
+    }
+    if out.len() < wanted {
+        // Unreachable for any finite creature; fail closed rather than emit a
+        // creature with two neurons under one uuid.
+        return Err(GraftError::UuidCollision("forest-one-*".into()));
+    }
+    Ok(out)
 }
 
 /// One untyped synapse — the additive edge into a point-wise neuron.
@@ -482,21 +536,15 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
         .take(3)
         .collect();
     let mut new_constants = Vec::new();
-    for name in ["forest-one-a", "forest-one-b", "forest-one-c"] {
-        if ones.len() >= 3 {
-            break;
-        }
-        if existing.contains(name) {
-            return Err(GraftError::UuidCollision(name.into()));
-        }
+    for name in free_one_names(&existing, 3 - ones.len())? {
         new_constants.push(NeuronExport {
             id: None,
             neuron_type: "constant".into(),
-            uuid: name.into(),
+            uuid: name.clone(),
             bias: 1.0,
             squash: None,
         });
-        ones.push(name.into());
+        ones.push(name);
     }
     let mut em = Emitter {
         prefix,
@@ -554,11 +602,32 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
     // New constants go in front of the first non-constant neuron:
     // `creature_validate` rule 11 rejects a constant that follows a hidden one.
     let base = with_constants(incumbent, new_constants, first_output);
+    // The canonical helper lists the new node at the *earliest* position that
+    // still leaves every source before it — immediately after the last
+    // constant it reads. That is where `creature_validate` rule 11 wants it
+    // only when no constant is listed later: a creature carrying a fourth
+    // constant after the three this graft reuses would end up
+    // `constant, hidden, constant`, which the rule refuses (Issue #50). When
+    // the reused constants do not reach the creature's last one, the node is
+    // written out here instead, ahead of the outputs and so after every
+    // constant.
+    let last_constant = base
+        .neurons
+        .iter()
+        .rposition(|n| n.neuron_type == "constant");
+    let ones_reach_the_last_constant = match last_constant {
+        None => true,
+        Some(last) => ones
+            .iter()
+            .filter_map(|uuid| base.neurons.iter().position(|n| &n.uuid == uuid))
+            .max()
+            .is_some_and(|latest| latest >= last),
+    };
     // A lone split entering a point-wise output is exactly the shape
     // NEAT-AI-core's canonical helper covers — let it build the node (Issue
     // #42). Anything nested, or wired into an `IF` output, still needs the
     // typed edges the helper cannot emit.
-    let mut creature = if em.specs.len() == 1 && !target_is_if {
+    let mut creature = if em.specs.len() == 1 && !target_is_if && ones_reach_the_last_constant {
         graft_if_node(&base, &em.specs[0]).map_err(|e| GraftError::Canonical(e.to_string()))?
     } else {
         let mut creature = base;
@@ -589,13 +658,15 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
         .map(|n| n.uuid.clone())
         .collect();
 
-    check_no_duplicate_synapses(&creature)?;
+    // The gate the candidate has to clear before it escapes: the shared
+    // definition of a valid creature (Issue #39), duplicate-pair rule included
+    // (Issue #50). It runs ahead of compilation so a broken candidate is
+    // attributed to the rule it broke — `DuplicateSynapse`, `NEURON_ORDER`,
+    // … — at the graft that broke it, rather than surfacing as whatever the
+    // compiler says about it downstream.
+    assert_valid(&creature)?;
     let network = compile_creature(&creature).map_err(|e| GraftError::Compile(e.to_string()))?;
     validate_compiled(&network, &creature)?;
-    // Last gate before the candidate escapes: the shared definition of a valid
-    // creature (Issue #39). Anything the graft breaks is attributed here, to
-    // the graft that broke it, instead of surfacing downstream.
-    assert_valid(&creature)?;
     Ok(Grafted {
         creature,
         added_neurons,
@@ -1620,5 +1691,369 @@ mod tests {
         let mut sorted = keys.clone();
         sorted.sort_unstable();
         assert_eq!(keys, sorted);
+    }
+
+    // ---- Issue #50 — every graft must emit a *valid* creature -------------
+    //
+    // NEAT-AI's TypeScript loader keys synapses by their ordered `(from, to)`
+    // pair and silently drops the rest, so a creature carrying a repeated pair
+    // scores differently there than it does under `rust_scorer`. The tests
+    // below try hard to make the emitter produce one.
+
+    /// The two invariants Issue #50 is about, on one finished creature: no
+    /// ordered `(from, to)` pair appears twice, and the shared validator
+    /// accepts it.
+    fn assert_creature_is_valid(creature: &CreatureExport, what: &str) {
+        let mut seen: HashSet<(&str, &str)> = HashSet::new();
+        for s in &creature.synapses {
+            assert!(
+                seen.insert((s.from_uuid.as_str(), s.to_uuid.as_str())),
+                "{what}: duplicate synapse {} → {}",
+                s.from_uuid,
+                s.to_uuid
+            );
+        }
+        if let Err(failure) = creature_validate(creature, &validate_options(creature)) {
+            panic!(
+                "{what}: creature_validate rejected the graft: {}",
+                failure.message
+            );
+        }
+    }
+
+    /// Graft `patch` onto `inc` and assert every Issue #50 invariant: no
+    /// repeated pair, `creature_validate` passes, and the result still matches
+    /// the abstract evaluator. An `IF` output is compared on its activation —
+    /// the correction reaches it through two typed branches, not one additive
+    /// edge, so there is no single pre-squash sum to read.
+    fn assert_graft_is_sound(inc: &CreatureExport, patch: &Patch, what: &str) -> Grafted {
+        let g = graft_patch(inc, patch).unwrap_or_else(|e| panic!("{what}: graft refused: {e}"));
+        assert_creature_is_valid(&g.creature, what);
+        let target = &inc.neurons[inc.neurons.len() - inc.output + patch.output];
+        if target.squash.as_deref() == Some("IF") {
+            let mut base = compile_creature(inc).unwrap();
+            let mut cand = compile_creature(&g.creature).unwrap();
+            let (mut left, mut right) = (0, 0);
+            for rec in records(300, inc.input) {
+                let delta = cand.activate(&rec, inc.output)[patch.output]
+                    - base.activate(&rec, inc.output)[patch.output];
+                let want = patch.evaluate(&rec);
+                assert!(
+                    (delta - want).abs() <= 1e-6,
+                    "{what}: delta {delta} != {want}"
+                );
+                if let Node::Split { condition, .. } = &patch.root {
+                    if condition.goes_right(&rec) {
+                        right += 1
+                    } else {
+                        left += 1
+                    }
+                }
+            }
+            assert!(
+                left > 0 && right > 0,
+                "{what}: fixture must cover both branches"
+            );
+        } else {
+            assert_graft_matches_evaluator(inc, patch, 1e-6);
+        }
+        g
+    }
+
+    /// Every tree shape up to `depth`: at each level a branch is independently
+    /// a leaf or a further split. Values are filled in by [`decorate`].
+    fn shapes(depth: usize) -> Vec<Node> {
+        if depth == 0 {
+            return vec![Node::leaf(0.0)];
+        }
+        let mut out = vec![Node::leaf(0.0)];
+        for l in shapes(depth - 1) {
+            for r in shapes(depth - 1) {
+                out.push(Node::Split {
+                    condition: Condition::axis(0, 0.0),
+                    left: Box::new(l.clone()),
+                    right: Box::new(r),
+                });
+            }
+        }
+        out
+    }
+
+    /// Give a shape distinct features, thresholds and leaf corrections; the
+    /// root threshold stays inside the record range so both branches are
+    /// exercised.
+    fn decorate(node: &Node, k: &mut usize, inputs: usize) -> Node {
+        *k += 1;
+        let step = *k;
+        match node {
+            Node::Leaf { .. } => Node::leaf(0.02 * (step % 7) as f32 - 0.06),
+            Node::Split { left, right, .. } => Node::Split {
+                condition: Condition::axis(step % inputs, 0.1 * (step % 5) as f32 - 0.2),
+                left: Box::new(decorate(left, k, inputs)),
+                right: Box::new(decorate(right, k, inputs)),
+            },
+        }
+    }
+
+    /// `identity_creature(inputs, 1)` carrying `extra` neurons ahead of the
+    /// output, each wired so nothing dangles.
+    fn creature_carrying(inputs: usize, extra: &[NeuronExport]) -> CreatureExport {
+        let mut c = identity_creature(inputs, 1);
+        for (i, n) in extra.iter().enumerate() {
+            if n.neuron_type == "hidden" {
+                c.synapses.push(SynapseExport {
+                    from_uuid: "input-0".into(),
+                    to_uuid: n.uuid.clone(),
+                    weight: 0.5,
+                    synapse_type: None,
+                });
+            }
+            c.synapses.push(SynapseExport {
+                from_uuid: n.uuid.clone(),
+                to_uuid: "output-0".into(),
+                weight: 0.01,
+                synapse_type: None,
+            });
+            c.neurons.insert(i, n.clone());
+        }
+        sort_synapses_canonically(&mut c);
+        c
+    }
+
+    /// A constant neuron.
+    fn constant(uuid: &str, bias: f64) -> NeuronExport {
+        NeuronExport {
+            id: None,
+            neuron_type: "constant".into(),
+            uuid: uuid.into(),
+            bias,
+            squash: None,
+        }
+    }
+
+    /// Issue #50 — depth-1, depth-2 and depth-3 trees, every combination of
+    /// leaf and split branches, over a point-wise output, a squashing output
+    /// and an `IF` output.
+    #[test]
+    fn every_tree_shape_grafts_to_a_valid_duplicate_free_creature() {
+        for inc in [identity_creature(4, 2), small_mlp(3), if_output_creature(4)] {
+            for (i, shape) in shapes(3).iter().enumerate() {
+                if matches!(shape, Node::Leaf { .. }) {
+                    continue; // a bare leaf is refused as `RootIsLeaf`
+                }
+                let mut k = 0;
+                let patch =
+                    Patch::new(0, decorate(shape, &mut k, inc.input), Provenance::default());
+                assert_graft_is_sound(&inc, &patch, &format!("shape {i} on {} inputs", inc.input));
+            }
+        }
+    }
+
+    /// Issue #50 — the three synapse roles of every `IF` node must read three
+    /// *different* neurons, whatever the incumbent already carries: none, one,
+    /// two, exactly three, or more bias-1 constants.
+    #[test]
+    fn any_number_of_existing_bias_one_constants_yields_three_distinct_sources() {
+        for k in 0..=5usize {
+            let extra: Vec<NeuronExport> = (0..k)
+                .map(|i| constant(&format!("const-{i}"), 1.0))
+                .collect();
+            let inc = creature_carrying(3, &extra);
+            let what = format!("{k} pre-existing bias-1 constants");
+            let patch = Patch::new(0, Node::stump(0, 0.0, -0.03, 0.05), Provenance::default());
+            let g = assert_graft_is_sound(&inc, &patch, &what);
+            assert_eq!(
+                g.creature
+                    .neurons
+                    .iter()
+                    .filter(|n| n.neuron_type == "constant" && n.bias == 1.0)
+                    .count(),
+                k.max(3),
+                "{what}: three bias-1 constants must be available"
+            );
+            let node = g
+                .added_uuids
+                .iter()
+                .find(|u| u.contains("-if"))
+                .expect("the graft added an IF node");
+            let sources: HashSet<&str> = g
+                .creature
+                .synapses
+                .iter()
+                .filter(|s| &s.to_uuid == node)
+                .map(|s| s.from_uuid.as_str())
+                .collect();
+            // input-0 plus one constant per role — three distinct constants.
+            assert_eq!(
+                sources.len(),
+                4,
+                "{what}: roles share a source: {sources:?}"
+            );
+        }
+    }
+
+    /// Issue #50 — a creature that already carries the shared-constant *names*
+    /// must still graft, whether or not those neurons are usable bias-1
+    /// constants. A name in use is not a reason to refuse the graft; the
+    /// emitter has to pick names that are free.
+    #[test]
+    fn the_shared_constant_names_being_taken_never_blocks_a_graft() {
+        let cases: Vec<(&str, Vec<NeuronExport>)> = vec![
+            (
+                "all three present and usable",
+                vec![
+                    constant("forest-one-a", 1.0),
+                    constant("forest-one-b", 1.0),
+                    constant("forest-one-c", 1.0),
+                ],
+            ),
+            (
+                "one name taken by a constant of another bias",
+                vec![constant("forest-one-a", 0.5)],
+            ),
+            (
+                "one usable, the next name taken by another bias",
+                vec![constant("forest-one-a", 1.0), constant("forest-one-b", 0.5)],
+            ),
+            (
+                "all three names taken by constants of another bias",
+                vec![
+                    constant("forest-one-a", 0.5),
+                    constant("forest-one-b", 0.25),
+                    constant("forest-one-c", -1.0),
+                ],
+            ),
+            (
+                "a name taken by a hidden neuron",
+                vec![NeuronExport {
+                    id: None,
+                    neuron_type: "hidden".into(),
+                    uuid: "forest-one-c".into(),
+                    bias: 0.0,
+                    squash: Some("TANH".into()),
+                }],
+            ),
+        ];
+        for (what, extra) in cases {
+            let inc = creature_carrying(3, &extra);
+            let patch = Patch::new(0, Node::stump(1, 0.0, -0.02, 0.06), Provenance::default());
+            let g = assert_graft_is_sound(&inc, &patch, what);
+            // Nothing pre-existing was repurposed.
+            for n in &extra {
+                let after = g
+                    .creature
+                    .neurons
+                    .iter()
+                    .find(|x| x.uuid == n.uuid)
+                    .unwrap_or_else(|| panic!("{what}: {} was dropped", n.uuid));
+                assert_eq!(after, n, "{what}: {} was rewritten", n.uuid);
+            }
+            // A second graft on the result must work too — the shared
+            // constants have to be re-findable, not re-collided with.
+            let again = Patch::new(0, Node::stump(2, 0.1, 0.04, 0.0), Provenance::default());
+            assert_graft_is_sound(&g.creature, &again, &format!("{what}, second graft"));
+        }
+    }
+
+    /// Issue #50 — oblique conditions (two and three terms) at every depth.
+    #[test]
+    fn oblique_multi_term_conditions_stay_duplicate_free() {
+        let oblique = |a: usize, b: usize, c: Option<usize>, threshold: f32| Condition {
+            terms: [Some((a, 0.8f32)), Some((b, -1.3)), c.map(|f| (f, 0.45))]
+                .into_iter()
+                .flatten()
+                .map(|(feature, weight)| Term { feature, weight })
+                .collect(),
+            threshold,
+        };
+        let root = Node::Split {
+            condition: oblique(0, 1, Some(2), 0.05),
+            left: Box::new(Node::Split {
+                condition: oblique(1, 2, None, -0.1),
+                left: Box::new(Node::leaf(0.03)),
+                right: Box::new(Node::Split {
+                    condition: oblique(0, 3, Some(1), 0.2),
+                    left: Box::new(Node::leaf(-0.02)),
+                    right: Box::new(Node::leaf(0.0)),
+                }),
+            }),
+            right: Box::new(Node::Split {
+                condition: oblique(3, 0, None, 0.0),
+                left: Box::new(Node::leaf(0.07)),
+                right: Box::new(Node::leaf(-0.05)),
+            }),
+        };
+        for inc in [identity_creature(4, 1), small_mlp(4), if_output_creature(4)] {
+            let patch = Patch::new(0, root.clone(), Provenance::default());
+            assert_graft_is_sound(&inc, &patch, "oblique depth-3 tree");
+        }
+    }
+
+    /// Issue #50 — several patches grafted onto one creature (the combination
+    /// candidates `generate_combos` builds) share the constants, so this is
+    /// where a repeated pair would show up if the roles were collapsed.
+    #[test]
+    fn stacked_patches_share_the_constants_without_repeating_a_pair() {
+        let patches: Vec<Patch> = vec![
+            Patch::new(0, Node::stump(0, 0.0, -0.04, 0.06), Provenance::default()),
+            Patch::new(
+                0,
+                Node::Split {
+                    condition: Condition::axis(1, -0.15),
+                    left: Box::new(Node::stump(2, 0.1, 0.02, -0.03)),
+                    right: Box::new(Node::leaf(0.05)),
+                },
+                Provenance::default(),
+            ),
+            Patch::new(
+                0,
+                Node::Split {
+                    condition: Condition::axis(2, 0.05),
+                    left: Box::new(Node::leaf(-0.01)),
+                    right: Box::new(Node::stump(3, 0.0, 0.03, -0.02)),
+                },
+                Provenance::default(),
+            ),
+        ];
+        for inc in [identity_creature(4, 1), small_mlp(4), if_output_creature(4)] {
+            let (stacked, added) = graft_patches(&inc, &patches).unwrap();
+            assert_eq!(added.len(), 3);
+            assert_creature_is_valid(&stacked, "three stacked patches");
+            assert_eq!(
+                stacked
+                    .neurons
+                    .iter()
+                    .filter(|n| n.neuron_type == "constant" && n.bias == 1.0)
+                    .count(),
+                3,
+                "the shared constants are created once, not per patch"
+            );
+            if inc.neurons.last().unwrap().squash.as_deref() != Some("LOGISTIC") {
+                let mut base = compile_creature(&inc).unwrap();
+                let mut cand = compile_creature(&stacked).unwrap();
+                for rec in records(200, inc.input) {
+                    let delta = cand.activate(&rec, 1)[0] - base.activate(&rec, 1)[0];
+                    let want: f32 = patches.iter().map(|p| p.evaluate(&rec)).sum();
+                    assert!((delta - want).abs() < 1e-5, "delta {delta} != {want}");
+                }
+            }
+        }
+    }
+
+    /// Issue #50 — "the creature validation should have prevented this in the
+    /// first place": the duplicate-pair rule is part of the validation gate,
+    /// not a check a caller has to remember to run.
+    #[test]
+    fn the_validation_gate_itself_rejects_a_duplicate_pair() {
+        let mut dup = identity_creature(2, 1);
+        dup.synapses.push(dup.synapses[0].clone());
+        let err = assert_valid(&dup).expect_err("the gate must reject a repeated (from, to) pair");
+        assert!(
+            matches!(err, GraftError::DuplicateSynapse(_)),
+            "expected a duplicate-synapse failure, got {err}"
+        );
+        assert!(err.to_string().contains("input-0"), "{err}");
+        // A creature without duplicates still clears the same gate.
+        assert_valid(&identity_creature(2, 1)).expect("a clean creature passes");
     }
 }

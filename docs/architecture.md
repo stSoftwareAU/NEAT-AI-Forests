@@ -97,22 +97,30 @@ graft says nothing about the other candidates in the cohort and killing the run
 would lose the whole iteration's scorer work. The rejection is never silent:
 
 - `graft_patch` returns `GraftError::Invalid`, carrying the `ValidationFailure`
-  class, `reason`, `message` and the offending `neuron_index` / `synapse_index`.
+  class, `reason`, `message` and the offending `neuron_index` / `synapse_index`
+  — or `GraftError::DuplicateSynapse` when the rule broken is the duplicate-pair
+  one, which the gate applies first so the reason names the pair.
 - `candidates` records that text against the candidate id in its discard list.
 - `run` logs it and writes it to `experiments.jsonl` as a `discarded` entry
   (`{ "id", "reason" }`) beside the existing `candidatesDiscarded` count, so
   every rejection is auditable after the run.
 
+**One gate, both rules (Issue #50).** The "no repeated `(from, to)` pair" rule
+is part of `graft::assert_valid` itself, not a separate call a caller has to
+remember alongside validation, so every path that validates a grafted creature
+enforces it. The gate runs ahead of compilation, so a broken candidate is
+attributed to the rule it broke rather than to whatever the compiler says about
+it afterwards.
+
 ```mermaid
 flowchart LR
     P[patch] --> A[assemble on a clone<br/>constants, IF neurons, synapses]
     A --> O[canonical order<br/>constant → hidden → output<br/>synapses by from,to]
-    O --> D[no duplicate pairs]
-    D --> C[compile_creature]
+    O --> V[validation gate<br/>no duplicate pairs<br/>+ neat_core::creature_validate]
+    V -->|Ok| C[compile_creature]
     C --> S[validate_structural_integrity]
-    S --> V[neat_core::creature_validate]
-    V -->|Ok| K[candidate returned]
-    V -->|ValidationFailure| J[GraftError::Invalid<br/>→ discarded + journal reason]
+    S --> K[candidate returned]
+    V -->|DuplicateSynapse / ValidationFailure| J[GraftError<br/>→ discarded + journal reason]
 ```
 
 **Canonical order is part of being valid.** Two rules the shared validator
