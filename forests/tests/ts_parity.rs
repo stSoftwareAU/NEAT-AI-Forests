@@ -6,6 +6,9 @@
 //! oblique patches onto `IF`-output and MLP fixtures, scores each with both
 //! engines on a small synthetic corpus, and asserts agreement within `1e-6`.
 //!
+//! Both constant-ownership policies are covered (Issue #56): a per-patch graft
+//! must load and score exactly like the shared one it is otherwise identical to.
+//!
 //! It needs `deno`, a `rust_scorer` binary (`NEAT_SCORER_BIN` or the sibling
 //! build) and `NEAT_AI_TS_ROOT` — a directory whose Deno import map resolves
 //! `@stsoftware/neat-ai` (a GRQ or NEAT-AI checkout). Without them it prints
@@ -14,9 +17,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use neat_ai_forests::config::GraftConstants;
 use neat_ai_forests::corpus::write_bin_file;
 use neat_ai_forests::graft::fixtures::{if_output_creature, small_mlp};
-use neat_ai_forests::graft::graft_patch;
+use neat_ai_forests::graft::{graft_patch, graft_patch_with, graft_patches_with};
 use neat_ai_forests::patch::{Condition, Node, Patch, Provenance, Term};
 
 fn scorer_binary() -> Option<PathBuf> {
@@ -45,7 +49,7 @@ for (const path of paths) {
   c.validate();
   const loaded = c.exportJSON().synapses.length;
   const r = await c.scoreDir(dataDir, {});
-  console.log(JSON.stringify({ path, score: r.score, jsonSynapses: raw.synapses.length, loadedSynapses: loaded }));
+  console.log(JSON.stringify({ path, score: r.score, error: r.error, jsonSynapses: raw.synapses.length, loadedSynapses: loaded }));
 }
 "#;
 
@@ -131,9 +135,53 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
         ("mlp-base", small_mlp(3)),
         (
             "mlp-deep",
-            graft_patch(&small_mlp(3), &Patch::new(0, deep, Provenance::default()))
-                .unwrap()
-                .creature,
+            graft_patch(
+                &small_mlp(3),
+                &Patch::new(0, deep.clone(), Provenance::default()),
+            )
+            .unwrap()
+            .creature,
+        ),
+        // Issue #56 — the same two patches with per-patch constants. The
+        // creatures differ only in which bias-1 constants the `IF` nodes read,
+        // so both engines must return the shared variant's score exactly.
+        (
+            "if-stump-per-patch",
+            graft_patch_with(
+                &if_output_creature(3),
+                &Patch::new(0, stump.clone(), Provenance::default()),
+                GraftConstants::PerPatch,
+            )
+            .unwrap()
+            .creature,
+        ),
+        // Two stacked patches, where the two policies really do build
+        // different creatures: three bias-1 constants against six.
+        (
+            "mlp-two",
+            graft_patches_with(
+                &small_mlp(3),
+                &[
+                    Patch::new(0, deep.clone(), Provenance::default()),
+                    Patch::new(0, stump.clone(), Provenance::default()),
+                ],
+                GraftConstants::Shared,
+            )
+            .unwrap()
+            .0,
+        ),
+        (
+            "mlp-two-per-patch",
+            graft_patches_with(
+                &small_mlp(3),
+                &[
+                    Patch::new(0, deep, Provenance::default()),
+                    Patch::new(0, stump, Provenance::default()),
+                ],
+                GraftConstants::PerPatch,
+            )
+            .unwrap()
+            .0,
         ),
     ];
     let mut paths = Vec::new();
@@ -192,6 +240,7 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
         "stdout: {}",
         String::from_utf8_lossy(&out.stdout)
     );
+    let mut by_name = std::collections::HashMap::new();
     for ((name, _), (rust, ts)) in cases.iter().zip(rust_scores.iter().zip(&lines)) {
         assert_eq!(
             ts["jsonSynapses"], ts["loadedSynapses"],
@@ -201,6 +250,31 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
         assert!(
             (rust - ts_score).abs() < 1e-6,
             "{name}: rust {rust} vs typescript {ts_score}"
+        );
+        by_name.insert(*name, (*rust, ts_score, ts["error"].as_f64().unwrap()));
+    }
+    // Issue #56 — per-patch constants do not change what the creature computes:
+    // the TypeScript error is bit-identical to the shared variant's, and the
+    // score moves only by NEAT-AI's complexity term for the extra constant
+    // neurons — by the same amount in both engines.
+    for (shared, per_patch) in [
+        ("if-stump", "if-stump-per-patch"),
+        ("mlp-two", "mlp-two-per-patch"),
+    ] {
+        let (a_rust, a_ts, a_err) = by_name[shared];
+        let (b_rust, b_ts, b_err) = by_name[per_patch];
+        assert_eq!(
+            a_err, b_err,
+            "{per_patch}: per-patch constants changed the error"
+        );
+        let (d_rust, d_ts) = (a_rust - b_rust, a_ts - b_ts);
+        assert!(
+            (d_rust - d_ts).abs() < 1e-9,
+            "{per_patch}: rust penalty {d_rust} vs typescript {d_ts}"
+        );
+        assert!(
+            (0.0..1e-6).contains(&d_rust),
+            "{per_patch}: score moved by {d_rust}, more than a complexity term"
         );
     }
 }

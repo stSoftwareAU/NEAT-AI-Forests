@@ -14,7 +14,8 @@ use rand::Rng;
 use rand::rngs::StdRng;
 
 use crate::bins::BinCache;
-use crate::graft::graft_patch;
+use crate::config::GraftConstants;
+use crate::graft::graft_patch_with;
 use crate::histogram::{StumpCandidate, StumpKind};
 use crate::incumbent::Incumbent;
 use crate::oblique::ObliqueCandidate;
@@ -42,6 +43,8 @@ pub struct CandidateConfig {
     pub threshold_jitter: usize,
     /// Extra provenance notes from the search set.
     pub notes: Vec<String>,
+    /// Who owns each graft's three bias-1 constants (Issue #56).
+    pub graft_constants: GraftConstants,
 }
 
 /// A grafted candidate.
@@ -387,7 +390,7 @@ pub fn generate_candidates(
             discarded.push((id, "all-zero correction".into()));
             continue;
         }
-        match graft_patch(&incumbent.creature, &patch) {
+        match graft_patch_with(&incumbent.creature, &patch, cfg.graft_constants) {
             Ok(g) => out.push(Candidate {
                 id,
                 patch,
@@ -414,6 +417,7 @@ pub fn generate_combos(
     incumbent: &Incumbent,
     groups: Vec<Vec<Patch>>,
     strategy_note: &str,
+    constants: GraftConstants,
 ) -> (Vec<Candidate>, Vec<(String, String)>) {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -428,7 +432,7 @@ pub fn generate_combos(
         if !seen.insert(id.clone()) {
             continue;
         }
-        match crate::graft::graft_patches(&incumbent.creature, &group) {
+        match crate::graft::graft_patches_with(&incumbent.creature, &group, constants) {
             Ok((creature, added_uuids)) => {
                 let mut it = group.into_iter();
                 let mut patch = it.next().unwrap();
@@ -503,6 +507,7 @@ mod tests {
             random_scale: 0.2,
             threshold_jitter: 1,
             notes: vec![],
+            graft_constants: GraftConstants::default(),
         }
     }
 

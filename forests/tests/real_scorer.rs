@@ -11,9 +11,10 @@ use std::time::Duration;
 
 use neat_ai_forests::baseline::ParityPolicy;
 use neat_ai_forests::config::ForestsConfig;
+use neat_ai_forests::config::GraftConstants;
 use neat_ai_forests::corpus::{corpus_info, write_bin_file};
 use neat_ai_forests::graft::fixtures::{identity_creature_json, small_mlp};
-use neat_ai_forests::graft::graft_patch;
+use neat_ai_forests::graft::{graft_patch, graft_patches_with};
 use neat_ai_forests::incumbent::Incumbent;
 use neat_ai_forests::journal::{JournalLine, read_journal};
 use neat_ai_forests::patch::{Node, Patch, Provenance};
@@ -111,20 +112,31 @@ fn real_scorer_baseline_parity_and_if_graft_agree_with_local_forward_pass() {
     let patch = Patch::new(0, Node::stump(1, 0.0, 0.0, 0.3), Provenance::default());
     let grafted = graft_patch(&incumbent.creature, &patch).unwrap().creature;
     let mlp = small_mlp(3);
-    let deep = graft_patch(
-        &mlp,
-        &Patch::new(
-            0,
-            Node::Split {
-                condition: neat_ai_forests::patch::Condition::axis(0, 0.5),
-                left: Box::new(Node::stump(1, 0.0, -0.1, 0.0)),
-                right: Box::new(Node::stump(2, 0.4, 0.0, 0.2)),
-            },
-            Provenance::default(),
-        ),
-    )
-    .unwrap()
-    .creature;
+    let deep_patch = Patch::new(
+        0,
+        Node::Split {
+            condition: neat_ai_forests::patch::Condition::axis(0, 0.5),
+            left: Box::new(Node::stump(1, 0.0, -0.1, 0.0)),
+            right: Box::new(Node::stump(2, 0.4, 0.0, 0.2)),
+        },
+        Provenance::default(),
+    );
+    // Two stacked patches, so the constant policy actually changes the neuron
+    // count: shared creates three for the creature, per-patch three per patch.
+    let deep_patches = [
+        deep_patch,
+        Patch::new(0, Node::stump(1, 0.25, 0.05, 0.0), Provenance::default()),
+    ];
+    let deep = graft_patches_with(&mlp, &deep_patches, GraftConstants::Shared)
+        .unwrap()
+        .0;
+    // Issue #56 — the same two patches with per-patch constants: three more
+    // constant neurons, not one more synapse.
+    let deep_per_patch = graft_patches_with(&mlp, &deep_patches, GraftConstants::PerPatch)
+        .unwrap()
+        .0;
+    assert_eq!(deep_per_patch.neurons.len(), deep.neurons.len() + 3);
+    assert_eq!(deep_per_patch.synapses.len(), deep.synapses.len());
     let dir = tmp.path().join("cohort");
     std::fs::create_dir_all(&dir).unwrap();
     for (name, c) in [
@@ -132,6 +144,7 @@ fn real_scorer_baseline_parity_and_if_graft_agree_with_local_forward_pass() {
         ("stump", &grafted),
         ("mlp", &mlp),
         ("deep", &deep),
+        ("deep-per-patch", &deep_per_patch),
     ] {
         std::fs::write(
             dir.join(format!("{name}.json")),
@@ -147,6 +160,7 @@ fn real_scorer_baseline_parity_and_if_graft_agree_with_local_forward_pass() {
         ("stump", &grafted),
         ("mlp", &mlp),
         ("deep", &deep),
+        ("deep-per-patch", &deep_per_patch),
     ] {
         let inc = Incumbent::from_creature(c.clone(), name).unwrap();
         let local = neat_ai_forests::residuals::compute_residuals(&inc, &train, &corpus, 128, 1)
@@ -159,6 +173,20 @@ fn real_scorer_baseline_parity_and_if_graft_agree_with_local_forward_pass() {
             "{name}: local {local} vs scorer {scored}"
         );
     }
+    // Issue #56 — per-patch constants are numerically free: the authoritative
+    // scorer reports the identical error. Only the complexity term sees the
+    // three extra constant neurons, so the score is at most a hair lower.
+    assert_eq!(
+        results["deep-per-patch"].error, results["deep"].error,
+        "per-patch constants changed the authoritative error"
+    );
+    assert!(
+        results["deep"].score - results["deep-per-patch"].score >= 0.0
+            && results["deep"].score - results["deep-per-patch"].score < 1e-6,
+        "deep {} vs per-patch {}",
+        results["deep"].score,
+        results["deep-per-patch"].score
+    );
     // The perfect stump removes the residual entirely.
     assert!(results["stump"].error < 1e-9, "{}", results["stump"].error);
     assert!(results["stump"].score > results["baseline"].score);

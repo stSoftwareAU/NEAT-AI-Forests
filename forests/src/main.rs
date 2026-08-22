@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use neat_ai_forests::config::{
-    FeatureSelection, ForestsConfig, GpuMode, GrowthPolicy, RowSampling,
+    FeatureSelection, ForestsConfig, GpuMode, GraftConstants, GrowthPolicy, RowSampling,
 };
 use neat_ai_forests::histogram::StumpKind;
 use neat_ai_forests::{CancelToken, ExternalScorer, log};
@@ -124,6 +124,12 @@ struct Cli {
     /// Maximum candidates grafted per iteration.
     #[arg(long, default_value_t = 64)]
     candidates: usize,
+    /// Who owns a graft's three bias-1 constants: `shared` (one set for the
+    /// whole creature — the default, no extra neurons) or `per-patch` (each
+    /// patch gets its own, bounding an external pruner's blast radius to one
+    /// patch at three extra constant neurons per patch).
+    #[arg(long, value_enum, default_value_t = GraftConstants::Shared)]
+    graft_constants: GraftConstants,
     /// Screen sample rate in (0,1); 0 disables the screen (every candidate is fully scored).
     #[arg(long, default_value_t = neat_ai_forests::config::DEFAULT_SCREEN_SAMPLE_RATE)]
     screen_sample_rate: f64,
@@ -258,6 +264,7 @@ fn main() -> ExitCode {
         combo_candidates: cli.combo_candidates,
         boost_rounds: cli.boost_rounds,
         candidates: cli.candidates,
+        graft_constants: cli.graft_constants,
         screen_sample_rate: if cli.screen_sample_rate > 0.0 && cli.screen_sample_rate < 1.0 {
             Some(cli.screen_sample_rate)
         } else {
