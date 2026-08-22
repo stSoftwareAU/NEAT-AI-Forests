@@ -38,32 +38,29 @@
 //! downstream; see `docs/architecture.md`, *Creature validation*, for the
 //! reject-and-journal failure policy.
 //!
-//! ## What NEAT-AI-core emits, and what is still emitted here
+//! ## Every shape is emitted by NEAT-AI-core
 //!
-//! Every node is described as an [`IfNodeSpec`] — the canonical description of
-//! an `IF` node — so the synapse-role strings come from NEAT-AI-core, not from
-//! this module. A single-split patch entering a point-wise output is then built
-//! by [`neat_core::graft_if_node`] itself. Two shapes the helper cannot yet
-//! express are still written out here by `write_spec`:
+//! This module describes nodes; it no longer writes neurons or synapses out
+//! itself (Issue #48). Every node is an [`IfNodeSpec`] and the whole post-order
+//! batch goes to [`neat_core::graft_if_nodes`], which places each node, emits
+//! the role strings and validates the assembled creature once — a child may
+//! leave its outward edge to the parent that reads it, which is why a nested
+//! tree no longer needs a local renderer. Where the target output is itself an
+//! `IF` aggregate, the root's outward edge carries the `positive` role
+//! ([`IfNodeSpec::with_target_role`]) and [`neat_core::graft_relay_node`] adds
+//! the IDENTITY relay that carries the same value into the `negative` branch.
 //!
-//! * a **child node feeding its parent's branch** — the helper requires every
-//!   outward edge to name a neuron that already exists, so a nested tree cannot
-//!   be grafted node by node; and
-//! * the **`IF`-output relay**, whose two outward edges must carry the
-//!   `positive` / `negative` roles, where the helper only emits untyped ones.
-//!
-//! `write_spec` is pinned to the helper by
-//! `local_emission_matches_the_canonical_helper`, and every grafted creature is
-//! pinned against the abstract evaluator record by record.
+//! Every grafted creature is still pinned against the abstract evaluator record
+//! by record, and against NEAT-AI-core's own helpers shape by shape.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 
 use neat_core::topology_ops::{STRUCTURAL_VALID, validate_structural_integrity};
 use neat_core::{
-    CompiledNetwork, CreatureExport, IfNodeSpec, NeuronExport, SquashType, SynapseExport,
-    SynapseType, ValidateOptions, ValidationFailure, compile_creature, creature_validate,
-    graft_if_node, squash_name_from, synapse_type_name_from, validate_no_duplicate_synapses,
+    CompiledNetwork, CreatureExport, IfNodeSpec, NeuronExport, RelaySpec, SynapseType,
+    ValidateOptions, ValidationFailure, compile_creature, creature_validate, graft_if_nodes,
+    graft_relay_node, validate_no_duplicate_synapses,
 };
 
 use crate::patch::{Node, Patch};
@@ -263,90 +260,6 @@ impl Emitter<'_> {
     }
 }
 
-/// Write one canonical [`IfNodeSpec`] out as its neuron and typed synapses.
-///
-/// Only for the two shapes [`neat_core::graft_if_node`] cannot place — a child
-/// feeding its parent's branch, and the `IF`-output relay (see the module
-/// documentation). The role strings still come from NEAT-AI-core, and
-/// `local_emission_matches_the_canonical_helper` pins the result against the
-/// helper's own output for a shape both can build.
-fn write_spec(spec: &IfNodeSpec) -> (NeuronExport, Vec<SynapseExport>) {
-    let neuron = NeuronExport {
-        id: None,
-        neuron_type: "hidden".into(),
-        uuid: spec.uuid.clone(),
-        bias: spec.bias,
-        squash: Some(squash_name_from(SquashType::If).to_string()),
-    };
-    let mut synapses = Vec::with_capacity(
-        spec.condition.len() + spec.positive.len() + spec.negative.len() + spec.targets.len(),
-    );
-    for (role, edges) in [
-        (SynapseType::Condition, &spec.condition),
-        (SynapseType::Positive, &spec.positive),
-        (SynapseType::Negative, &spec.negative),
-    ] {
-        for edge in edges {
-            synapses.push(SynapseExport {
-                from_uuid: edge.uuid.clone(),
-                to_uuid: spec.uuid.clone(),
-                weight: edge.weight,
-                synapse_type: synapse_type_name_from(role).map(str::to_string),
-            });
-        }
-    }
-    for edge in &spec.targets {
-        synapses.push(SynapseExport {
-            from_uuid: spec.uuid.clone(),
-            to_uuid: edge.uuid.clone(),
-            weight: edge.weight,
-            synapse_type: None,
-        });
-    }
-    (neuron, synapses)
-}
-
-/// Resolve every neuron uuid to its index in the compiled ordering: implicit
-/// input `i` is index `i`, listed neuron `j` is `input + j`. This is the same
-/// derivation `neat_core::compile_creature` and `creature_validate` perform,
-/// and it is what "sorted by (from, to)" is measured against.
-fn uuid_indices(creature: &CreatureExport) -> HashMap<String, u32> {
-    creature
-        .neurons
-        .iter()
-        .enumerate()
-        .map(|(i, n)| (n.uuid.clone(), (creature.input + i) as u32))
-        .collect()
-}
-
-/// Put the synapse list into NEAT-AI's canonical wire order — ascending by
-/// `(from index, to index)` — which `creature_validate` rule 25 requires of
-/// every valid creature. Appending grafted synapses to the incumbent's list
-/// leaves them out of order, so the assembled candidate is re-sorted rather
-/// than emitted piecemeal.
-///
-/// An endpoint naming no neuron sorts last (`u32::MAX`) instead of being
-/// dropped: `creature_validate` then reports it as `INVALID_SYNAPSE_REFERENCE`
-/// rather than the graft quietly reordering a broken creature.
-fn sort_synapses_canonically(creature: &mut CreatureExport) {
-    let index = uuid_indices(creature);
-    let input = creature.input;
-    let resolve = |uuid: &str| -> u32 {
-        if let Some(i) = index.get(uuid) {
-            return *i;
-        }
-        uuid.strip_prefix("input-")
-            .and_then(|n| n.parse::<usize>().ok())
-            .filter(|n| *n < input)
-            .map_or(u32::MAX, |n| n as u32)
-    };
-    // Stable sort: synapses sharing a (from, to) pair keep their relative
-    // order so `check_no_duplicate_synapses` still names the later one.
-    creature
-        .synapses
-        .sort_by_key(|s| (resolve(&s.from_uuid), resolve(&s.to_uuid)));
-}
-
 /// The [`ValidateOptions`] Forests gates its output with (Issue #39).
 ///
 /// * `neurons` / `connections` stay `None`: the graft *changes* both counts by
@@ -443,26 +356,6 @@ fn free_one_names(existing: &HashSet<&str>, wanted: usize) -> Result<Vec<String>
         return Err(GraftError::UuidCollision("forest-one-*".into()));
     }
     Ok(out)
-}
-
-/// One untyped synapse — the additive edge into a point-wise neuron.
-fn untyped(from: &str, to: &str, weight: f64) -> SynapseExport {
-    SynapseExport {
-        from_uuid: from.into(),
-        to_uuid: to.into(),
-        weight,
-        synapse_type: None,
-    }
-}
-
-/// One synapse carrying a NEAT-AI-core [`SynapseType`] role.
-fn typed(from: &str, to: &str, weight: f64, role: SynapseType) -> SynapseExport {
-    SynapseExport {
-        from_uuid: from.into(),
-        to_uuid: to.into(),
-        weight,
-        synapse_type: synapse_type_name_from(role).map(str::to_string),
-    }
 }
 
 /// Clone `incumbent` with `constants` listed ahead of its first non-constant
@@ -577,77 +470,42 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
             target_squash.to_string(),
         ));
     }
-    let mut relay_neuron = None;
-    let mut relay_synapses = Vec::new();
-    if target_is_if {
-        let relay = em.fresh("relay")?;
-        relay_synapses.push(untyped(&root_uuid, &relay, 1.0));
-        relay_synapses.push(typed(&root_uuid, &target_uuid, 1.0, SynapseType::Positive));
-        relay_synapses.push(typed(&relay, &target_uuid, 1.0, SynapseType::Negative));
-        relay_neuron = Some(NeuronExport {
-            id: None,
-            neuron_type: "hidden".into(),
-            uuid: relay,
-            bias: 0.0,
-            squash: Some(squash_name_from(SquashType::Identity).to_string()),
-        });
+    // The root's outward edge: untyped into a point-wise output, `positive`
+    // into an `IF` one, where the relay below carries the `negative` half.
+    let relay = if target_is_if {
+        Some(em.fresh("relay")?)
     } else {
+        None
+    };
+    {
         let root = em
             .specs
             .last_mut()
             .expect("a split patch describes at least one node");
-        *root = root.clone().with_target(target_uuid.clone(), 1.0);
+        *root = if target_is_if {
+            root.clone()
+                .with_target_role(target_uuid.clone(), 1.0, SynapseType::Positive)
+        } else {
+            root.clone().with_target(target_uuid.clone(), 1.0)
+        };
     }
 
     // New constants go in front of the first non-constant neuron:
     // `creature_validate` rule 11 rejects a constant that follows a hidden one.
     let base = with_constants(incumbent, new_constants, first_output);
-    // The canonical helper lists the new node at the *earliest* position that
-    // still leaves every source before it — immediately after the last
-    // constant it reads. That is where `creature_validate` rule 11 wants it
-    // only when no constant is listed later: a creature carrying a fourth
-    // constant after the three this graft reuses would end up
-    // `constant, hidden, constant`, which the rule refuses (Issue #50). When
-    // the reused constants do not reach the creature's last one, the node is
-    // written out here instead, ahead of the outputs and so after every
-    // constant.
-    let last_constant = base
-        .neurons
-        .iter()
-        .rposition(|n| n.neuron_type == "constant");
-    let ones_reach_the_last_constant = match last_constant {
-        None => true,
-        Some(last) => ones
-            .iter()
-            .filter_map(|uuid| base.neurons.iter().position(|n| &n.uuid == uuid))
-            .max()
-            .is_some_and(|latest| latest >= last),
-    };
-    // A lone split entering a point-wise output is exactly the shape
-    // NEAT-AI-core's canonical helper covers — let it build the node (Issue
-    // #42). Anything nested, or wired into an `IF` output, still needs the
-    // typed edges the helper cannot emit.
-    let mut creature = if em.specs.len() == 1 && !target_is_if && ones_reach_the_last_constant {
-        graft_if_node(&base, &em.specs[0]).map_err(|e| GraftError::Canonical(e.to_string()))?
-    } else {
-        let mut creature = base;
-        let mut new_neurons = Vec::with_capacity(em.specs.len() + 1);
-        let mut new_synapses = Vec::new();
-        for spec in &em.specs {
-            let (neuron, synapses) = write_spec(spec);
-            new_neurons.push(neuron);
-            new_synapses.extend(synapses);
-        }
-        new_neurons.extend(relay_neuron);
-        new_synapses.extend(relay_synapses);
-        // New hidden neurons go before the first output, so listed order stays
-        // `constant, hidden, output` and remains topological.
-        let at = creature.neurons.len() - creature.output;
-        creature.neurons.splice(at..at, new_neurons);
-        creature.synapses.extend(new_synapses);
-        creature
-    };
-    sort_synapses_canonically(&mut creature);
+    // NEAT-AI-core builds every shape (Issue #48): the post-order batch in one
+    // all-or-nothing graft — a child carries no outward edge of its own, the
+    // parent that reads it supplies one — and then the relay, whose source is
+    // the root the batch has just placed.
+    let mut creature =
+        graft_if_nodes(&base, &em.specs).map_err(|e| GraftError::Canonical(e.to_string()))?;
+    if let Some(relay) = relay {
+        let spec = RelaySpec::new(relay, 0.0)
+            .with_source(root_uuid.clone(), 1.0)
+            .with_target_role(target_uuid.clone(), 1.0, SynapseType::Negative);
+        creature =
+            graft_relay_node(&creature, &spec).map_err(|e| GraftError::Canonical(e.to_string()))?;
+    }
 
     let added_neurons = creature.neurons.len() - incumbent.neurons.len();
     let added_synapses = creature.synapses.len() - incumbent.synapses.len();
@@ -941,6 +799,47 @@ mod tests {
     use super::fixtures::*;
     use super::*;
     use crate::patch::{Condition, Provenance, Term};
+    use neat_core::{SynapseExport, graft_if_node};
+    use std::collections::HashMap;
+
+    /// Resolve every neuron uuid to its index in the compiled ordering:
+    /// implicit input `i` is index `i`, listed neuron `j` is `input + j`. The
+    /// same derivation `neat_core::compile_creature` and `creature_validate`
+    /// perform, and what "sorted by (from, to)" is measured against.
+    ///
+    /// The graft itself no longer orders synapses — NEAT-AI-core emits the
+    /// canonical order (Issue #48) — so this is written out here rather than
+    /// reused from the module under test, which would put the oracle on the
+    /// code path it is checking.
+    fn uuid_indices(creature: &CreatureExport) -> HashMap<String, u32> {
+        creature
+            .neurons
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.uuid.clone(), (creature.input + i) as u32))
+            .collect()
+    }
+
+    /// Put a fixture's synapse list into that canonical order. An endpoint
+    /// naming no neuron sorts last (`u32::MAX`) rather than being dropped.
+    fn sort_synapses_canonically(creature: &mut CreatureExport) {
+        let index = uuid_indices(creature);
+        let input = creature.input;
+        let resolve = |uuid: &str| -> u32 {
+            if let Some(i) = index.get(uuid) {
+                return *i;
+            }
+            uuid.strip_prefix("input-")
+                .and_then(|n| n.parse::<usize>().ok())
+                .filter(|n| *n < input)
+                .map_or(u32::MAX, |n| n as u32)
+        };
+        // Stable sort: synapses sharing a (from, to) pair keep their relative
+        // order so `check_no_duplicate_synapses` still names the later one.
+        creature
+            .synapses
+            .sort_by_key(|s| (resolve(&s.from_uuid), resolve(&s.to_uuid)));
+    }
 
     fn records(n: usize, width: usize) -> Vec<Vec<f32>> {
         let mut seed = 0x9e37_79b9_7f4a_7c15u64;
@@ -1597,42 +1496,80 @@ mod tests {
         assert_eq!(ours.creature, expected);
     }
 
-    /// Issue #42 — the local renderer used for the shapes the helper cannot
-    /// place emits exactly what the helper emits for a shape both can build,
-    /// so the nested and `IF`-output paths cannot drift from the canonical one.
+    /// The three shared constants this module allocates, in the order it
+    /// allocates them, spliced ahead of `inc`'s first non-constant neuron.
+    fn base_with_shared_ones(inc: &CreatureExport) -> CreatureExport {
+        with_constants(
+            inc,
+            vec![
+                one("forest-one-a"),
+                one("forest-one-b"),
+                one("forest-one-c"),
+            ],
+            inc.neurons.len() - inc.output,
+        )
+    }
+
+    /// Issue #48 — a **nested** tree is built by NEAT-AI-core's batch helper,
+    /// not written out here: the grafted creature is exactly what
+    /// `graft_if_nodes` returns for the same post-order specs, the child
+    /// carrying no outward edge of its own.
     #[test]
-    fn local_emission_matches_the_canonical_helper() {
-        let base = with_constants(
-            &identity_creature(2, 1),
-            vec![one("c-cond"), one("c-pos"), one("c-neg")],
+    fn nested_graft_is_built_by_the_canonical_batch_helper() {
+        let inc = identity_creature(2, 1);
+        let patch = Patch::new(
             0,
+            Node::Split {
+                condition: Condition::axis(0, 0.1),
+                left: Box::new(Node::leaf(-0.2)),
+                right: Box::new(Node::stump(1, 0.3, 0.0, 0.4)),
+            },
+            Provenance::default(),
         );
-        let spec = IfNodeSpec::new("node", 0.0)
+        let ours = graft_patch(&inc, &patch).unwrap();
+
+        let id = patch.id();
+        let child = IfNodeSpec::new(format!("forest-{id}-if0"), 0.0)
+            .with_condition("input-1", 1.0)
+            .with_condition("forest-one-a", f64::from(-0.3f32))
+            .with_positive("forest-one-b", f64::from(0.4f32))
+            .with_negative("forest-one-c", 0.0);
+        let root = IfNodeSpec::new(format!("forest-{id}-if1"), 0.0)
             .with_condition("input-0", 1.0)
-            .with_condition("c-cond", -0.25)
-            .with_positive("c-pos", 0.4)
-            .with_negative("c-neg", -0.1)
+            .with_condition("forest-one-a", f64::from(-0.1f32))
+            .with_positive(format!("forest-{id}-if0"), 1.0)
+            .with_negative("forest-one-c", f64::from(-0.2f32))
             .with_target("output-0", 1.0);
-        let canonical = graft_if_node(&base, &spec).unwrap();
+        let expected = graft_if_nodes(&base_with_shared_ones(&inc), &[child, root])
+            .expect("the canonical batch helper builds the nested tree");
+        assert_eq!(ours.creature, expected);
+    }
 
-        let (neuron, synapses) = write_spec(&spec);
-        let mut local = base.clone();
-        let at = local.neurons.len() - local.output;
-        local.neurons.insert(at, neuron);
-        local.synapses.extend(synapses);
+    /// Issue #48 — the `IF`-output shape is built by NEAT-AI-core too: a typed
+    /// `positive` outward edge from the root and `graft_relay_node` for the
+    /// IDENTITY relay that carries the same correction into the `negative`
+    /// branch.
+    #[test]
+    fn if_output_graft_is_built_by_the_canonical_helpers() {
+        let inc = if_output_creature(4);
+        let patch = Patch::new(0, Node::stump(3, 0.25, -0.05, 0.07), Provenance::default());
+        let ours = graft_patch(&inc, &patch).unwrap();
 
-        // The helper places the node as early as the edges allow and this
-        // module places it before the first output, so compare by content.
-        let sorted = |mut v: Vec<String>| {
-            v.sort();
-            v
-        };
-        let describe_neurons =
-            |c: &CreatureExport| sorted(c.neurons.iter().map(|n| format!("{n:?}")).collect());
-        let describe_synapses =
-            |c: &CreatureExport| sorted(c.synapses.iter().map(|s| format!("{s:?}")).collect());
-        assert_eq!(describe_neurons(&local), describe_neurons(&canonical));
-        assert_eq!(describe_synapses(&local), describe_synapses(&canonical));
+        let id = patch.id();
+        let root = IfNodeSpec::new(format!("forest-{id}-if0"), 0.0)
+            .with_condition("input-3", 1.0)
+            .with_condition("forest-one-a", f64::from(-0.25f32))
+            .with_positive("forest-one-b", f64::from(0.07f32))
+            .with_negative("forest-one-c", f64::from(-0.05f32))
+            .with_target_role("output-0", 1.0, SynapseType::Positive);
+        let expected = graft_if_nodes(&base_with_shared_ones(&inc), &[root])
+            .expect("the canonical helper builds the typed root");
+        let relay = RelaySpec::new(format!("forest-{id}-relay1"), 0.0)
+            .with_source(format!("forest-{id}-if0"), 1.0)
+            .with_target_role("output-0", 1.0, SynapseType::Negative);
+        let expected =
+            graft_relay_node(&expected, &relay).expect("the canonical helper builds the relay");
+        assert_eq!(ours.creature, expected);
     }
 
     /// Issue #42 — a Forests stump reproduces NEAT-AI-core's own canonical
