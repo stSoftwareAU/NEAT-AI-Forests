@@ -7,17 +7,24 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Changed
 
+- Every graft shape is now emitted by NEAT-AI-core (#48): the post-order batch
+  goes through `neat_core::graft_if_nodes`, which lets a child leave its
+  outward edge to the parent that reads it, and an `IF` output takes a typed
+  `positive` edge from the root plus `neat_core::graft_relay_node` for the
+  IDENTITY relay on the `negative` branch. `graft::write_spec` and the local
+  neuron/synapse writers are gone, as is the "reused constants do not reach the
+  creature's last constant" fallback — NEAT-AI-core now lists a grafted node
+  after every constant the creature carries.
+
 - Grafts are described with NEAT-AI-core's canonical `IfNodeSpec` and built by
   `neat_core::graft_if_node` wherever that helper covers the shape (#42,
   NEAT-AI-core #555). The per-split IDENTITY threshold neuron is gone: the split
   point now rides as a **weight** on a shared bias-1 constant, so thresholds and
   leaves are all trainable and a stump costs one neuron fewer. Grafted creatures
   therefore carry three shared bias-1 constants (one per synapse role) instead
-  of two. Two shapes the helper cannot yet express — a child node feeding its
-  parent's branch, and the typed pair an `IF` output needs — are still written
-  out locally and pinned against the helper's own output by
-  `local_emission_matches_the_canonical_helper`; finishing that adoption needs
-  new capability upstream and is tracked in #48.
+  of two. The two shapes the helper could not express at the time — a child node
+  feeding its parent's branch, and the typed pair an `IF` output needs — were
+  written out locally until #48 finished the adoption (above).
 
 - `check_no_duplicate_synapses` is now a wrapper over NEAT-AI-core's
   `validate_no_duplicate_synapses` (NEAT-AI-core #556) rather than a second
@@ -58,10 +65,11 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 - A graft onto a creature with a constant listed after the three bias-1
   constants it reuses no longer produces a `constant, hidden, constant`
   listing, which `creature_validate` rejects under `NEURON_ORDER`.
-  NEAT-AI-core's `graft_if_node` lists the new node immediately after its
-  latest source, so the node is written out locally — ahead of the outputs, and
-  therefore after every constant — whenever the reused constants do not reach
-  the creature's last one (#50).
+  NEAT-AI-core's `graft_if_node` listed the new node immediately after its
+  latest source, so the node was written out locally — ahead of the outputs, and
+  therefore after every constant — whenever the reused constants did not reach
+  the creature's last one (#50). NEAT-AI-core now applies that rule itself and
+  the local fallback is gone (#48).
 
 - Grafted creatures are emitted in NEAT-AI's canonical order (#39). New
   constants are listed ahead of the first hidden neuron and the assembled

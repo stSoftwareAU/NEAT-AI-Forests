@@ -45,7 +45,7 @@ final creature re-verified by NEAT-AI's TypeScript scorer, finishing at
 0.355655238 (Δ +2.50e-3). Details, the duplicate-synapse lesson, economics
 and follow-ups are in [docs/benchmarks.md](docs/benchmarks.md).
 
-NEAT-AI-core's canonical `IF` helpers ([#555](https://github.com/stSoftwareAU/NEAT-AI-core/issues/555)) have landed and Forests' `graft` module now describes every node as a `neat_core::IfNodeSpec` and lets `neat_core::graft_if_node` build the shape it covers (#42). Two shapes the helper cannot yet express — a child node feeding its parent's branch, and the typed pair an `IF` output needs — are still written out locally and pinned against the helper's own output. One shared-family prerequisite is still open upstream:
+NEAT-AI-core's canonical `IF` helpers ([#555](https://github.com/stSoftwareAU/NEAT-AI-core/issues/555)) have landed and Forests' `graft` module now describes every node as a `neat_core::IfNodeSpec` and lets NEAT-AI-core build **every** shape (#42, #48): the whole post-order batch through `neat_core::graft_if_nodes`, and the `IF`-output relay through `neat_core::graft_relay_node`. Nothing is written out locally any more. One shared-family prerequisite is still open upstream:
 
 - [NEAT-AI-scorer #574](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/574) — CPU/GPU parity for `IF`-heavy creatures. Until it lands, production runs should pass `--scorer-arg=--gpu=off` or watch the `baselineDrift` field in the journal.
 

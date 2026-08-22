@@ -73,11 +73,13 @@ root ifN ──(positive)──▶ output-j,  root ifN → relayN (IDENTITY) ─
 ```
 
 That is NEAT-AI-core's own canonical shape (`neat_core::decision_tree`,
-NEAT-AI-core #555): every node is described as a `neat_core::IfNodeSpec` and a
-lone split entering a point-wise output is built by `neat_core::graft_if_node`
-itself (#42). The helper cannot yet emit a typed outward edge, so a child
-feeding its parent's branch and the `IF`-output relay are still written out by
-`graft::write_spec`, which is pinned against the helper's own output.
+NEAT-AI-core #555): every node is described as a `neat_core::IfNodeSpec` and
+every shape is built by NEAT-AI-core (#42, #48). The post-order batch goes to
+`neat_core::graft_if_nodes` in one all-or-nothing graft — a child carries no
+outward edge of its own, the parent that reads it supplies one — and where the
+target output is itself an `IF` aggregate the root's outward edge carries the
+`positive` role and `neat_core::graft_relay_node` adds the IDENTITY relay that
+carries the same correction into the `negative` branch.
 
 The duplicate-pair rule — NEAT-AI-core's `validate_no_duplicate_synapses`
 (#556), wrapped as `check_no_duplicate_synapses` — is part of the validation
