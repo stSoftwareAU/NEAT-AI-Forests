@@ -439,9 +439,13 @@ impl ResidualCache {
                 body.len()
             )));
         }
+        // Rust 1.98's clippy::chunks_exact_to_as_chunks — see bins.rs: the
+        // fixed-size chunks drop the fallible conversion entirely.
         let read = |s: &[u8]| {
-            s.chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            s.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect::<Vec<f32>>()
         };
         Ok(Self {
