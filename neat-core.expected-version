@@ -5,4 +5,12 @@
 # presents a breaking bump above this baseline — pre-1.0 a higher minor, or any
 # higher major — forcing a deliberate upgrade. Clear the gate by updating
 # `forests` for the breaking change and bumping this version to match neat-core.
-0.9.11
+#
+# 0.9.11 -> 0.10.0: acknowledge neat-core #569 (GRQ#4257), which retyped the
+# public `MemeticExport::weights` field from
+# `BTreeMap<String, Vec<MemeticWeightExport>>` to the new `MemeticWeights` enum
+# so both valid wire forms parse. `forests` never names `MemeticExport` or any
+# memetic weight type — its grafts only ever set `memetic: None` — so no code
+# change is required. Verified by a clean `cargo build --release` and the full
+# test suite passing against sibling neat-core 0.10.0.
+0.10.0
