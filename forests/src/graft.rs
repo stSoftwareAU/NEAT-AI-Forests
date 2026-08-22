@@ -12,7 +12,12 @@
 //! shared:     one_c, one_p, one_n   constant, bias 1.0 — one per synapse role, reused
 //!                            from the creature when it has bias-1 constants, else
 //!                            created once (`forest-one-a/b/c`, or the next free
-//!                            name when one is taken); never per patch (#43, #50)
+//!                            name when one is taken); never per patch — the
+//!                            default (#43, #50)
+//! -- or, under `--graft-constants per-patch` (#56) --
+//! per patch:  one_c, one_p, one_n   created for this patch and named for it
+//!                            (`forest-<patch id>-one-c/-one-p/-one-n`, or the next
+//!                            free name when one is taken)
 //! per split:  ifN     hidden IF, bias 0
 //!                 condition:  input-f (weight w_f per term)  and  one_c (weight = −threshold)
 //!                 positive:   right child ifN (weight 1)  |  one_p (weight = right leaf)
@@ -21,7 +26,14 @@
 //! root ifN ──(positive)──▶ output-j  and  root ifN → relayN (IDENTITY) ──(negative)──▶ output-j   (IF output)
 //! ```
 //!
-//! That condition shape — the split point as a **weight** on a shared bias-1
+//! Who owns the three constants is [`GraftConstants`]. Shared stays the default
+//! (#43). Opt in to per-patch (Issue #56) and a patch's `IF` nodes depend only
+//! on constants that patch introduced, so an external pruner that deletes one
+//! damages one patch instead of every graft on the creature — at three extra
+//! constant neurons per patch. The two are numerically identical: every
+//! constant holds `1.0` and the weights are the same either way.
+//!
+//! That condition shape — the split point as a **weight** on a bias-1
 //! constant rather than the bias of a per-split IDENTITY neuron — is
 //! NEAT-AI-core's own (`neat_core::decision_tree`, NEAT-AI-core #555), which
 //! keeps every threshold and leaf where training can reach it. Because the root
@@ -63,6 +75,7 @@ use neat_core::{
     graft_relay_node, validate_no_duplicate_synapses,
 };
 
+use crate::config::GraftConstants;
 use crate::patch::{Node, Patch};
 
 /// Graft failure (fail closed — nothing is emitted).
@@ -163,16 +176,19 @@ impl fmt::Display for GraftError {
 
 impl std::error::Error for GraftError {}
 
-/// The three shared bias-1 constants a graft's `IF` nodes hang off — one per
-/// synapse role.
+/// The three bias-1 constants a graft's `IF` nodes hang off — one per synapse
+/// role.
 ///
 /// A creature may not carry two synapses between the same ordered pair of
 /// neurons, so one node's three roles need three distinct sources; the same
 /// rule NEAT-AI-core's canonical fixtures encode as `const-condition` /
 /// `const-positive` / `const-negative`. Thresholds and leaves are therefore
 /// synapse *weights*, which is what training adjusts (#43, NEAT-AI-core #555).
+///
+/// Who *owns* the three is [`GraftConstants`]: one set per patch (the default,
+/// Issue #56) or one set shared by the whole creature (#43).
 #[derive(Debug, Clone)]
-struct SharedOnes {
+struct RoleOnes {
     condition: String,
     positive: String,
     negative: String,
@@ -182,7 +198,7 @@ struct SharedOnes {
 /// child is described before the parent whose branch reads it.
 struct Emitter<'a> {
     prefix: String,
-    ones: SharedOnes,
+    ones: RoleOnes,
     specs: Vec<IfNodeSpec>,
     counter: usize,
     input: usize,
@@ -322,17 +338,35 @@ pub fn check_no_duplicate_synapses(creature: &CreatureExport) -> Result<(), Graf
         .map_err(|e| GraftError::DuplicateSynapse(e.to_string()))
 }
 
-/// `wanted` uuids for shared bias-1 constants that no neuron in the creature
-/// already carries.
+/// `wanted` uuids for bias-1 constants that no neuron in the creature already
+/// carries.
 ///
-/// The first choices are `forest-one-a/b/c`, so a creature grafted more than
-/// once keeps finding and reusing the same three. A creature that already
-/// carries one of those names — a constant of some other bias, a hidden
-/// neuron, anything this graft must not repurpose — is **not** a reason to
-/// refuse the graft (Issue #50): the taken name is skipped and the next free
-/// one (`forest-one-a2`, `forest-one-b2`, …) is used instead. Refusing would
-/// have made every later graft on that creature fail as well.
-fn free_one_names(existing: &HashSet<&str>, wanted: usize) -> Result<Vec<String>, GraftError> {
+/// The names depend on who owns the constants:
+///
+/// * [`GraftConstants::Shared`] — `forest-one-a/b/c`, deliberately free of the
+///   patch id so a creature grafted more than once keeps finding and reusing
+///   the same three (#43);
+/// * [`GraftConstants::PerPatch`] — `<prefix>-one-c/p/n`, where `prefix` is
+///   `forest-<patch id>`, so the names belong to the patch that made them and
+///   no later graft can find them (Issue #56).
+///
+/// A creature that already carries one of those names — a constant of some
+/// other bias, a hidden neuron, anything this graft must not repurpose — is
+/// **not** a reason to refuse the graft (Issue #50): the taken name is skipped
+/// and the next free one (`forest-one-a2`, `forest-<id>-one-c2`, …) is used
+/// instead. Refusing would have made every later graft on that creature fail as
+/// well. A skipped name shifts the remaining roles onto the following letters,
+/// which is cosmetic — all three neurons are the same bias-1 constant.
+fn free_one_names(
+    existing: &HashSet<&str>,
+    wanted: usize,
+    mode: GraftConstants,
+    prefix: &str,
+) -> Result<Vec<String>, GraftError> {
+    let letters = match mode {
+        GraftConstants::Shared => ['a', 'b', 'c'],
+        GraftConstants::PerPatch => ['c', 'p', 'n'],
+    };
     let mut out: Vec<String> = Vec::with_capacity(wanted);
     // Every round offers three fresh names, so `existing.len() / 3 + 1` rounds
     // already exhaust the names in use; the bound just keeps the loop finite.
@@ -340,10 +374,14 @@ fn free_one_names(existing: &HashSet<&str>, wanted: usize) -> Result<Vec<String>
         if out.len() == wanted {
             break;
         }
-        for letter in ['a', 'b', 'c'] {
+        for letter in letters {
+            let base = match mode {
+                GraftConstants::Shared => format!("forest-one-{letter}"),
+                GraftConstants::PerPatch => format!("{prefix}-one-{letter}"),
+            };
             let name = match round {
-                0 => format!("forest-one-{letter}"),
-                r => format!("forest-one-{letter}{}", r + 1),
+                0 => base,
+                r => format!("{base}{}", r + 1),
             };
             if out.len() < wanted && !existing.contains(name.as_str()) {
                 out.push(name);
@@ -353,9 +391,52 @@ fn free_one_names(existing: &HashSet<&str>, wanted: usize) -> Result<Vec<String>
     if out.len() < wanted {
         // Unreachable for any finite creature; fail closed rather than emit a
         // creature with two neurons under one uuid.
-        return Err(GraftError::UuidCollision("forest-one-*".into()));
+        return Err(GraftError::UuidCollision(format!("{prefix}-one-*")));
     }
     Ok(out)
+}
+
+/// Pick the three bias-1 constants this graft's `IF` nodes will read, plus the
+/// constant neurons that have to be created for them (Issue #56).
+///
+/// * [`GraftConstants::Shared`] (the default) reuses up to three of the
+///   incumbent's own bias-1 constants — including the ones an earlier graft
+///   created — and only creates the remainder (#43). Cheaper in neurons; every
+///   grafted node on the creature ends up hanging off the same three.
+/// * [`GraftConstants::PerPatch`] creates all three, named for the patch.
+///   Nothing pre-existing is reused, so a pruner that deletes one of them can
+///   only break the `IF` nodes this patch added.
+///
+/// Constants are never mutated: a reused one keeps its bias and its inward
+/// (none) and outward edges. Evolution tunes the synapse weights.
+fn allocate_ones(
+    incumbent: &CreatureExport,
+    existing: &HashSet<&str>,
+    prefix: &str,
+    mode: GraftConstants,
+) -> Result<(Vec<String>, Vec<NeuronExport>), GraftError> {
+    let mut ones: Vec<String> = match mode {
+        GraftConstants::PerPatch => Vec::new(),
+        GraftConstants::Shared => incumbent
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "constant" && n.bias == 1.0 && n.squash.is_none())
+            .map(|n| n.uuid.clone())
+            .take(3)
+            .collect(),
+    };
+    let mut new_constants = Vec::with_capacity(3 - ones.len());
+    for name in free_one_names(existing, 3 - ones.len(), mode, prefix)? {
+        new_constants.push(NeuronExport {
+            id: None,
+            neuron_type: "constant".into(),
+            uuid: name.clone(),
+            bias: 1.0,
+            squash: None,
+        });
+        ones.push(name);
+    }
+    Ok((ones, new_constants))
 }
 
 /// Clone `incumbent` with `constants` listed ahead of its first non-constant
@@ -392,8 +473,25 @@ pub struct Grafted {
     pub added_uuids: Vec<String>,
 }
 
-/// Graft `patch` onto a clone of `incumbent`. The incumbent is never modified.
+/// Graft `patch` onto a clone of `incumbent` with the default constant policy
+/// ([`GraftConstants::Shared`], #43). The incumbent is never modified.
 pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted, GraftError> {
+    graft_patch_with(incumbent, patch, GraftConstants::default())
+}
+
+/// Graft `patch` onto a clone of `incumbent`, choosing who owns the three
+/// bias-1 constants its `IF` nodes read (Issue #56). The incumbent is never
+/// modified.
+///
+/// The choice is structural only: every constant holds the same `1.0` and every
+/// threshold and leaf is the same synapse weight either way, so the two
+/// variants of one patch are numerically identical — see
+/// `per_patch_and_shared_constants_agree_record_for_record`.
+pub fn graft_patch_with(
+    incumbent: &CreatureExport,
+    patch: &Patch,
+    constants: GraftConstants,
+) -> Result<Grafted, GraftError> {
     if !patch.root.is_finite() {
         return Err(GraftError::NonFinite);
     }
@@ -418,30 +516,12 @@ pub fn graft_patch(incumbent: &CreatureExport, patch: &Patch) -> Result<Grafted,
     let target_uuid = incumbent.neurons[first_output + patch.output].uuid.clone();
     let existing: HashSet<&str> = incumbent.neurons.iter().map(|x| x.uuid.as_str()).collect();
     let prefix = format!("forest-{}", patch.id());
-    // Shared bias-1 constants (#43): reuse the creature's own where present
-    // (constants are never mutated; evolution tunes the synapse weights), else
-    // create the rest, named without the patch id so later grafts share them.
-    let mut ones: Vec<String> = incumbent
-        .neurons
-        .iter()
-        .filter(|n| n.neuron_type == "constant" && n.bias == 1.0 && n.squash.is_none())
-        .map(|n| n.uuid.clone())
-        .take(3)
-        .collect();
-    let mut new_constants = Vec::new();
-    for name in free_one_names(&existing, 3 - ones.len())? {
-        new_constants.push(NeuronExport {
-            id: None,
-            neuron_type: "constant".into(),
-            uuid: name.clone(),
-            bias: 1.0,
-            squash: None,
-        });
-        ones.push(name);
-    }
+    // The three bias-1 constants this patch's `IF` nodes read — shared across
+    // the creature by default, per patch under `--graft-constants per-patch`.
+    let (ones, new_constants) = allocate_ones(incumbent, &existing, &prefix, constants)?;
     let mut em = Emitter {
         prefix,
-        ones: SharedOnes {
+        ones: RoleOnes {
             condition: ones[0].clone(),
             positive: ones[1].clone(),
             negative: ones[2].clone(),
@@ -540,10 +620,22 @@ pub fn graft_patches(
     incumbent: &CreatureExport,
     patches: &[Patch],
 ) -> Result<(CreatureExport, Vec<Vec<String>>), GraftError> {
+    graft_patches_with(incumbent, patches, GraftConstants::default())
+}
+
+/// [`graft_patches`], choosing who owns each patch's bias-1 constants
+/// (Issue #56). Under [`GraftConstants::Shared`] the second and later members
+/// find and reuse the first one's; under [`GraftConstants::PerPatch`] every
+/// member of the combination brings its own three.
+pub fn graft_patches_with(
+    incumbent: &CreatureExport,
+    patches: &[Patch],
+    constants: GraftConstants,
+) -> Result<(CreatureExport, Vec<Vec<String>>), GraftError> {
     let mut creature = incumbent.clone();
     let mut added = Vec::with_capacity(patches.len());
     for p in patches {
-        let g = graft_patch(&creature, p)?;
+        let g = graft_patch_with(&creature, p, constants)?;
         creature = g.creature;
         added.push(g.added_uuids);
     }
@@ -857,8 +949,44 @@ mod tests {
             .collect()
     }
 
+    /// Both constant-ownership policies (Issue #56). Every graft invariant has
+    /// to hold under each, and — since the constants only ever hold `1.0` —
+    /// the two must be numerically indistinguishable.
+    const MODES: [GraftConstants; 2] = [GraftConstants::Shared, GraftConstants::PerPatch];
+
+    /// Every constant neuron's uuid, in listed order.
+    fn constant_uuids(creature: &CreatureExport) -> Vec<&str> {
+        creature
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "constant")
+            .map(|n| n.uuid.as_str())
+            .collect()
+    }
+
+    /// Bias-1 constants of `creature`, in listed order.
+    fn bias_one_uuids(creature: &CreatureExport) -> Vec<String> {
+        creature
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "constant" && n.bias == 1.0 && n.squash.is_none())
+            .map(|n| n.uuid.clone())
+            .collect()
+    }
+
     fn assert_graft_matches_evaluator(incumbent: &CreatureExport, patch: &Patch, tol: f32) {
-        let grafted = graft_patch(incumbent, patch).unwrap();
+        for constants in MODES {
+            assert_graft_matches_evaluator_with(incumbent, patch, tol, constants);
+        }
+    }
+
+    fn assert_graft_matches_evaluator_with(
+        incumbent: &CreatureExport,
+        patch: &Patch,
+        tol: f32,
+        constants: GraftConstants,
+    ) {
+        let grafted = graft_patch_with(incumbent, patch, constants).unwrap();
         let mut base = compile_creature(incumbent).unwrap();
         let mut cand = compile_creature(&grafted.creature).unwrap();
         // Preservation invariants: nothing pre-existing changed. The graft now
@@ -937,25 +1065,27 @@ mod tests {
         let inc = identity_creature(4, 1);
         let patch = Patch::new(0, Node::stump(2, 0.1, 0.0, 0.013), Provenance::default());
         assert_graft_matches_evaluator(&inc, &patch, 1e-6);
+        let second = Patch::new(0, Node::stump(1, 0.3, 0.0, 0.02), Provenance::default());
+
+        // Shared (#43, the default): the first graft creates them, the second
+        // finds them.
         let g = graft_patch(&inc, &patch).unwrap();
         assert_eq!(g.added_neurons, 4); // three shared constants (first graft only) + if
         assert_eq!(g.added_synapses, 5); // input→if, one_c→if, one_p→if, one_n→if, if→output
-        // A second graft reuses the shared constants and adds only its node.
-        let again = graft_patch(
-            &g.creature,
-            &Patch::new(0, Node::stump(1, 0.3, 0.0, 0.02), Provenance::default()),
-        )
-        .unwrap();
+        let again = graft_patch(&g.creature, &second).unwrap();
         assert_eq!(again.added_neurons, 1);
+        assert_eq!(constant_uuids(&again.creature).len(), 3);
+
+        // Per patch (Issue #56): every patch brings its own three.
+        let g = graft_patch_with(&inc, &patch, GraftConstants::PerPatch).unwrap();
+        assert_eq!(g.added_neurons, 4); // three constants + if
+        assert_eq!(g.added_synapses, 5);
+        let again = graft_patch_with(&g.creature, &second, GraftConstants::PerPatch).unwrap();
         assert_eq!(
-            again
-                .creature
-                .neurons
-                .iter()
-                .filter(|n| n.neuron_type == "constant")
-                .count(),
-            3
+            again.added_neurons, 4,
+            "a second patch brings its own three"
         );
+        assert_eq!(constant_uuids(&again.creature).len(), 6);
     }
 
     #[test]
@@ -1041,23 +1171,29 @@ mod tests {
         let inc = identity_creature(4, 1);
         let a = Patch::new(0, Node::stump(0, 0.0, 0.0, 0.1), Provenance::default());
         let b = Patch::new(0, Node::stump(1, 0.2, -0.05, 0.0), Provenance::default());
-        let (creature, added) = graft_patches(&inc, &[a.clone(), b.clone()]).unwrap();
-        assert_eq!(added.len(), 2);
-        assert_eq!(added[0].len(), 4);
-        assert_eq!(added[1].len(), 1); // shared constants already present
-        assert_eq!(
-            creature
-                .neurons
-                .iter()
-                .filter(|n| n.neuron_type == "constant")
-                .count(),
-            3
-        );
-        let mut base = compile_creature(&inc).unwrap();
-        let mut cand = compile_creature(&creature).unwrap();
-        for rec in records(200, 4) {
-            let delta = cand.activate(&rec, 1)[0] - base.activate(&rec, 1)[0];
-            assert!((delta - (a.evaluate(&rec) + b.evaluate(&rec))).abs() < 1e-6);
+        for constants in MODES {
+            let (creature, added) =
+                graft_patches_with(&inc, &[a.clone(), b.clone()], constants).unwrap();
+            assert_eq!(added.len(), 2);
+            assert_eq!(added[0].len(), 4);
+            match constants {
+                // The second patch finds the first patch's constants…
+                GraftConstants::Shared => {
+                    assert_eq!(added[1].len(), 1);
+                    assert_eq!(constant_uuids(&creature).len(), 3);
+                }
+                // …or brings its own three.
+                GraftConstants::PerPatch => {
+                    assert_eq!(added[1].len(), 4);
+                    assert_eq!(constant_uuids(&creature).len(), 6);
+                }
+            }
+            let mut base = compile_creature(&inc).unwrap();
+            let mut cand = compile_creature(&creature).unwrap();
+            for rec in records(200, 4) {
+                let delta = cand.activate(&rec, 1)[0] - base.activate(&rec, 1)[0];
+                assert!((delta - (a.evaluate(&rec) + b.evaluate(&rec))).abs() < 1e-6);
+            }
         }
     }
 
@@ -1174,7 +1310,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_bias_one_constants_are_reused() {
+    fn existing_bias_one_constants_are_reused_only_when_shared() {
         let mut inc = identity_creature(2, 1);
         inc.neurons.insert(
             0,
@@ -1208,46 +1344,67 @@ mod tests {
             weight: 0.1,
             synapse_type: None,
         });
-        let g = graft_patch(
-            &inc,
-            &Patch::new(0, Node::stump(0, 0.0, -0.2, 0.4), Provenance::default()),
-        )
-        .unwrap();
-        let consts: Vec<_> = g
-            .creature
-            .neurons
-            .iter()
-            .filter(|n| n.neuron_type == "constant")
-            .map(|n| n.uuid.as_str())
-            .collect();
-        // `const-1` is reused for the condition role; two more are created.
+        let patch = Patch::new(0, Node::stump(0, 0.0, -0.2, 0.4), Provenance::default());
+        let prefix = format!("forest-{}", patch.id());
+
+        // Shared (#43): `const-1` is reused for the condition role; two more
+        // are created.
+        let shared = graft_patch(&inc, &patch).unwrap();
         assert_eq!(
-            consts,
+            constant_uuids(&shared.creature),
             ["const-1", "const-half", "forest-one-a", "forest-one-b"]
         );
         // The reused constant takes the first role (condition); the positive
         // leaf is a weight on the next shared constant.
         assert!(
-            g.creature
+            shared
+                .creature
                 .synapses
                 .iter()
                 .any(|s| s.from_uuid == "const-1"
                     && s.synapse_type.as_deref() == Some("condition"))
         );
         assert!(
-            g.creature
+            shared
+                .creature
                 .synapses
                 .iter()
                 .any(|s| s.from_uuid == "forest-one-a"
                     && s.synapse_type.as_deref() == Some("positive")
                     && (s.weight - 0.4).abs() < 1e-6)
         );
+
+        // Per patch (Issue #56): nothing pre-existing is reused — all three
+        // constants are created for this patch and named after it, so a pruner
+        // that deletes `const-1` cannot reach the grafted node.
+        let per_patch = graft_patch_with(&inc, &patch, GraftConstants::PerPatch).unwrap();
+        assert_eq!(
+            constant_uuids(&per_patch.creature),
+            [
+                "const-1",
+                "const-half",
+                &format!("{prefix}-one-c"),
+                &format!("{prefix}-one-p"),
+                &format!("{prefix}-one-n"),
+            ]
+        );
+        assert!(
+            !per_patch
+                .creature
+                .synapses
+                .iter()
+                .any(|s| s.from_uuid == "const-1" && s.to_uuid.starts_with("forest-")),
+            "a per-patch graft must not read the incumbent's own constants"
+        );
+
+        // Either way the correction is the same.
         let mut base = compile_creature(&inc).unwrap();
-        let mut cand = compile_creature(&g.creature).unwrap();
-        let p = Patch::new(0, Node::stump(0, 0.0, -0.2, 0.4), Provenance::default());
-        for rec in records(100, 2) {
-            let d = cand.activate(&rec, 1)[0] - base.activate(&rec, 1)[0];
-            assert!((d - p.evaluate(&rec)).abs() < 1e-6);
+        for g in [&shared, &per_patch] {
+            let mut cand = compile_creature(&g.creature).unwrap();
+            for rec in records(100, 2) {
+                let d = cand.activate(&rec, 1)[0] - base.activate(&rec, 1)[0];
+                assert!((d - patch.evaluate(&rec)).abs() < 1e-6);
+            }
         }
     }
 
@@ -1315,24 +1472,32 @@ mod tests {
         // Every pre-existing gate accepts it, so only the shared validator can
         // catch this one.
         compile_creature(&inc).expect("fixture compiles");
-        let err = graft_patch(
-            &inc,
-            &Patch::new(0, Node::stump(0, 0.0, -0.2, 0.4), Provenance::default()),
-        )
-        .expect_err("an invalid grafted creature must not be returned");
-        let GraftError::Invalid(failure) = &err else {
-            panic!("expected a validation failure, got {err}");
-        };
-        assert_eq!(failure.reason, "NEURON_ORDER");
-        // `const-1` — the misplaced constant — is index 5: two implicit inputs,
-        // the two shared constants the graft created, then `hidden-0`.
-        assert_eq!(failure.neuron_index, Some(5));
-        assert!(failure.message.contains("const-1"), "{}", failure.message);
-        // The reason, message and offending index all reach the caller's text.
-        let text = err.to_string();
-        assert!(text.contains("NEURON_ORDER"), "{text}");
-        assert!(text.contains(&failure.message), "{text}");
-        assert!(text.contains("neuron index 5"), "{text}");
+        for constants in MODES {
+            let err = graft_patch_with(
+                &inc,
+                &Patch::new(0, Node::stump(0, 0.0, -0.2, 0.4), Provenance::default()),
+                constants,
+            )
+            .expect_err("an invalid grafted creature must not be returned");
+            let GraftError::Invalid(failure) = &err else {
+                panic!("expected a validation failure, got {err}");
+            };
+            assert_eq!(failure.reason, "NEURON_ORDER");
+            // `const-1` — the misplaced constant — follows the two implicit
+            // inputs, the constants the graft created (two under `shared`,
+            // which reuses `const-1` itself, three per patch) and `hidden-0`.
+            let index = match constants {
+                GraftConstants::Shared => 5,
+                GraftConstants::PerPatch => 6,
+            };
+            assert_eq!(failure.neuron_index, Some(index), "{constants:?}");
+            assert!(failure.message.contains("const-1"), "{}", failure.message);
+            // The reason, message and offending index all reach the caller's text.
+            let text = err.to_string();
+            assert!(text.contains("NEURON_ORDER"), "{text}");
+            assert!(text.contains(&failure.message), "{text}");
+            assert!(text.contains(&format!("neuron index {index}")), "{text}");
+        }
     }
 
     /// Issue #39 — the acceptance-criteria case: a hidden neuron left with no
@@ -1467,53 +1632,67 @@ mod tests {
         }
     }
 
+    /// The three constants this module allocates for `prefix` under
+    /// `constants`, in the order it allocates them: condition, positive,
+    /// negative (Issue #56).
+    fn one_names(constants: GraftConstants, prefix: &str) -> [String; 3] {
+        match constants {
+            GraftConstants::Shared => [
+                "forest-one-a".into(),
+                "forest-one-b".into(),
+                "forest-one-c".into(),
+            ],
+            GraftConstants::PerPatch => [
+                format!("{prefix}-one-c"),
+                format!("{prefix}-one-p"),
+                format!("{prefix}-one-n"),
+            ],
+        }
+    }
+
+    /// Those three constants spliced ahead of `inc`'s first non-constant
+    /// neuron — the base every canonical-emission oracle below starts from.
+    fn base_with_ones(inc: &CreatureExport, names: &[String; 3]) -> CreatureExport {
+        with_constants(
+            inc,
+            names.iter().map(|u| one(u)).collect(),
+            inc.neurons.len() - inc.output,
+        )
+    }
+
     /// Issue #42 — a lone split entering a point-wise output is *built by*
     /// NEAT-AI-core's canonical helper, not by this module: the grafted
     /// creature is exactly what `graft_if_node` returns for the same spec.
+    /// Under either constant policy (Issue #56) — per-patch changes which
+    /// constants the spec names, nothing about how it is emitted.
     #[test]
     fn stump_graft_is_built_by_the_canonical_helper() {
         let inc = small_mlp(3);
         let patch = Patch::new(0, Node::stump(1, 0.2, -0.1, 0.35), Provenance::default());
-        let ours = graft_patch(&inc, &patch).unwrap();
-
-        let base = with_constants(
-            &inc,
-            vec![
-                one("forest-one-a"),
-                one("forest-one-b"),
-                one("forest-one-c"),
-            ],
-            inc.neurons.len() - inc.output,
-        );
-        let spec = IfNodeSpec::new(format!("forest-{}-if0", patch.id()), 0.0)
-            .with_condition("input-1", 1.0)
-            .with_condition("forest-one-a", f64::from(-0.2f32))
-            .with_positive("forest-one-b", f64::from(0.35f32))
-            .with_negative("forest-one-c", f64::from(-0.1f32))
-            .with_target("output-0", 1.0);
-        let mut expected = graft_if_node(&base, &spec).expect("canonical helper builds the stump");
-        sort_synapses_canonically(&mut expected);
-        assert_eq!(ours.creature, expected);
-    }
-
-    /// The three shared constants this module allocates, in the order it
-    /// allocates them, spliced ahead of `inc`'s first non-constant neuron.
-    fn base_with_shared_ones(inc: &CreatureExport) -> CreatureExport {
-        with_constants(
-            inc,
-            vec![
-                one("forest-one-a"),
-                one("forest-one-b"),
-                one("forest-one-c"),
-            ],
-            inc.neurons.len() - inc.output,
-        )
+        let prefix = format!("forest-{}", patch.id());
+        for constants in MODES {
+            let ours = graft_patch_with(&inc, &patch, constants).unwrap();
+            let names = one_names(constants, &prefix);
+            let spec = IfNodeSpec::new(format!("{prefix}-if0"), 0.0)
+                .with_condition("input-1", 1.0)
+                .with_condition(names[0].clone(), f64::from(-0.2f32))
+                .with_positive(names[1].clone(), f64::from(0.35f32))
+                .with_negative(names[2].clone(), f64::from(-0.1f32))
+                .with_target("output-0", 1.0);
+            let mut expected = graft_if_node(&base_with_ones(&inc, &names), &spec)
+                .expect("canonical helper builds the stump");
+            sort_synapses_canonically(&mut expected);
+            assert_eq!(ours.creature, expected, "{constants:?}");
+        }
     }
 
     /// Issue #48 — a **nested** tree is built by NEAT-AI-core's batch helper,
     /// not written out here: the grafted creature is exactly what
     /// `graft_if_nodes` returns for the same post-order specs, the child
-    /// carrying no outward edge of its own.
+    /// carrying no outward edge of its own. Issue #56 — and that holds under
+    /// either constant policy: per-patch allocation only renames the three
+    /// constants the specs read, it does not take emission back off
+    /// NEAT-AI-core.
     #[test]
     fn nested_graft_is_built_by_the_canonical_batch_helper() {
         let inc = identity_creature(2, 1);
@@ -1526,23 +1705,26 @@ mod tests {
             },
             Provenance::default(),
         );
-        let ours = graft_patch(&inc, &patch).unwrap();
-
         let id = patch.id();
-        let child = IfNodeSpec::new(format!("forest-{id}-if0"), 0.0)
-            .with_condition("input-1", 1.0)
-            .with_condition("forest-one-a", f64::from(-0.3f32))
-            .with_positive("forest-one-b", f64::from(0.4f32))
-            .with_negative("forest-one-c", 0.0);
-        let root = IfNodeSpec::new(format!("forest-{id}-if1"), 0.0)
-            .with_condition("input-0", 1.0)
-            .with_condition("forest-one-a", f64::from(-0.1f32))
-            .with_positive(format!("forest-{id}-if0"), 1.0)
-            .with_negative("forest-one-c", f64::from(-0.2f32))
-            .with_target("output-0", 1.0);
-        let expected = graft_if_nodes(&base_with_shared_ones(&inc), &[child, root])
-            .expect("the canonical batch helper builds the nested tree");
-        assert_eq!(ours.creature, expected);
+        let prefix = format!("forest-{id}");
+        for constants in MODES {
+            let ours = graft_patch_with(&inc, &patch, constants).unwrap();
+            let names = one_names(constants, &prefix);
+            let child = IfNodeSpec::new(format!("{prefix}-if0"), 0.0)
+                .with_condition("input-1", 1.0)
+                .with_condition(names[0].clone(), f64::from(-0.3f32))
+                .with_positive(names[1].clone(), f64::from(0.4f32))
+                .with_negative(names[2].clone(), 0.0);
+            let root = IfNodeSpec::new(format!("{prefix}-if1"), 0.0)
+                .with_condition("input-0", 1.0)
+                .with_condition(names[0].clone(), f64::from(-0.1f32))
+                .with_positive(format!("{prefix}-if0"), 1.0)
+                .with_negative(names[2].clone(), f64::from(-0.2f32))
+                .with_target("output-0", 1.0);
+            let expected = graft_if_nodes(&base_with_ones(&inc, &names), &[child, root])
+                .expect("the canonical batch helper builds the nested tree");
+            assert_eq!(ours.creature, expected, "{constants:?}");
+        }
     }
 
     /// Issue #48 — the `IF`-output shape is built by NEAT-AI-core too: a typed
@@ -1553,23 +1735,26 @@ mod tests {
     fn if_output_graft_is_built_by_the_canonical_helpers() {
         let inc = if_output_creature(4);
         let patch = Patch::new(0, Node::stump(3, 0.25, -0.05, 0.07), Provenance::default());
-        let ours = graft_patch(&inc, &patch).unwrap();
-
         let id = patch.id();
-        let root = IfNodeSpec::new(format!("forest-{id}-if0"), 0.0)
-            .with_condition("input-3", 1.0)
-            .with_condition("forest-one-a", f64::from(-0.25f32))
-            .with_positive("forest-one-b", f64::from(0.07f32))
-            .with_negative("forest-one-c", f64::from(-0.05f32))
-            .with_target_role("output-0", 1.0, SynapseType::Positive);
-        let expected = graft_if_nodes(&base_with_shared_ones(&inc), &[root])
-            .expect("the canonical helper builds the typed root");
-        let relay = RelaySpec::new(format!("forest-{id}-relay1"), 0.0)
-            .with_source(format!("forest-{id}-if0"), 1.0)
-            .with_target_role("output-0", 1.0, SynapseType::Negative);
-        let expected =
-            graft_relay_node(&expected, &relay).expect("the canonical helper builds the relay");
-        assert_eq!(ours.creature, expected);
+        let prefix = format!("forest-{id}");
+        for constants in MODES {
+            let ours = graft_patch_with(&inc, &patch, constants).unwrap();
+            let names = one_names(constants, &prefix);
+            let root = IfNodeSpec::new(format!("{prefix}-if0"), 0.0)
+                .with_condition("input-3", 1.0)
+                .with_condition(names[0].clone(), f64::from(-0.25f32))
+                .with_positive(names[1].clone(), f64::from(0.07f32))
+                .with_negative(names[2].clone(), f64::from(-0.05f32))
+                .with_target_role("output-0", 1.0, SynapseType::Positive);
+            let expected = graft_if_nodes(&base_with_ones(&inc, &names), &[root])
+                .expect("the canonical helper builds the typed root");
+            let relay = RelaySpec::new(format!("{prefix}-relay1"), 0.0)
+                .with_source(format!("{prefix}-if0"), 1.0)
+                .with_target_role("output-0", 1.0, SynapseType::Negative);
+            let expected =
+                graft_relay_node(&expected, &relay).expect("the canonical helper builds the relay");
+            assert_eq!(ours.creature, expected, "{constants:?}");
+        }
     }
 
     /// Issue #42 — a Forests stump reproduces NEAT-AI-core's own canonical
@@ -1663,8 +1848,14 @@ mod tests {
     /// the abstract evaluator. An `IF` output is compared on its activation —
     /// the correction reaches it through two typed branches, not one additive
     /// edge, so there is no single pre-squash sum to read.
-    fn assert_graft_is_sound(inc: &CreatureExport, patch: &Patch, what: &str) -> Grafted {
-        let g = graft_patch(inc, patch).unwrap_or_else(|e| panic!("{what}: graft refused: {e}"));
+    fn assert_graft_is_sound(
+        inc: &CreatureExport,
+        patch: &Patch,
+        what: &str,
+        constants: GraftConstants,
+    ) -> Grafted {
+        let g = graft_patch_with(inc, patch, constants)
+            .unwrap_or_else(|e| panic!("{what}: graft refused: {e}"));
         assert_creature_is_valid(&g.creature, what);
         let target = &inc.neurons[inc.neurons.len() - inc.output + patch.output];
         if target.squash.as_deref() == Some("IF") {
@@ -1692,7 +1883,7 @@ mod tests {
                 "{what}: fixture must cover both branches"
             );
         } else {
-            assert_graft_matches_evaluator(inc, patch, 1e-6);
+            assert_graft_matches_evaluator_with(inc, patch, 1e-6, constants);
         }
         g
     }
@@ -1781,7 +1972,14 @@ mod tests {
                 let mut k = 0;
                 let patch =
                     Patch::new(0, decorate(shape, &mut k, inc.input), Provenance::default());
-                assert_graft_is_sound(&inc, &patch, &format!("shape {i} on {} inputs", inc.input));
+                for constants in MODES {
+                    assert_graft_is_sound(
+                        &inc,
+                        &patch,
+                        &format!("shape {i} on {} inputs ({constants:?})", inc.input),
+                        constants,
+                    );
+                }
             }
         }
     }
@@ -1792,40 +1990,44 @@ mod tests {
     #[test]
     fn any_number_of_existing_bias_one_constants_yields_three_distinct_sources() {
         for k in 0..=5usize {
-            let extra: Vec<NeuronExport> = (0..k)
-                .map(|i| constant(&format!("const-{i}"), 1.0))
-                .collect();
-            let inc = creature_carrying(3, &extra);
-            let what = format!("{k} pre-existing bias-1 constants");
-            let patch = Patch::new(0, Node::stump(0, 0.0, -0.03, 0.05), Provenance::default());
-            let g = assert_graft_is_sound(&inc, &patch, &what);
-            assert_eq!(
-                g.creature
-                    .neurons
+            for constants in MODES {
+                let extra: Vec<NeuronExport> = (0..k)
+                    .map(|i| constant(&format!("const-{i}"), 1.0))
+                    .collect();
+                let inc = creature_carrying(3, &extra);
+                let what = format!("{k} pre-existing bias-1 constants ({constants:?})");
+                let patch = Patch::new(0, Node::stump(0, 0.0, -0.03, 0.05), Provenance::default());
+                let g = assert_graft_is_sound(&inc, &patch, &what, constants);
+                let want = match constants {
+                    GraftConstants::Shared => k.max(3),
+                    // Per patch always creates its own three, whatever the
+                    // incumbent carries.
+                    GraftConstants::PerPatch => k + 3,
+                };
+                assert_eq!(
+                    bias_one_uuids(&g.creature).len(),
+                    want,
+                    "{what}: three bias-1 constants must be available"
+                );
+                let node = g
+                    .added_uuids
                     .iter()
-                    .filter(|n| n.neuron_type == "constant" && n.bias == 1.0)
-                    .count(),
-                k.max(3),
-                "{what}: three bias-1 constants must be available"
-            );
-            let node = g
-                .added_uuids
-                .iter()
-                .find(|u| u.contains("-if"))
-                .expect("the graft added an IF node");
-            let sources: HashSet<&str> = g
-                .creature
-                .synapses
-                .iter()
-                .filter(|s| &s.to_uuid == node)
-                .map(|s| s.from_uuid.as_str())
-                .collect();
-            // input-0 plus one constant per role — three distinct constants.
-            assert_eq!(
-                sources.len(),
-                4,
-                "{what}: roles share a source: {sources:?}"
-            );
+                    .find(|u| u.contains("-if"))
+                    .expect("the graft added an IF node");
+                let sources: HashSet<&str> = g
+                    .creature
+                    .synapses
+                    .iter()
+                    .filter(|s| &s.to_uuid == node)
+                    .map(|s| s.from_uuid.as_str())
+                    .collect();
+                // input-0 plus one constant per role — three distinct constants.
+                assert_eq!(
+                    sources.len(),
+                    4,
+                    "{what}: roles share a source: {sources:?}"
+                );
+            }
         }
     }
 
@@ -1874,7 +2076,7 @@ mod tests {
         for (what, extra) in cases {
             let inc = creature_carrying(3, &extra);
             let patch = Patch::new(0, Node::stump(1, 0.0, -0.02, 0.06), Provenance::default());
-            let g = assert_graft_is_sound(&inc, &patch, what);
+            let g = assert_graft_is_sound(&inc, &patch, what, GraftConstants::Shared);
             // Nothing pre-existing was repurposed.
             for n in &extra {
                 let after = g
@@ -1888,7 +2090,66 @@ mod tests {
             // A second graft on the result must work too — the shared
             // constants have to be re-findable, not re-collided with.
             let again = Patch::new(0, Node::stump(2, 0.1, 0.04, 0.0), Provenance::default());
-            assert_graft_is_sound(&g.creature, &again, &format!("{what}, second graft"));
+            assert_graft_is_sound(
+                &g.creature,
+                &again,
+                &format!("{what}, second graft"),
+                GraftConstants::Shared,
+            );
+        }
+    }
+
+    /// Issue #56 — the same hardening for per-patch names: a creature that
+    /// already carries `forest-<patch id>-one-c/p/n` (the UUID collision #50
+    /// was about) is grafted onto the next free names, never refused and never
+    /// repurposing what is there.
+    #[test]
+    fn the_per_patch_constant_names_being_taken_never_blocks_a_graft() {
+        let patch = Patch::new(0, Node::stump(1, 0.0, -0.02, 0.06), Provenance::default());
+        let prefix = format!("forest-{}", patch.id());
+        let cases: Vec<(&str, Vec<NeuronExport>)> = vec![
+            (
+                "all three per-patch names present as bias-1 constants",
+                vec![
+                    constant(&format!("{prefix}-one-c"), 1.0),
+                    constant(&format!("{prefix}-one-p"), 1.0),
+                    constant(&format!("{prefix}-one-n"), 1.0),
+                ],
+            ),
+            (
+                "one per-patch name taken by a constant of another bias",
+                vec![constant(&format!("{prefix}-one-c"), 0.5)],
+            ),
+            (
+                "a per-patch name taken by a hidden neuron",
+                vec![NeuronExport {
+                    id: None,
+                    neuron_type: "hidden".into(),
+                    uuid: format!("{prefix}-one-p"),
+                    bias: 0.0,
+                    squash: Some("TANH".into()),
+                }],
+            ),
+        ];
+        for (what, extra) in cases {
+            let inc = creature_carrying(3, &extra);
+            let g = assert_graft_is_sound(&inc, &patch, what, GraftConstants::PerPatch);
+            for n in &extra {
+                let after = g
+                    .creature
+                    .neurons
+                    .iter()
+                    .find(|x| x.uuid == n.uuid)
+                    .unwrap_or_else(|| panic!("{what}: {} was dropped", n.uuid));
+                assert_eq!(after, n, "{what}: {} was rewritten", n.uuid);
+            }
+            // Three fresh bias-1 constants were still created for this patch.
+            let created: Vec<&String> = g
+                .added_uuids
+                .iter()
+                .filter(|u| u.contains("-one-"))
+                .collect();
+            assert_eq!(created.len(), 3, "{what}: {created:?}");
         }
     }
 
@@ -1922,7 +2183,14 @@ mod tests {
         };
         for inc in [identity_creature(4, 1), small_mlp(4), if_output_creature(4)] {
             let patch = Patch::new(0, root.clone(), Provenance::default());
-            assert_graft_is_sound(&inc, &patch, "oblique depth-3 tree");
+            for constants in MODES {
+                assert_graft_is_sound(
+                    &inc,
+                    &patch,
+                    &format!("oblique depth-3 tree ({constants:?})"),
+                    constants,
+                );
+            }
         }
     }
 
@@ -1930,7 +2198,7 @@ mod tests {
     /// candidates `generate_combos` builds) share the constants, so this is
     /// where a repeated pair would show up if the roles were collapsed.
     #[test]
-    fn stacked_patches_share_the_constants_without_repeating_a_pair() {
+    fn stacked_patches_stay_duplicate_free_under_either_constant_policy() {
         let patches: Vec<Patch> = vec![
             Patch::new(0, Node::stump(0, 0.0, -0.04, 0.06), Provenance::default()),
             Patch::new(
@@ -1953,28 +2221,225 @@ mod tests {
             ),
         ];
         for inc in [identity_creature(4, 1), small_mlp(4), if_output_creature(4)] {
-            let (stacked, added) = graft_patches(&inc, &patches).unwrap();
-            assert_eq!(added.len(), 3);
-            assert_creature_is_valid(&stacked, "three stacked patches");
-            assert_eq!(
-                stacked
-                    .neurons
-                    .iter()
-                    .filter(|n| n.neuron_type == "constant" && n.bias == 1.0)
-                    .count(),
-                3,
-                "the shared constants are created once, not per patch"
-            );
-            if inc.neurons.last().unwrap().squash.as_deref() != Some("LOGISTIC") {
-                let mut base = compile_creature(&inc).unwrap();
-                let mut cand = compile_creature(&stacked).unwrap();
-                for rec in records(200, inc.input) {
-                    let delta = cand.activate(&rec, 1)[0] - base.activate(&rec, 1)[0];
-                    let want: f32 = patches.iter().map(|p| p.evaluate(&rec)).sum();
-                    assert!((delta - want).abs() < 1e-5, "delta {delta} != {want}");
+            for constants in MODES {
+                let (stacked, added) = graft_patches_with(&inc, &patches, constants).unwrap();
+                assert_eq!(added.len(), 3);
+                assert_creature_is_valid(&stacked, "three stacked patches");
+                let want = match constants {
+                    // Created once for the creature (#43)…
+                    GraftConstants::Shared => 3,
+                    // …or three per patch (Issue #56).
+                    GraftConstants::PerPatch => 3 * patches.len(),
+                };
+                assert_eq!(
+                    bias_one_uuids(&stacked).len(),
+                    want,
+                    "{constants:?}: wrong number of bias-1 constants"
+                );
+                if inc.neurons.last().unwrap().squash.as_deref() != Some("LOGISTIC") {
+                    let mut base = compile_creature(&inc).unwrap();
+                    let mut cand = compile_creature(&stacked).unwrap();
+                    for rec in records(200, inc.input) {
+                        let delta = cand.activate(&rec, 1)[0] - base.activate(&rec, 1)[0];
+                        let want: f32 = patches.iter().map(|p| p.evaluate(&rec)).sum();
+                        assert!((delta - want).abs() < 1e-5, "delta {delta} != {want}");
+                    }
                 }
             }
         }
+    }
+
+    // ---- Issue #56 — per-patch constants ---------------------------------
+    //
+    // Shared constants concentrate every grafted node's routing on three
+    // neurons, so one bad external prune breaks hundreds of `IF` nodes at once.
+    // `--graft-constants per-patch` trades three constant neurons per patch for
+    // a blast radius of one patch. The three claims are proved below: the
+    // scores are unchanged, the cost is measured, and the damage is bounded.
+
+    /// `n` distinct depth-2 patches over `inputs` features — a realistic
+    /// multi-patch graft (the 45-minute production run this design was measured
+    /// on accepted 23 sequential grafts).
+    fn patch_family(n: usize, inputs: usize) -> Vec<Patch> {
+        let threshold = |k: usize| 0.05 * (k % 9) as f32 - 0.2;
+        (0..n)
+            .map(|i| {
+                Patch::new(
+                    0,
+                    Node::Split {
+                        condition: Condition::axis(i % inputs, threshold(i)),
+                        left: Box::new(Node::stump(
+                            (i + 1) % inputs,
+                            threshold(i + 3),
+                            0.01 * (i % 5) as f32 - 0.02,
+                            0.0,
+                        )),
+                        right: Box::new(Node::leaf(0.03 - 0.002 * i as f32)),
+                    },
+                    Provenance::default(),
+                )
+            })
+            .collect()
+    }
+
+    /// Issue #56 (1) — per-patch constants change nothing numerically. Every
+    /// constant holds the same `1.0` and every threshold and leaf is the same
+    /// synapse weight, so the same patch set grafted both ways produces two
+    /// creatures that agree with each other, and with the abstract evaluator,
+    /// record for record.
+    #[test]
+    fn per_patch_and_shared_constants_score_identically() {
+        for inc in [identity_creature(4, 1), small_mlp(4), if_output_creature(4)] {
+            let patches = patch_family(5, inc.input);
+            let (shared, _) = graft_patches_with(&inc, &patches, GraftConstants::Shared).unwrap();
+            let (per_patch, _) =
+                graft_patches_with(&inc, &patches, GraftConstants::PerPatch).unwrap();
+            assert_creature_is_valid(&shared, "shared constants");
+            assert_creature_is_valid(&per_patch, "per-patch constants");
+            let squashes_the_sum =
+                inc.neurons.last().unwrap().squash.as_deref() == Some("LOGISTIC");
+            let mut base = compile_creature(&inc).unwrap();
+            let mut a = compile_creature(&shared).unwrap();
+            let mut b = compile_creature(&per_patch).unwrap();
+            for rec in records(500, inc.input) {
+                let x = a.activate(&rec, inc.output);
+                let y = b.activate(&rec, inc.output);
+                assert_eq!(x, y, "per-patch and shared disagree on {rec:?}");
+                if !squashes_the_sum {
+                    let before = base.activate(&rec, inc.output);
+                    let want: f32 = patches.iter().map(|p| p.evaluate(&rec)).sum();
+                    assert!(
+                        (x[0] - before[0] - want).abs() <= 1e-5,
+                        "delta {} != {want}",
+                        x[0] - before[0]
+                    );
+                }
+            }
+        }
+        // The single-patch case goes through the *other* emission path (the
+        // canonical helper), so pin it against the evaluator under both
+        // policies too.
+        assert_graft_matches_evaluator(
+            &small_mlp(4),
+            &Patch::new(0, Node::stump(1, 0.2, -0.1, 0.35), Provenance::default()),
+            1e-6,
+        );
+    }
+
+    /// Issue #56 (2) — the measured cost: exactly three extra constant neurons
+    /// per patch, and not one extra synapse.
+    #[test]
+    fn per_patch_constants_cost_three_neurons_per_patch() {
+        let inc = small_mlp(8);
+        for count in [1usize, 5, 23] {
+            let patches = patch_family(count, inc.input);
+            let (shared, _) = graft_patches_with(&inc, &patches, GraftConstants::Shared).unwrap();
+            let (per_patch, _) =
+                graft_patches_with(&inc, &patches, GraftConstants::PerPatch).unwrap();
+            let extra = per_patch.neurons.len() - shared.neurons.len();
+            println!(
+                "#56 cost: {count} patch(es) — shared {} neurons / {} synapses, per-patch {} neurons / {} synapses (+{extra} neurons)",
+                shared.neurons.len(),
+                shared.synapses.len(),
+                per_patch.neurons.len(),
+                per_patch.synapses.len(),
+            );
+            assert_eq!(
+                extra,
+                3 * (count - 1),
+                "three extra constants for every patch after the first"
+            );
+            assert_eq!(
+                per_patch.synapses.len(),
+                shared.synapses.len(),
+                "per-patch constants cost neurons, not synapses"
+            );
+            assert_eq!(bias_one_uuids(&per_patch).len(), 3 * count);
+            assert_eq!(bias_one_uuids(&shared).len(), 3);
+        }
+    }
+
+    /// The patch a grafted uuid belongs to (`forest-<patch id>-if0` → the id).
+    fn patch_of(uuid: &str) -> Option<&str> {
+        uuid.strip_prefix("forest-")?
+            .split_once("-if")
+            .map(|(id, _)| id)
+    }
+
+    /// Delete `victim` and everything attached to it — what an external pruner
+    /// does when it removes a constant that "contributes nothing to any sum"
+    /// while mattering entirely by presence.
+    fn without_neuron(creature: &CreatureExport, victim: &str) -> CreatureExport {
+        let mut c = creature.clone();
+        c.neurons.retain(|n| n.uuid != victim);
+        c.synapses
+            .retain(|s| s.from_uuid != victim && s.to_uuid != victim);
+        c
+    }
+
+    /// The `IF` nodes that lose an inbound role edge — condition, positive or
+    /// negative — when `victim` is deleted. Losing one silently re-routes the
+    /// node; that is the damage Issue #56 is about.
+    fn if_nodes_damaged_by(creature: &CreatureExport, victim: &str) -> Vec<String> {
+        let pruned = without_neuron(creature, victim);
+        let roles = |c: &CreatureExport, node: &str| {
+            c.synapses
+                .iter()
+                .filter(|s| s.to_uuid == node && s.synapse_type.is_some())
+                .count()
+        };
+        let mut out: Vec<String> = creature
+            .neurons
+            .iter()
+            .filter(|n| n.squash.as_deref() == Some("IF"))
+            .map(|n| n.uuid.clone())
+            .filter(|u| roles(&pruned, u) < roles(creature, u))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Issue #56 (3) — the blast radius. Delete one bias-1 constant from each
+    /// variant and count the `IF` nodes that lose an inbound role edge: under
+    /// shared constants the worst case reaches every patch on the creature,
+    /// under per-patch constants it stops at the patch that made them.
+    #[test]
+    fn per_patch_constants_bound_the_blast_radius_of_a_deleted_constant() {
+        let inc = small_mlp(6);
+        let patches = patch_family(6, inc.input);
+        // Worst case over the creature's bias-1 constants: (IF nodes broken,
+        // distinct patches touched).
+        let measure = |constants: GraftConstants| -> (usize, usize) {
+            let (creature, _) = graft_patches_with(&inc, &patches, constants).unwrap();
+            assert_creature_is_valid(&creature, "blast-radius fixture");
+            let (mut nodes, mut touched) = (0, 0);
+            for victim in bias_one_uuids(&creature) {
+                let damaged = if_nodes_damaged_by(&creature, &victim);
+                assert!(
+                    !damaged.is_empty(),
+                    "{constants:?}: deleting {victim} broke nothing — the fixture is not testing anything"
+                );
+                let ps: HashSet<&str> = damaged.iter().filter_map(|u| patch_of(u)).collect();
+                nodes = nodes.max(damaged.len());
+                touched = touched.max(ps.len());
+            }
+            println!(
+                "#56 blast radius ({constants:?}): worst single constant breaks {nodes} IF node(s) across {touched} patch(es) of {}",
+                patches.len()
+            );
+            (nodes, touched)
+        };
+        let (shared_nodes, shared_patches) = measure(GraftConstants::Shared);
+        let (per_patch_nodes, per_patch_patches) = measure(GraftConstants::PerPatch);
+
+        // Shared: one constant feeds the condition of every grafted node, so a
+        // single deletion reaches all six patches (two `IF` nodes each).
+        assert_eq!(shared_patches, patches.len());
+        assert_eq!(shared_nodes, 2 * patches.len());
+        // Per patch: bounded to the patch that introduced the constant.
+        assert_eq!(per_patch_patches, 1);
+        assert_eq!(per_patch_nodes, 2);
+        assert!(per_patch_nodes < shared_nodes);
     }
 
     /// Issue #50 — "the creature validation should have prevented this in the

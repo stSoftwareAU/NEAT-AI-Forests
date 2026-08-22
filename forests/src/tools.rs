@@ -119,6 +119,7 @@ pub fn import_xgboost(
         random_scale: 0.0,
         threshold_jitter: 0,
         notes: vec![],
+        graft_constants: cfg.graft_constants,
     };
     let (candidates, discarded) = generate_candidates(&incumbent, patches, &cand_cfg);
     for (id, why) in &discarded {

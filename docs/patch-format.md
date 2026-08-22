@@ -62,7 +62,9 @@ stays topological, and new constants ahead of the first hidden neuron:
 ```text
 shared:     one_c / one_p / one_n    bias-1 constants, one per synapse role, reused from the
                              creature where it has them, else created once (`forest-one-a/b/c`);
-                             a threshold or leaf is the synapse WEIGHT from one of them (#43)
+                             a threshold or leaf is the synapse WEIGHT from one of them (#43).
+                             This is the default; `--graft-constants per-patch` names them
+                             `forest-P-one-c/-one-p/-one-n` instead, three per patch (#56)
 per split:  forest-P-ifN     hidden IF, bias 0
                 condition:   input-f (weight w_f, one per term)  and  one_c (weight = −threshold)
                              → Σ w·x − threshold > 0 ⇔ right
@@ -84,11 +86,24 @@ carries the same correction into the `negative` branch.
 The duplicate-pair rule — NEAT-AI-core's `validate_no_duplicate_synapses`
 (#556), wrapped as `check_no_duplicate_synapses` — is part of the validation
 gate every grafted creature clears (Issue #50), and a condition naming the same
-feature twice is refused. The three shared bias-1 constants are what keep the
+feature twice is refused. The three bias-1 constants are what keep the
 three synapse roles of one `IF` node reading three different neurons; a
 creature that already carries the names `forest-one-a/b/c` on neurons the graft
 must not repurpose gets fresh names (`forest-one-a2`, …) rather than a refused
-graft. Other aggregate outputs
+graft.
+
+Who owns those three is `--graft-constants`. The default, `shared`, reuses the
+creature's own bias-1 constants and names anything it has to create without the
+patch id, so every graft on the creature ends up behind the same three neurons
+(#43). Under `per-patch` each patch creates its own three, named for it, so the
+patch's `IF` nodes depend only on constants that patch introduced: an external
+pruner that deletes one damages that patch instead of every graft on the
+creature (#56). The two are numerically identical — every constant holds `1.0`
+and the weights are the same either way — and the collision hardening is the
+same (`forest-P-one-c2`, …). Measured on a six-patch depth-2 graft, deleting the
+worst single constant breaks 12 `IF` nodes across all six patches under
+`shared` and 2 nodes in one patch under `per-patch`; the cost is three extra
+constant neurons per patch and no extra synapses. Other aggregate outputs
 (`MINIMUM`/`MAXIMUM`/`MEAN`/`HYPOT`) are not additive in a new synapse and the
 graft is refused.
 
@@ -119,7 +134,7 @@ enforces.
 
 NEAT-AI-scorer charges `growthCost × (hidden + synapses/10 + …)` and an extra
 `3 × growthCost / 100` per `IF` neuron (≈ `3e-9`). A stump adds 1 neuron and
-5 synapses (2 neurons / 7 synapses into an `IF` output; plus the three shared constants once per creature), so its complexity penalty is ≈ `5e-7`; an accepted patch must
+5 synapses (2 neurons / 7 synapses into an `IF` output; plus three bias-1 constants — once per creature under `shared`, once per patch under `per-patch`), so its complexity penalty is ≈ `5e-7`; an accepted patch must
 beat that *and* `--min-improvement` on the authoritative score.
 
 ## XGBoost mapping

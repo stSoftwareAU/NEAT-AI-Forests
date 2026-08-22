@@ -420,6 +420,7 @@ pub fn run_forests(
             },
             threshold_jitter: cfg.threshold_jitter,
             notes: set.notes.clone(),
+            graft_constants: cfg.graft_constants,
         };
         let mut patches = expand_discoveries(
             &discoveries,
@@ -537,7 +538,12 @@ pub fn run_forests(
         }
         let generated = (patches.len() + combo_groups.len()) as u64;
         let (mut candidates, mut discarded): (Vec<Candidate>, Vec<(String, String)>) =
-            crate::candidates::generate_combos(&state.incumbent, combo_groups, "combination");
+            crate::candidates::generate_combos(
+                &state.incumbent,
+                combo_groups,
+                "combination",
+                cfg.graft_constants,
+            );
         let combos_kept = candidates.len();
         let room = cfg.candidates.saturating_sub(candidates.len());
         let single_cfg = CandidateConfig {
@@ -979,6 +985,49 @@ mod tests {
             ..Default::default()
         };
         (tmp, cfg)
+    }
+
+    /// Issue #56 — end to end under `--graft-constants per-patch`: the accepted
+    /// creature's bias-1 constants are all named for the patch that made them,
+    /// and every constant is read only by `IF` nodes of that same patch. That
+    /// is the blast-radius property on a creature the loop actually produced,
+    /// not a hand-built fixture.
+    #[test]
+    fn per_patch_constants_survive_the_loop_and_stay_within_their_patch() {
+        let (_tmp, mut cfg) = fixture();
+        cfg.graft_constants = crate::config::GraftConstants::PerPatch;
+        let scorer = LocalMseScorer::new();
+        let r = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
+        assert!(r.acceptances >= 2, "acceptances {}", r.acceptances);
+        let best = std::fs::read_to_string(&r.best_path).unwrap();
+        let c = neat_core::parse_creature_json(&best).unwrap();
+        let ones: Vec<&str> = c
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "constant" && n.bias == 1.0)
+            .map(|n| n.uuid.as_str())
+            .collect();
+        assert!(ones.len() >= 6, "expected constants per patch: {ones:?}");
+        // `forest-<patch id>-one-<letter>` — the id is what bounds the radius.
+        let patch_of = |uuid: &str, sep: &str| -> Option<String> {
+            uuid.strip_prefix("forest-")
+                .and_then(|rest| rest.split_once(sep))
+                .map(|(id, _)| id.to_string())
+        };
+        for one in &ones {
+            let owner = patch_of(one, "-one-")
+                .unwrap_or_else(|| panic!("constant {one} is not named for a patch"));
+            for s in c.synapses.iter().filter(|s| s.from_uuid == **one) {
+                let reader = patch_of(&s.to_uuid, "-if").unwrap_or_else(|| {
+                    panic!("{one} feeds {}, which is not a grafted IF node", s.to_uuid)
+                });
+                assert_eq!(
+                    reader, owner,
+                    "{one} is read by a node of another patch ({})",
+                    s.to_uuid
+                );
+            }
+        }
     }
 
     #[test]

@@ -38,6 +38,22 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Added
 
+- `--graft-constants shared|per-patch` (#56). The default stays `shared`, so
+  nothing changes unless the flag is passed. Under `per-patch` every patch
+  creates its own three bias-1 constants, named for it
+  (`forest-<patch id>-one-c` / `-one-p` / `-one-n`), instead of reusing the
+  creature's. Shared constants concentrate the blast radius: on a mature
+  creature every grafted `IF` node hangs off the same three neurons, so one
+  external prune of a single constant silently re-routes hundreds of nodes at
+  once. Per-patch constants bound that to the patch that made them. The two are
+  numerically identical — every constant holds the same `1.0` and every
+  threshold and leaf is the same synapse weight — which is asserted record for
+  record against the abstract evaluator. Measured on a six-patch depth-2 graft:
+  deleting the worst single constant costs 12 `IF` nodes across all six patches
+  under `shared` and 2 nodes in one patch under `per-patch`, for three extra
+  constant neurons per patch (+66 neurons on a 23-patch graft) and no extra
+  synapses.
+
 - Every new creature is validated with `neat_core::creature_validate` before
   the graft returns it (#39), so a structurally invalid candidate is caught at
   the graft that produced it instead of surfacing downstream. The failure

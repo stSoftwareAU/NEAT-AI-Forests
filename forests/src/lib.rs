@@ -60,9 +60,9 @@ pub use baseline::{AuthoritativeBaseline, ParityPolicy, establish_baseline};
 pub use bins::{BinCache, BinCacheError, DEFAULT_BINS, ensure_bin_cache};
 pub use cancel::CancelToken;
 pub use candidates::{Candidate, CandidateConfig, generate_candidates};
-pub use config::{ForestsConfig, GpuMode, GrowthPolicy};
+pub use config::{ForestsConfig, GpuMode, GraftConstants, GrowthPolicy};
 pub use corpus::{CorpusInfo, corpus_info};
-pub use graft::{GraftError, graft_patch};
+pub use graft::{GraftError, graft_patch, graft_patch_with};
 pub use histogram::{
     BinnedChunk, ChunkSource, HistogramSet, SearchControls, StumpCandidate, StumpKind,
     search_stumps,

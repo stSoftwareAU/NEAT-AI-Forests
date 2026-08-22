@@ -57,6 +57,32 @@ pub enum RowSampling {
     ResidualWeighted,
 }
 
+/// Which bias-1 constants a graft's `IF` nodes hang off (Issue #56).
+///
+/// A graft needs three distinct bias-1 constants — one per synapse role — so a
+/// node's condition, positive and negative edges read three different neurons.
+/// The question is who owns them. The two policies are numerically identical:
+/// every constant holds the same `1.0` and every threshold and leaf is the same
+/// synapse weight either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum GraftConstants {
+    /// One set of three shared by every patch on the creature — reused from the
+    /// incumbent's own bias-1 constants where it has them, else created once as
+    /// `forest-one-a/b/c` (#43). **The default**: it adds no neurons after the
+    /// first graft, at the price of putting every grafted node on the creature
+    /// behind the same three neurons.
+    #[default]
+    Shared,
+    /// Three constants **per patch**, named for it (`forest-<patch id>-one-c`
+    /// / `-one-p` / `-one-n`). A patch's `IF` nodes then only depend on
+    /// constants that patch introduced, so an external pruner that removes one
+    /// damages that patch and nothing else. Costs three extra constant neurons
+    /// per patch. Opt-in, for measuring whether a creature built this way
+    /// survives the fleet better (Issue #56).
+    PerPatch,
+}
+
 /// Feature subset selection per search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -147,6 +173,8 @@ pub struct ForestsConfig {
     pub combo_candidates: usize,
     /// Maximum candidates grafted per iteration.
     pub candidates: usize,
+    /// Who owns a graft's three bias-1 constants (Issue #56).
+    pub graft_constants: GraftConstants,
     /// Screen sample rate (`None` = no screen; every candidate is fully scored).
     pub screen_sample_rate: Option<f64>,
     /// Screen promotion threshold on sampled Δscore.
@@ -206,6 +234,7 @@ impl Default for ForestsConfig {
             combo_candidates: 4,
             boost_rounds: 1,
             candidates: 64,
+            graft_constants: GraftConstants::Shared,
             screen_sample_rate: Some(DEFAULT_SCREEN_SAMPLE_RATE),
             screen_threshold: 0.0,
             promote_count: 8,
