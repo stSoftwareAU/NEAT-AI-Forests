@@ -307,6 +307,18 @@ pub fn run_forests(
             state.incumbent.short_checksum(),
             state.baseline.score
         ));
+        // Where this iteration's corrections can enter (Issue #58). On a
+        // creature whose output is clamped by `MINIMUM`/`MAXIMUM` aggregates
+        // that is a hidden neuron behind the clamps, not the output itself; an
+        // output nothing can be grafted onto is worth saying before a whole
+        // iteration of search is spent finding candidates that cannot be used.
+        match crate::graft::graft_anchor(&state.incumbent.creature, output) {
+            Ok((uuid, gain)) if gain != 1.0 => log::detail(&format!(
+                "corrections enter at `{uuid}` behind the output's clamps (gain {gain:.6})"
+            )),
+            Ok(_) => {}
+            Err(e) => log::warn(&format!("output {output} cannot take a graft: {e}")),
+        }
 
         // ---- search -------------------------------------------------------
         let search_started = Instant::now();

@@ -19,7 +19,7 @@ use std::process::Command;
 
 use neat_ai_forests::config::GraftConstants;
 use neat_ai_forests::corpus::write_bin_file;
-use neat_ai_forests::graft::fixtures::{if_output_creature, small_mlp};
+use neat_ai_forests::graft::fixtures::{if_output_creature, min_clamped_if_creature, small_mlp};
 use neat_ai_forests::graft::{graft_patch, graft_patch_with, graft_patches_with};
 use neat_ai_forests::patch::{Condition, Node, Patch, Provenance, Term};
 
@@ -77,9 +77,11 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
             .wrapping_add(1442695040888963407);
         ((seed >> 40) as f32) / (1u64 << 24) as f32 * 2.0 - 1.0
     };
+    // Four inputs so the same corpus covers the clamped fixture (Issue #58),
+    // whose clamps read `input-3`.
     let recs: Vec<(Vec<f32>, Vec<f32>)> = (0..2000)
         .map(|_| {
-            let x = vec![next(), next(), next()];
+            let x = vec![next(), next(), next(), next()];
             let base = if x[0] > 0.0 {
                 2.0 * x[1] + 0.01
             } else {
@@ -113,11 +115,11 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
     };
     let stump = Node::stump(1, 0.2, 0.0, 0.3);
     let cases = [
-        ("if-base", if_output_creature(3)),
+        ("if-base", if_output_creature(4)),
         (
             "if-stump",
             graft_patch(
-                &if_output_creature(3),
+                &if_output_creature(4),
                 &Patch::new(0, stump.clone(), Provenance::default()),
             )
             .unwrap()
@@ -126,17 +128,17 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
         (
             "if-deep",
             graft_patch(
-                &if_output_creature(3),
+                &if_output_creature(4),
                 &Patch::new(0, deep.clone(), Provenance::default()),
             )
             .unwrap()
             .creature,
         ),
-        ("mlp-base", small_mlp(3)),
+        ("mlp-base", small_mlp(4)),
         (
             "mlp-deep",
             graft_patch(
-                &small_mlp(3),
+                &small_mlp(4),
                 &Patch::new(0, deep.clone(), Provenance::default()),
             )
             .unwrap()
@@ -148,7 +150,7 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
         (
             "if-stump-per-patch",
             graft_patch_with(
-                &if_output_creature(3),
+                &if_output_creature(4),
                 &Patch::new(0, stump.clone(), Provenance::default()),
                 GraftConstants::PerPatch,
             )
@@ -160,7 +162,7 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
         (
             "mlp-two",
             graft_patches_with(
-                &small_mlp(3),
+                &small_mlp(4),
                 &[
                     Patch::new(0, deep.clone(), Provenance::default()),
                     Patch::new(0, stump.clone(), Provenance::default()),
@@ -170,10 +172,31 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
             .unwrap()
             .0,
         ),
+        // Issue #58 — a `MINIMUM`-clamped output: the graft attaches behind the
+        // clamps and scales its outward edge, a shape neither engine had seen.
+        ("clamp-base", min_clamped_if_creature(4)),
+        (
+            "clamp-stump",
+            graft_patch(
+                &min_clamped_if_creature(4),
+                &Patch::new(0, stump.clone(), Provenance::default()),
+            )
+            .unwrap()
+            .creature,
+        ),
+        (
+            "clamp-deep",
+            graft_patch(
+                &min_clamped_if_creature(4),
+                &Patch::new(0, deep.clone(), Provenance::default()),
+            )
+            .unwrap()
+            .creature,
+        ),
         (
             "mlp-two-per-patch",
             graft_patches_with(
-                &small_mlp(3),
+                &small_mlp(4),
                 &[
                     Patch::new(0, deep, Provenance::default()),
                     Patch::new(0, stump, Provenance::default()),
@@ -217,6 +240,10 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
             "--allow-read",
             "--allow-env",
             "--allow-import",
+            // NEAT-AI fetches its WASM activation bundle at import time; the
+            // module graph itself already comes over the network via
+            // `--allow-import`.
+            "--allow-net",
         ])
         .arg(&probe)
         .arg(&data)

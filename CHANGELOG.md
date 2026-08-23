@@ -5,6 +5,29 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A creature whose output is a `MINIMUM`/`MAXIMUM` clamp can be improved again
+  (#58). The fleet wrapped the production champion's `IF` body — the neuron
+  every earlier graft attached to — in two `MINIMUM` clamps, and because an
+  extra synapse competes with a clamp's value rather than adding to it, every
+  candidate was refused with "output neuron squash `MINIMUM` is an aggregate
+  whose value is not additive in a new synapse" and the run made no progress.
+  A clamp is linear in the source it selects, so the graft now walks past it
+  onto that source, keeping a gain of the weights it passes, and attaches to
+  the first neuron a correction can be added to; the root's outward edge
+  carries `1 / gain`. Nothing pre-existing is rewritten — where a clamp binds
+  the correction is capped, which the scorer judges. On the production creature
+  the anchor is the `IF` body and 97.8 % of records reach it. The walk fails
+  closed (`GraftError::NoGraftAnchor`) where the source a clamp selects is
+  ambiguous, where the neuron behind it is point-wise, or after eight
+  aggregates; `MEAN`/`HYPOT` outputs are still refused outright. New
+  `graft::graft_anchor` reports the anchor and gain, which `run` logs each
+  iteration when the anchor is not the output itself. The `rust_scorer` vs
+  TypeScript parity test covers the clamped shape, and its Deno probe is granted
+  `--allow-net` — NEAT-AI fetches its WASM activation bundle at import time, so
+  without it the test failed locally before it scored anything.
+
 ### Changed
 
 - Every graft shape is now emitted by NEAT-AI-core (#48): the post-order batch
