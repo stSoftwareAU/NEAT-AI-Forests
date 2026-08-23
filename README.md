@@ -1,337 +1,67 @@
 # NEAT-AI-Forests
 
-> **Experimental:** can decision trees, boosting-style residual search, GPU histogram tricks, random exploration and other techniques increase the rate of evolution of an already highly evolved NEAT-AI creature?
+![NEAT-AI-Forests](https://raw.githubusercontent.com/stSoftwareAU/NEAT-AI/Develop/docs/brand/social-previews/neat-ai-forests.png)
 
-## 🌳 Motto
+An experimental Rust optimiser for already-fit
+[NEAT-AI](https://github.com/stSoftwareAU/NEAT-AI) creatures. It reads a mature
+creature and its training corpus, measures the errors the creature still makes,
+searches for tree-shaped corrections to them, grafts the promising ones onto
+**copies** of the creature as ordinary NEAT-AI `IF` structure, and lets the
+[NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer) decide which — if
+any — is genuinely fitter.
 
 > **Find all the dirty tricks that uncover real improvements — but trust only the scorer.**
 
-NEAT-AI-Forests is an experimental Rust optimiser for already-fit
-[NEAT-AI](https://github.com/stSoftwareAU/NEAT-AI) creatures.
-
-The motivating creature has already been evolved for years to predict **90-day stock movement** and is useful in production. Forests is **not** an attempt to replace that creature, retrain it from scratch, or redesign the working system.
-
-The experiment asks a narrower question:
-
-> **Can a fundamentally different search process discover small improvements that normal evolution is now finding only slowly?**
-
-Forests starts with the current fittest creature, studies the errors it still makes, searches aggressively for conditional/tree-shaped residual corrections, grafts promising candidates onto **copies** of the incumbent, and asks the existing
-[NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer) to decide whether any complete candidate is genuinely fitter.
-
 Candidate generation may be adventurous. **Acceptance is deliberately boring.**
+
+## What it does
+
+```text
+fittest creature ─▶ residuals ─▶ split search ─▶ patches ─▶ grafted clones ─▶ scorer ─▶ best.json
+```
+
+- **Reads, never writes, the creature you give it.** Every candidate is a clone.
+- **Only adds structure.** A patch becomes an `IF` subtree feeding the output it
+  corrects; nothing evolved is deleted, simplified or rewired.
+- **Never accepts its own opinion.** Histogram gain, sampled scores and every
+  other proxy rank candidates; only a full-corpus NEAT-AI-scorer result accepts
+  one.
+- **Writes down what it tried.** Every candidate, proxy, score and verdict lands
+  in `experiments.jsonl`, and `neat_ai_forests report` turns that into the
+  economics of each strategy.
+- **Shares what it learns.** With `--learnings-dir`, a fleet replays each
+  other's verified wins and stops paying twice for the same failure.
+
+It is a genuine experiment, and the question it asks is narrow:
+
+> **Can a fundamentally different search process discover small improvements that
+> normal evolution is now finding only slowly?**
+
+So far, yes — see [docs/benchmarks.md](docs/benchmarks.md) for what has been
+measured, including the strategies that turned out not to be worth their
+runtime.
+
+NEAT-AI-Forests is **not** an attempt to replace that creature, retrain it from
+scratch, or redesign the working system. The motivating creature has been
+evolved for years to predict **90-day stock movement** and is useful in
+production.
 
 ---
 
 ## Status
 
-🌳 **Implemented through Phase 11 — measuring.**
+Every phase in the [issue list](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues)
+has landed as code: immutable incumbent and scorer-parity gate, quantile-bin and
+residual caches, CPU stump search with an optional wgpu/WGSL GPU accelerator,
+portable patches grafted as ordinary `IF` structure, two-phase screening with
+authoritative promotion, the 45-minute evolution loop and journal, depth-2/3
+trees, sampling and random "dirty tricks", oblique splits, the XGBoost external
+control, and the shared learnings cache. The phase table and the outstanding
+work are at the bottom of this file.
 
-Every issue in the [poor-man's project plan](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues)
-has landed as code: immutable incumbent + scorer parity gate, quantile-bin and
-residual caches, CPU reference stump search with an optional wgpu/WGSL GPU
-accelerator, portable patches grafted as ordinary `IF` structure, depth-1
-stump populations, two-phase screening with authoritative promotion, the
-45-minute evolution loop and journal, depth-2/3 trees, sampling/jitter/random
-"dirty tricks", the XGBoost external control and oblique splits.
-
-The first useful milestone remains deliberately modest:
-
-> Given a mature creature and its training corpus, can a single depth-1 decision stump acting as a residual correction produce a full-corpus, scorer-verified improvement?
-
-**Yes.** On the production champion (authoritative score 0.353158958) a
-45-minute CPU run accepted 23 sequential grafts (stumps and stacked
-combinations), every one verified by the full-corpus NEAT-AI-scorer and the
-final creature re-verified by NEAT-AI's TypeScript scorer, finishing at
-0.355655238 (Δ +2.50e-3). Details, the duplicate-synapse lesson, economics
-and follow-ups are in [docs/benchmarks.md](docs/benchmarks.md).
-
-NEAT-AI-core's canonical `IF` helpers ([#555](https://github.com/stSoftwareAU/NEAT-AI-core/issues/555)) have landed and Forests' `graft` module now describes every node as a `neat_core::IfNodeSpec` and lets NEAT-AI-core build **every** shape (#42, #48): the whole post-order batch through `neat_core::graft_if_nodes`, and the `IF`-output relay through `neat_core::graft_relay_node`. Nothing is written out locally any more. One shared-family prerequisite is still open upstream:
+One shared-family prerequisite is still open upstream:
 
 - [NEAT-AI-scorer #574](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/574) — CPU/GPU parity for `IF`-heavy creatures. Until it lands, production runs should pass `--scorer-arg=--gpu=off` or watch the `baselineDrift` field in the journal.
-
----
-
-## Core principle
-
-```mermaid
-flowchart TD
-    FIT(["current fittest creature\nimmutable source"]) --> RES["measure remaining residual/error structure"]
-
-    RES --> HIST["histogram / quantile split search"]
-    RES --> SAMPLE["sampling / random exploration"]
-    RES --> OTHER["other dirty tricks"]
-
-    HIST --> PATCH[["small residual tree patches"]]
-    SAMPLE --> PATCH
-    OTHER --> PATCH
-
-    PATCH --> GRAFT["graft each patch onto a clone"]
-    GRAFT --> SCREEN{"cheap screen\noptional / non-authoritative"}
-
-    SCREEN -- "unlikely" --> DROP["discard"]
-    SCREEN -- "interesting" --> FULL{"NEAT-AI-scorer\nfull canonical corpus"}
-
-    FULL -- "not better" --> DROP2["discard"]
-    FULL -- "score really improves" --> WIN(["new experimental incumbent"])
-
-    WIN --> REPEAT((("repeat from new residuals")))
-    REPEAT --> RES
-
-    classDef creature fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#0b2545
-    classDef search fill:#fef3c7,stroke:#b45309,stroke-width:2px,color:#451a03
-    classDef candidate fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
-    classDef win fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
-    classDef reject fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
-
-    class FIT,RES creature
-    class HIST,SAMPLE,OTHER,SCREEN,FULL search
-    class PATCH,GRAFT,REPEAT candidate
-    class WIN win
-    class DROP,DROP2 reject
-```
-
-The search mechanism and the acceptance mechanism are intentionally independent.
-
-Forests may use approximate arithmetic, samples, heuristics, statistics, random guesses or GPU kernels to decide **what is worth trying**. None of those may decide **what is better**.
-
-Only the authoritative scorer gets that vote.
-
----
-
-## Safety invariants
-
-This experiment exists to continue evolution without risking a creature that already works.
-
-1. **The supplied incumbent is immutable.** Forests never modifies the source creature in place.
-2. **Every candidate starts from a clone of a known incumbent.**
-3. **Version 1 only adds small corrective structure.** It does not delete, simplify or rewire mature evolved structure.
-4. **Cheap search is allowed to be wrong.** Histogram gain, residual reduction, sampled scoring and other proxies are ranking signals only.
-5. **Full-corpus NEAT-AI-scorer is the final authority.** A candidate is not an improvement until the scorer says it is.
-6. **Scorer failure means no winner.** Missing, malformed or inconsistent results fail closed.
-7. **`best.json` may never be worse than the opening scorer-verified baseline.**
-8. **After an accepted change, residuals are recomputed.** Forests never assumes predicted gains remain valid after the creature changes.
-9. **Random accidents are legitimate discoveries.** We care about measurable improvement, not whether the winning idea looked clever beforehand.
-10. **Negative results are results.** A dirty trick that consumes time but produces no verified improvements should be measured and discarded.
-
----
-
-## Residual evolution
-
-The useful mental model is not "replace the neural network with a forest".
-
-The mature creature already represents a valuable function:
-
-```text
-f(x)
-```
-
-Forests searches for a small conditional correction:
-
-```text
-g(x)
-```
-
-and tests the complete candidate:
-
-```text
-f'(x) = f(x) + g(x)
-```
-
-For example, a first-generation patch might effectively say:
-
-```text
-if observation_317 > 0.283:
-    correction = +0.013
-else:
-    correction = 0
-```
-
-Most of observation-space can therefore retain the incumbent's existing behaviour exactly, while Forests asks whether a particular region contains a systematic residual error worth correcting.
-
-This is much closer to **boosting a mature evolved model** than training a conventional random forest from scratch.
-
----
-
-## Why decision trees?
-
-Decision trees offer a type of search that ordinary gradient methods find awkward: **hard, discontinuous partitions**.
-
-NEAT-AI already has the building block required to represent them: the `IF` aggregate and typed condition/positive/negative synapses.
-
-A conventional split:
-
-```text
-RSI_14 > 63
-```
-
-can therefore become ordinary NEAT-AI creature structure rather than requiring a second model runtime.
-
-Nested `IF` nodes can represent deeper trees, and NEAT-AI has an additional capability that conventional axis-aligned trees usually do not: an `IF` condition can eventually be an **oblique split** such as:
-
-```text
-0.8 * RSI_14 - 1.3 * PE + 0.4 * momentum > threshold
-```
-
-That is deliberately later research. The experiment starts with simple one-feature stumps because they are easy to verify and cheap to search.
-
----
-
-## Why "Forests"?
-
-The name is playful rather than a commitment to a conventional Random Forest algorithm.
-
-Forests may explore many competing tree-shaped corrections at once, but the likely evolutionary pattern is closer to sequential boosting:
-
-```text
-mature creature
-    ↓
-find a residual pattern
-    ↓
-try many small tree patches
-    ↓
-scorer accepts one (or none)
-    ↓
-recompute residuals
-    ↓
-search again
-```
-
-The final creature remains a normal NEAT-AI creature.
-
----
-
-## What we want to steal from XGBoost
-
-[XGBoost](https://github.com/dmlc/xgboost) is an important source of ideas, not a planned runtime dependency.
-
-The most interesting concepts for this experiment include:
-
-- **quantile/binning of continuous observations** so every raw value is not tested as a threshold;
-- **histogram split search** using compact sufficient statistics;
-- **GPU-parallel histogram construction**;
-- **row subsampling**;
-- **feature/column subsampling**;
-- **error/gradient-biased sampling** so search effort concentrates on informative records;
-- **minimum leaf support and complexity controls** to avoid chasing tiny pathological subsets;
-- **sequential residual correction / boosting**;
-- using a real XGBoost model as an **external scientific control** to see whether conventional boosted trees can find residual structure our native search misses.
-
-We want to understand and adapt useful techniques to the NEAT-AI problem, not copy XGBoost's architecture wholesale.
-
-Forests is Rust-first and will use `wgpu`/WGSL where GPU acceleration earns its complexity, allowing Metal on macOS and other supported backends elsewhere.
-
----
-
-## Search philosophy: dirty is fine, dishonest is not
-
-Examples of fair experimental tactics include:
-
-- exhaustive quantile stump search;
-- GPU histogram search;
-- random feature subsets;
-- random/stratified record subsets;
-- residual-magnitude-weighted sampling;
-- threshold jitter around promising boundaries;
-- several correction magnitudes around a statistical optimum;
-- deliberately random stumps;
-- diversity selection so one promising feature does not monopolise a batch;
-- shallow depth-2/3 trees;
-- eventually sparse multi-feature/oblique splits;
-- importing a small XGBoost tree as a candidate control.
-
-Every candidate must record what produced it. Random search must be called random search. Approximate search must be called approximate search.
-
-The metric that matters is not elegance or proxy gain. It is:
-
-> **scorer-verified improvement per wall-clock hour.**
-
----
-
-## Planned phases
-
-| Phase | Purpose | Issues |
-|---|---|---|
-| 0 | Bootstrap, immutable baseline and scorer contracts | [#1](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/1), [#2](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/2) |
-| 1 | Quantile cache and incumbent residuals | [#3](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/3), [#4](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/4) |
-| 2 | Correct CPU stump search | [#5](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/5) |
-| 3 | GPU histogram acceleration | [#6](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/6) |
-| 4 | Portable tree patches and conservative IF grafts | [#7](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/7), [#8](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/8) |
-| 5 | Cheap screening + authoritative promotion | [#9](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/9) |
-| 6 | First 45-minute iterative Forest evolution loop | [#10](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/10) |
-| 7 | Depth-2/3 trees and sequential boosting | [#11](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/11) |
-| 8 | Aggressive sampling/random dirty tricks | [#12](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/12) |
-| 9 | XGBoost control experiment | [#13](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/13) |
-| 10 | Oblique multi-feature IF splits | [#14](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/14) |
-| 11 | Measure what actually improves evolution | [#15](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/15) |
-
-Two shared-family prerequisites deliberately live outside this repository:
-
-- [NEAT-AI-core #555](https://github.com/stSoftwareAU/NEAT-AI-core/issues/555) — canonical decision-tree/`IF` fixture and safe construction helpers.
-- [NEAT-AI-scorer #574](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/574) — lock CPU/GPU parity for `IF`-heavy candidate creatures.
-
----
-
-## Related NEAT-AI experiments
-
-- [NEAT-AI](https://github.com/stSoftwareAU/NEAT-AI) — TypeScript evolutionary trainer and the long-running evolutionary process.
-- [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) — shared Rust creature/network representation and inference primitives.
-- [NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer) — authoritative Rust scorer; **the final judge**.
-- [NEAT-AI-Discovery](https://github.com/stSoftwareAU/NEAT-AI-Discovery) — statistical/structural discovery of promising mutations.
-- [NEAT-AI-Lamarck](https://github.com/stSoftwareAU/NEAT-AI-Lamarck) — acquired-learning/backprop/statistics-guided optimisation of mature creatures.
-
-These experiments are complementary rather than mutually exclusive:
-
-```text
-normal NEAT evolution
-        │
-        ├── Discovery  → structural/statistical opportunities
-        ├── Lamarck    → continuous learning / parameter opportunities
-        └── Forests    → discontinuous conditional/residual opportunities
-                              │
-                              ▼
-                       NEAT-AI-scorer
-                       decides what survives
-```
-
----
-
-## Non-goals
-
-Forests is **not**:
-
-- a replacement for NEAT-AI;
-- a replacement for the production creature;
-- a new stock-prediction model trained independently from scratch;
-- permission to rewrite or simplify years of evolved structure because another algorithm thinks it looks cleaner;
-- an optimiser allowed to accept its own estimated gain;
-- an online/live-trading decision engine;
-- proof that decision trees are inherently better than neural/evolutionary methods;
-- committed to keeping any strategy that fails to produce real improvements economically.
-
----
-
-## What success looks like
-
-The experiment succeeds if it increases the **rate at which verified improvements are found** for a creature whose ordinary evolutionary progress has become difficult.
-
-Useful measurements include:
-
-- time to first accepted improvement;
-- accepted improvements per 45-minute run;
-- cumulative scorer improvement;
-- candidates searched/scored per minute;
-- improvement rate by strategy;
-- CPU vs GPU economics;
-- depth-1 vs deeper-tree economics;
-- how concentrated each gain is across the corpus;
-- whether repeated residual grafting continues producing improvements or quickly saturates;
-- comparison with Lamarck, Discovery, random search and the XGBoost control.
-
-If the evidence says a clever technique is useless, remove it.
-
-If dumb luck repeatedly wins, generate more dumb luck.
-
-**The scorer does not care about our theory, and neither should the experiment.** 🌳🧬
 
 ---
 
@@ -418,6 +148,10 @@ neat_ai_forests <creature.json> <training-data-dir> import-xgboost --dump dump.j
 | `--gpu` | `off` | `off`, `auto`, `on` (needs the `gpu` cargo feature; CPU measured faster on unified memory) |
 | `--preserve-candidates` | off | keep per-iteration cohort directories |
 | `--max-consecutive-scorer-failures` | `3` | abort after this many failures in a row |
+| `--learnings-dir` | off | shared cache of full-corpus verdicts (#60); point every host at one git checkout and the fleet replays each other's wins |
+| `--learnings-host` | hostname | the file this machine appends to, so no two hosts ever conflict |
+| `--learnings-replay` | `8` | cached candidates replayed per iteration (0 = write only) |
+| `--learnings-retry-after-hours` | `168` | how long a candidate that only ever failed is left alone before it is offered again |
 
 `--help` and `--version` are the usual clap extras. The scorer's own
 `--sample-rate`, `--sample-phase`, `--gpu` and `--cost` flags are passed by
@@ -461,6 +195,232 @@ Forests, not by you.
 
 ---
 
+## Safety invariants
+
+This experiment exists to continue evolution without risking a creature that already works.
+
+1. **The supplied incumbent is immutable.** Forests never modifies the source creature in place.
+2. **Every candidate starts from a clone of a known incumbent.**
+3. **Version 1 only adds small corrective structure.** It does not delete, simplify or rewire mature evolved structure.
+4. **Cheap search is allowed to be wrong.** Histogram gain, residual reduction, sampled scoring and other proxies are ranking signals only.
+5. **Full-corpus NEAT-AI-scorer is the final authority.** A candidate is not an improvement until the scorer says it is.
+6. **Scorer failure means no winner.** Missing, malformed or inconsistent results fail closed.
+7. **`best.json` may never be worse than the opening scorer-verified baseline.**
+8. **After an accepted change, residuals are recomputed.** Forests never assumes predicted gains remain valid after the creature changes.
+9. **Random accidents are legitimate discoveries.** We care about measurable improvement, not whether the winning idea looked clever beforehand.
+10. **Negative results are results.** A dirty trick that consumes time but produces no verified improvements should be measured and discarded.
+
+---
+
+## Non-goals
+
+Forests is **not**:
+
+- a replacement for NEAT-AI;
+- a replacement for the production creature;
+- a new stock-prediction model trained independently from scratch;
+- permission to rewrite or simplify years of evolved structure because another algorithm thinks it looks cleaner;
+- an optimiser allowed to accept its own estimated gain;
+- an online/live-trading decision engine;
+- proof that decision trees are inherently better than neural/evolutionary methods;
+- committed to keeping any strategy that fails to produce real improvements economically.
+
+---
+
+## Why residual trees
+
+```mermaid
+flowchart TD
+    FIT(["current fittest creature\nimmutable source"]) --> RES["measure remaining residual/error structure"]
+
+    RES --> HIST["histogram / quantile split search"]
+    RES --> SAMPLE["sampling / random exploration"]
+    RES --> OTHER["other dirty tricks"]
+
+    HIST --> PATCH[["small residual tree patches"]]
+    SAMPLE --> PATCH
+    OTHER --> PATCH
+
+    PATCH --> GRAFT["graft each patch onto a clone"]
+    GRAFT --> SCREEN{"cheap screen\noptional / non-authoritative"}
+
+    SCREEN -- "unlikely" --> DROP["discard"]
+    SCREEN -- "interesting" --> FULL{"NEAT-AI-scorer\nfull canonical corpus"}
+
+    FULL -- "not better" --> DROP2["discard"]
+    FULL -- "score really improves" --> WIN(["new experimental incumbent"])
+
+    WIN --> REPEAT((("repeat from new residuals")))
+    REPEAT --> RES
+
+    classDef creature fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#0b2545
+    classDef search fill:#fef3c7,stroke:#b45309,stroke-width:2px,color:#451a03
+    classDef candidate fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef win fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef reject fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
+
+    class FIT,RES creature
+    class HIST,SAMPLE,OTHER,SCREEN,FULL search
+    class PATCH,GRAFT,REPEAT candidate
+    class WIN win
+    class DROP,DROP2 reject
+```
+
+The search mechanism and the acceptance mechanism are intentionally independent.
+
+Forests may use approximate arithmetic, samples, heuristics, statistics, random guesses or GPU kernels to decide **what is worth trying**. None of those may decide **what is better**.
+
+Only the authoritative scorer gets that vote.
+
+### Residual evolution
+
+The useful mental model is not "replace the neural network with a forest".
+
+The mature creature already represents a valuable function:
+
+```text
+f(x)
+```
+
+Forests searches for a small conditional correction:
+
+```text
+g(x)
+```
+
+and tests the complete candidate:
+
+```text
+f'(x) = f(x) + g(x)
+```
+
+For example, a first-generation patch might effectively say:
+
+```text
+if observation_317 > 0.283:
+    correction = +0.013
+else:
+    correction = 0
+```
+
+Most of observation-space can therefore retain the incumbent's existing behaviour exactly, while Forests asks whether a particular region contains a systematic residual error worth correcting.
+
+This is much closer to **boosting a mature evolved model** than training a conventional random forest from scratch.
+
+### Why decision trees?
+
+Decision trees offer a type of search that ordinary gradient methods find awkward: **hard, discontinuous partitions**.
+
+NEAT-AI already has the building block required to represent them: the `IF` aggregate and typed condition/positive/negative synapses.
+
+A conventional split:
+
+```text
+RSI_14 > 63
+```
+
+can therefore become ordinary NEAT-AI creature structure rather than requiring a second model runtime.
+
+Nested `IF` nodes can represent deeper trees, and NEAT-AI has an additional capability that conventional axis-aligned trees usually do not: an `IF` condition can eventually be an **oblique split** such as:
+
+```text
+0.8 * RSI_14 - 1.3 * PE + 0.4 * momentum > threshold
+```
+
+That is deliberately later research. The experiment starts with simple one-feature stumps because they are easy to verify and cheap to search.
+
+### Why "Forests"?
+
+The name is playful rather than a commitment to a conventional Random Forest algorithm.
+
+Forests may explore many competing tree-shaped corrections at once, but the likely evolutionary pattern is closer to sequential boosting:
+
+```text
+mature creature
+    ↓
+find a residual pattern
+    ↓
+try many small tree patches
+    ↓
+scorer accepts one (or none)
+    ↓
+recompute residuals
+    ↓
+search again
+```
+
+The final creature remains a normal NEAT-AI creature.
+
+### What we want to steal from XGBoost
+
+[XGBoost](https://github.com/dmlc/xgboost) is an important source of ideas, not a planned runtime dependency.
+
+The most interesting concepts for this experiment include:
+
+- **quantile/binning of continuous observations** so every raw value is not tested as a threshold;
+- **histogram split search** using compact sufficient statistics;
+- **GPU-parallel histogram construction**;
+- **row subsampling**;
+- **feature/column subsampling**;
+- **error/gradient-biased sampling** so search effort concentrates on informative records;
+- **minimum leaf support and complexity controls** to avoid chasing tiny pathological subsets;
+- **sequential residual correction / boosting**;
+- using a real XGBoost model as an **external scientific control** to see whether conventional boosted trees can find residual structure our native search misses.
+
+We want to understand and adapt useful techniques to the NEAT-AI problem, not copy XGBoost's architecture wholesale.
+
+Forests is Rust-first and will use `wgpu`/WGSL where GPU acceleration earns its complexity, allowing Metal on macOS and other supported backends elsewhere.
+
+### Search philosophy: dirty is fine, dishonest is not
+
+Examples of fair experimental tactics include:
+
+- exhaustive quantile stump search;
+- GPU histogram search;
+- random feature subsets;
+- random/stratified record subsets;
+- residual-magnitude-weighted sampling;
+- threshold jitter around promising boundaries;
+- several correction magnitudes around a statistical optimum;
+- deliberately random stumps;
+- diversity selection so one promising feature does not monopolise a batch;
+- shallow depth-2/3 trees;
+- eventually sparse multi-feature/oblique splits;
+- importing a small XGBoost tree as a candidate control.
+
+Every candidate must record what produced it. Random search must be called random search. Approximate search must be called approximate search.
+
+The metric that matters is not elegance or proxy gain. It is:
+
+> **scorer-verified improvement per wall-clock hour.**
+
+---
+
+## What success looks like
+
+The experiment succeeds if it increases the **rate at which verified improvements are found** for a creature whose ordinary evolutionary progress has become difficult.
+
+Useful measurements include:
+
+- time to first accepted improvement;
+- accepted improvements per 45-minute run;
+- cumulative scorer improvement;
+- candidates searched/scored per minute;
+- improvement rate by strategy;
+- CPU vs GPU economics;
+- depth-1 vs deeper-tree economics;
+- how concentrated each gain is across the corpus;
+- whether repeated residual grafting continues producing improvements or quickly saturates;
+- comparison with Lamarck, Discovery, random search and the XGBoost control.
+
+If the evidence says a clever technique is useless, remove it.
+
+If dumb luck repeatedly wins, generate more dumb luck.
+
+**The scorer does not care about our theory, and neither should the experiment.** 🌳🧬
+
+---
+
 ## Repository layout
 
 ```text
@@ -482,6 +442,7 @@ NEAT-AI-Forests/
 │   │   ├── histogram.rs       # CPU reference stump search (#5)
 │   │   ├── incumbent.rs       # immutable incumbent + checksum (#2)
 │   │   ├── journal.rs         # experiments.jsonl records (#10)
+│   │   ├── learnings.rs       # fleet-shared cache of what worked / failed (#60)
 │   │   ├── log.rs             # stderr logging
 │   │   ├── meta.rs            # creature tag preservation
 │   │   ├── oblique.rs         # multi-feature linear splits (#14)
@@ -497,23 +458,28 @@ NEAT-AI-Forests/
 │   │   └── xgboost.rs         # XGBoost dump conversion (#13)
 │   ├── examples/stump_search_bench.rs
 │   └── tests/                 # README contract, real-scorer integration
-├── docs/                      # architecture, caches, patch format, gpu, strategies, xgboost control, benchmarks
+├── docs/                      # architecture, caches, patch format, gpu, strategies, xgboost control, benchmarks, learnings cache
 │   └── archive/pr-summaries/  # one summary per merged PR
 ├── scripts/                   # quality helpers, auto-version.sh, report-experiments.sh, run-benchmark.sh, xgboost-control.py
 ├── quality.sh                 # local gate mirroring CI
 └── .github/workflows/         # CI, security, gitleaks, markdown lint, actionlint, dependency review, SBOM, semgrep
 ```
 
+---
+
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — module map and data flow.
 - [docs/caches.md](docs/caches.md) — bin-cache and residual-sidecar binary formats and invalidation rules.
 - [docs/patch-format.md](docs/patch-format.md) — patch JSON, `IF` graft layout, exact routing semantics.
+- [docs/learnings.md](docs/learnings.md) — the shared cache of what worked and what failed, and how a fleet uses it.
 - [docs/gpu.md](docs/gpu.md) — WGSL kernel design, determinism, limits, fallback reporting.
 - [docs/strategies.md](docs/strategies.md) — sampling, jitter, diversity, random controls and how they report themselves.
 - [docs/xgboost-control.md](docs/xgboost-control.md) — the external control experiment.
 - [docs/benchmarks.md](docs/benchmarks.md) — measured economics and the production-run protocol.
 - [docs/archive/pr-summaries/](docs/archive/pr-summaries/) — the PR summary for each merged change.
+
+---
 
 ## Development
 
@@ -544,9 +510,62 @@ flowchart LR
     KEEP --> BUILD
 ```
 
+---
+
+## Planned phases
+
+The phases the experiment was founded on, all of them delivered. Kept here
+because they are the shape of the argument as much as the plan: each one had to
+work before the next was worth trying.
+
+| Phase | Purpose | Issues |
+|---|---|---|
+| 0 | Bootstrap, immutable baseline and scorer contracts | [#1](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/1), [#2](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/2) |
+| 1 | Quantile cache and incumbent residuals | [#3](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/3), [#4](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/4) |
+| 2 | Correct CPU stump search | [#5](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/5) |
+| 3 | GPU histogram acceleration | [#6](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/6) |
+| 4 | Portable tree patches and conservative IF grafts | [#7](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/7), [#8](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/8) |
+| 5 | Cheap screening + authoritative promotion | [#9](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/9) |
+| 6 | First 45-minute iterative Forest evolution loop | [#10](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/10) |
+| 7 | Depth-2/3 trees and sequential boosting | [#11](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/11) |
+| 8 | Aggressive sampling/random dirty tricks | [#12](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/12) |
+| 9 | XGBoost control experiment | [#13](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/13) |
+| 10 | Oblique multi-feature IF splits | [#14](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/14) |
+| 11 | Measure what actually improves evolution | [#15](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/15) |
+
+Two shared-family prerequisites deliberately live outside this repository:
+
+- [NEAT-AI-core #555](https://github.com/stSoftwareAU/NEAT-AI-core/issues/555) — canonical decision-tree/`IF` fixture and safe construction helpers.
+- [NEAT-AI-scorer #574](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/574) — lock CPU/GPU parity for `IF`-heavy candidate creatures.
+
+---
+
 ## Outstanding work
 
-- Tune the screen: the production run's exploratory bypasses show a 52 % false-negative rate at `--screen-sample-rate 0.05`.
-- Measure depth-2/3 trees and oblique splits on the production creature now that stumps are proven.
-- Finish the canonical adoption: nested trees and `IF`-output wiring need typed outward edges and a batched tree graft that NEAT-AI-core's helper does not yet offer ([#48](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/48)).
-- Drop the `--scorer-arg=--gpu=off` advice once NEAT-AI-scorer #574 lands.
+- Prune the shared learnings cache, so old failures become worth retrying and the directory stops growing ([#61](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/61)).
+- Drop the `--scorer-arg=--gpu=off` advice once [NEAT-AI-scorer #574](https://github.com/stSoftwareAU/NEAT-AI-scorer/issues/574) lands.
+- Make CODEOWNERS review actually required rather than advisory ([#38](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/38)).
+
+---
+
+## Related NEAT-AI experiments
+
+- [NEAT-AI](https://github.com/stSoftwareAU/NEAT-AI) — TypeScript evolutionary trainer and the long-running evolutionary process.
+- [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) — shared Rust creature/network representation and inference primitives.
+- [NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer) — authoritative Rust scorer; **the final judge**.
+- [NEAT-AI-Discovery](https://github.com/stSoftwareAU/NEAT-AI-Discovery) — statistical/structural discovery of promising mutations.
+- [NEAT-AI-Lamarck](https://github.com/stSoftwareAU/NEAT-AI-Lamarck) — acquired-learning/backprop/statistics-guided optimisation of mature creatures.
+
+These experiments are complementary rather than mutually exclusive:
+
+```text
+normal NEAT evolution
+        │
+        ├── Discovery  → structural/statistical opportunities
+        ├── Lamarck    → continuous learning / parameter opportunities
+        └── Forests    → discontinuous conditional/residual opportunities
+                              │
+                              ▼
+                       NEAT-AI-scorer
+                       decides what survives
+```

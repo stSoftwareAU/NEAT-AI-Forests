@@ -163,6 +163,20 @@ struct Cli {
     /// Consecutive scorer failures tolerated before stopping.
     #[arg(long, default_value_t = 3)]
     max_consecutive_scorer_failures: u32,
+    /// Shared learnings cache root (off when absent): what worked and what
+    /// failed, written per host and read back from every host, so the fleet
+    /// re-applies each other's wins even after the fittest creature moved on.
+    #[arg(long)]
+    learnings_dir: Option<PathBuf>,
+    /// Name this machine files its learnings under (default: the hostname).
+    #[arg(long)]
+    learnings_host: Option<String>,
+    /// Cached candidates replayed per iteration (0 = write only, never read).
+    #[arg(long, default_value_t = 8)]
+    learnings_replay: usize,
+    /// Hours before a candidate that only ever failed is offered again.
+    #[arg(long, default_value_t = neat_ai_forests::learnings::DEFAULT_RETRY_AFTER_SECS / 3600)]
+    learnings_retry_after_hours: u64,
 }
 
 fn parse_kind(s: &str) -> Result<StumpKind, String> {
@@ -283,6 +297,10 @@ fn main() -> ExitCode {
         gpu: cli.gpu,
         preserve_candidates: cli.preserve_candidates,
         max_consecutive_scorer_failures: cli.max_consecutive_scorer_failures,
+        learnings_dir: cli.learnings_dir.clone(),
+        learnings_host: cli.learnings_host.clone(),
+        learnings_replay: cli.learnings_replay,
+        learnings_retry_after_secs: cli.learnings_retry_after_hours.saturating_mul(3600),
     };
     if let Err(e) = config.validate() {
         eprintln!("{e}");

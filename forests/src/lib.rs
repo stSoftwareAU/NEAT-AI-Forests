@@ -42,6 +42,7 @@ pub mod graft;
 pub mod histogram;
 pub mod incumbent;
 pub mod journal;
+pub mod learnings;
 pub mod log;
 pub mod meta;
 pub mod oblique;

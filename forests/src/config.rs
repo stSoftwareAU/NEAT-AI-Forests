@@ -195,6 +195,20 @@ pub struct ForestsConfig {
     pub preserve_candidates: bool,
     /// Consecutive scorer failures tolerated before aborting.
     pub max_consecutive_scorer_failures: u32,
+    /// Shared learnings cache root (`None` = the cache is off, Issue #60).
+    ///
+    /// What worked and what failed is written here as one append-only file per
+    /// host, and every host's file is read back, so a fleet that shares the
+    /// directory — through a git repository, say — re-applies each other's wins
+    /// even after the fittest creature has moved on.
+    pub learnings_dir: Option<PathBuf>,
+    /// Name this machine files its learnings under (`None` = the hostname).
+    pub learnings_host: Option<String>,
+    /// Cached candidates replayed per iteration (0 = write only, never read).
+    pub learnings_replay: usize,
+    /// How long a candidate that only ever failed is left alone before it is
+    /// offered again.
+    pub learnings_retry_after_secs: u64,
 }
 
 impl Default for ForestsConfig {
@@ -245,6 +259,10 @@ impl Default for ForestsConfig {
             gpu: GpuMode::Off,
             preserve_candidates: false,
             max_consecutive_scorer_failures: 3,
+            learnings_dir: None,
+            learnings_host: None,
+            learnings_replay: 8,
+            learnings_retry_after_secs: crate::learnings::DEFAULT_RETRY_AFTER_SECS,
         }
     }
 }
