@@ -103,9 +103,36 @@ and the weights are the same either way — and the collision hardening is the
 same (`forest-P-one-c2`, …). Measured on a six-patch depth-2 graft, deleting the
 worst single constant breaks 12 `IF` nodes across all six patches under
 `shared` and 2 nodes in one patch under `per-patch`; the cost is three extra
-constant neurons per patch and no extra synapses. Other aggregate outputs
-(`MINIMUM`/`MAXIMUM`/`MEAN`/`HYPOT`) are not additive in a new synapse and the
-graft is refused.
+constant neurons per patch and no extra synapses.
+
+### Grafting behind a clamped output (#58)
+
+A `MINIMUM` or `MAXIMUM` output is not additive in a new synapse — the extra
+synapse competes with the value instead of adding to it. But such a neuron is
+one weighted source (plus bias), so it *is* linear in the source it selects:
+add `c` there and the clamp moves by `w · c` on every record that selects it.
+The graft therefore walks past the clamp onto that source, multiplying a running
+gain by the synapse weight, and repeats until it reaches a neuron a correction
+can be added to (an `IF`, or an `IDENTITY`). The root's outward edge then
+carries `1 / gain`, so the patch's leaves stay in the output space the residuals
+were measured in.
+
+Nothing pre-existing is rewritten: the clamps stay where evolution put them, and
+on a record where a clamp binds the correction is capped rather than applied —
+the scorer sees that and judges the candidate on it. The walk descends only
+where the choice of source is unambiguous (exactly one source that is neither an
+input nor a constant), refuses `MEAN` (its divisor counts the synapses) and
+`HYPOT` (not linear in any source), refuses a point-wise neuron found *behind* a
+clamp (residuals were never measured in its pre-squash space), and stops after
+eight aggregates. Each refusal is a `GraftError::NoGraftAnchor` or
+`UnsupportedOutputSquash` naming what it found.
+
+This is what the production champion needs: the fleet wrapped the `IF` body that
+every earlier graft attached to in two `MINIMUM` clamps, which refused every
+candidate. Measured on the production corpus, 97.8 % of records still reach the
+body, so a correction grafted there reaches the output on 97.8 % of records and
+is capped on the rest. `neat_ai_forests run` reports the anchor and gain each
+iteration when they are not the output itself.
 
 Because `IF` applies no squash and `condition_sum > 0 ? positive_sum + bias :
 negative_sum + bias`, the root's activation is exactly the patch's correction,

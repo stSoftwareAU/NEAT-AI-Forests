@@ -22,9 +22,17 @@
 //!                 condition:  input-f (weight w_f per term)  and  one_c (weight = −threshold)
 //!                 positive:   right child ifN (weight 1)  |  one_p (weight = right leaf)
 //!                 negative:   left  child ifN (weight 1)  |  one_n (weight = left leaf)
-//! root ifN ──(weight 1, untyped)──▶ output-j            (point-wise output squash)
-//! root ifN ──(positive)──▶ output-j  and  root ifN → relayN (IDENTITY) ──(negative)──▶ output-j   (IF output)
+//! root ifN ──(weight 1/gain, untyped)──▶ anchor            (point-wise squash)
+//! root ifN ──(positive)──▶ anchor  and  root ifN → relayN (IDENTITY) ──(negative)──▶ anchor   (IF)
 //! ```
+//!
+//! The **anchor** is the output neuron itself for every creature Forests
+//! started with. Where the output is a `MINIMUM`/`MAXIMUM` clamp — as the
+//! production champion's became — nothing can be *added* to it, so the graft
+//! walks past the clamp onto the single source it selects, keeping a running
+//! `gain` of the weights it passes, and attaches there instead (Issue #58).
+//! The outward edge carries `1 / gain` so the patch's leaves stay in the
+//! output space the residuals were measured in; [`graft_anchor`] reports it.
 //!
 //! Who owns the three constants is [`GraftConstants`]. Shared stays the default
 //! (#43). Opt in to per-patch (Issue #56) and a patch's `IF` nodes depend only
@@ -65,12 +73,12 @@
 //! Every grafted creature is still pinned against the abstract evaluator record
 //! by record, and against NEAT-AI-core's own helpers shape by shape.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use neat_core::topology_ops::{STRUCTURAL_VALID, validate_structural_integrity};
 use neat_core::{
-    CompiledNetwork, CreatureExport, IfNodeSpec, NeuronExport, RelaySpec, SynapseType,
+    CompiledNetwork, CreatureExport, IfNodeSpec, NeuronExport, RelaySpec, SquashType, SynapseType,
     ValidateOptions, ValidationFailure, compile_creature, creature_validate, graft_if_nodes,
     graft_relay_node, validate_no_duplicate_synapses,
 };
@@ -107,9 +115,14 @@ pub enum GraftError {
     OutputsNotLast,
     /// NEAT-AI-core refused to compile the result.
     Compile(String),
-    /// The target output neuron is an aggregate (MINIMUM/MAXIMUM/MEAN/HYPOT…)
-    /// whose activation is not additive in an extra synapse.
+    /// The target output neuron is an aggregate (MEAN/HYPOT…) whose activation
+    /// is neither additive in an extra synapse nor linear in the source it
+    /// selects, so there is nothing to walk past either (Issue #58).
     UnsupportedOutputSquash(String),
+    /// No neuron behind the output's clamps can take the correction — the walk
+    /// found an ambiguous branch, a non-linear neuron, or no candidate at all
+    /// (Issue #58).
+    NoGraftAnchor(String),
     /// Structural validator rejected the result.
     Structural {
         /// Validator code.
@@ -148,7 +161,11 @@ impl fmt::Display for GraftError {
             Self::Compile(m) => write!(f, "grafted creature does not compile: {m}"),
             Self::UnsupportedOutputSquash(s) => write!(
                 f,
-                "output neuron squash `{s}` is an aggregate whose value is not additive in a new synapse; refusing to graft"
+                "squash `{s}` is an aggregate that is neither additive in a new synapse nor linear in the source it selects; refusing to graft"
+            ),
+            Self::NoGraftAnchor(why) => write!(
+                f,
+                "no neuron behind the output can take the correction: {why}"
             ),
             Self::Structural { code, index } => {
                 write!(f, "structural validation failed: code {code} at {index}")
@@ -460,6 +477,161 @@ fn with_constants(
     creature
 }
 
+/// How far past aggregate neurons the anchor walk descends (Issue #58).
+///
+/// The production chain is two clamps deep; the bound only stops a
+/// pathological creature from being walked forever.
+const MAX_ANCHOR_DEPTH: usize = 8;
+
+/// Where a correction can enter the creature, and what it is worth at the
+/// output once it does.
+struct Anchor {
+    /// Neuron the patch root's outward edge attaches to.
+    uuid: String,
+    /// `d(output) / d(anchor activation)` along the branch walked — the
+    /// product of the synapse weights passed on the way down. The root's
+    /// outward edge carries `1 / gain`, so a correction of `c` moves the
+    /// output by `c` on every record whose value flows down that branch.
+    gain: f64,
+    /// The anchor's squash, already parsed.
+    squash: SquashType,
+}
+
+/// Find the neuron a correction for `output_uuid` can be added to.
+///
+/// A point-wise output takes it in its pre-squash sum and an `IF` output takes
+/// it on both branches — both are the output neuron itself, and that is where
+/// the walk stops for the creatures Forests has always handled.
+///
+/// A `MINIMUM` or `MAXIMUM` output is different: its value is one weighted
+/// source (plus bias), so an extra synapse does not add to it, it competes
+/// with it. But that same shape makes it *linear in the source it selects* —
+/// add `c` to that source and the neuron moves by `w · c` whenever that source
+/// is the one selected. So the walk steps past the clamp onto the source and
+/// keeps the weight, repeating until it reaches a neuron a correction can be
+/// added to. The production champion is exactly this: the fleet wrapped the
+/// `IF` body every earlier graft attached to in two `MINIMUM` clamps, and
+/// 97.8 % of records still reach the body (measured on the production corpus).
+///
+/// Which source a clamp selects varies per record, so the walk descends only
+/// where the choice is unambiguous — exactly one source that is neither an
+/// input nor a constant — and fails closed otherwise. Nothing pre-existing is
+/// ever rewritten: the clamps stay, and on a record where a clamp binds the
+/// correction is simply capped, which the scorer sees.
+fn resolve_anchor(incumbent: &CreatureExport, output_uuid: &str) -> Result<Anchor, GraftError> {
+    let by_uuid: HashMap<&str, &NeuronExport> = incumbent
+        .neurons
+        .iter()
+        .map(|n| (n.uuid.as_str(), n))
+        .collect();
+    let mut uuid = output_uuid.to_string();
+    let mut gain = 1.0f64;
+    for depth in 0..=MAX_ANCHOR_DEPTH {
+        let neuron = by_uuid
+            .get(uuid.as_str())
+            .ok_or_else(|| GraftError::NoGraftAnchor(format!("`{uuid}` names no neuron")))?;
+        let name = neuron.squash.as_deref().unwrap_or("IDENTITY");
+        let squash =
+            neat_core::parse_squash_name(name).map_err(|e| GraftError::Compile(e.to_string()))?;
+        // An `IF` takes the correction on both of its branches, and an
+        // IDENTITY takes it in a sum it does not squash — either is additive
+        // wherever it sits.
+        if squash == SquashType::If || squash == SquashType::Identity {
+            return Ok(Anchor { uuid, gain, squash });
+        }
+        if squash.is_aggregate() {
+            if !matches!(squash, SquashType::Minimum | SquashType::Maximum) {
+                // MEAN divides by a synapse count the graft would change;
+                // HYPOT is not linear in any source. Neither can be added to
+                // or walked past.
+                return Err(GraftError::UnsupportedOutputSquash(name.to_string()));
+            }
+            let mut sources = incumbent
+                .synapses
+                .iter()
+                .filter(|s| s.to_uuid == uuid)
+                .filter(|s| {
+                    by_uuid
+                        .get(s.from_uuid.as_str())
+                        .is_some_and(|n| n.neuron_type != "constant")
+                });
+            let Some(step) = sources.next() else {
+                return Err(GraftError::NoGraftAnchor(format!(
+                    "`{uuid}` (`{name}`) selects between inputs and constants only"
+                )));
+            };
+            if sources.next().is_some() {
+                return Err(GraftError::NoGraftAnchor(format!(
+                    "`{uuid}` (`{name}`) selects between two or more neurons; no one branch carries the correction"
+                )));
+            }
+            gain *= step.weight;
+            if !gain.is_finite() || gain == 0.0 {
+                return Err(GraftError::NoGraftAnchor(format!(
+                    "the gain through `{uuid}` is {gain}"
+                )));
+            }
+            uuid = step.from_uuid.clone();
+            continue;
+        }
+        // A point-wise squash at the output is the case Forests started with:
+        // the residuals are already measured in that neuron's pre-squash space
+        // (see `residuals::record_residuals`), so the correction is additive
+        // there. Behind a clamp that space was never measured, so refuse.
+        if depth == 0 {
+            return Ok(Anchor { uuid, gain, squash });
+        }
+        return Err(GraftError::NoGraftAnchor(format!(
+            "`{uuid}` behind the clamp squashes with `{name}`; a correction added there is not additive at the output"
+        )));
+    }
+    Err(GraftError::NoGraftAnchor(format!(
+        "more than {MAX_ANCHOR_DEPTH} aggregates stand between `{output_uuid}` and anything a correction can be added to"
+    )))
+}
+
+/// The uuid of `incumbent`'s output neuron `output`, checking that the output
+/// neurons are the trailing entries of `neurons` — the layout every index in
+/// this module assumes.
+fn output_uuid(incumbent: &CreatureExport, output: usize) -> Result<String, GraftError> {
+    if output >= incumbent.output {
+        return Err(GraftError::OutputOutOfRange {
+            output,
+            outputs: incumbent.output,
+        });
+    }
+    let n = incumbent.neurons.len();
+    if n < incumbent.output
+        || incumbent.neurons[n - incumbent.output..]
+            .iter()
+            .any(|x| x.neuron_type != "output")
+    {
+        return Err(GraftError::OutputsNotLast);
+    }
+    Ok(incumbent.neurons[n - incumbent.output + output]
+        .uuid
+        .clone())
+}
+
+/// The neuron a graft on `output` would attach its correction to, and the gain
+/// from there to the output (Issue #58).
+///
+/// The same walk [`graft_patch`] performs, exposed so a run can report where
+/// its corrections are landing — on a clamped champion that is a hidden neuron,
+/// not the output.
+///
+/// # Errors
+///
+/// Returns the [`GraftError`] the walk fails with; grafting would fail the same
+/// way.
+pub fn graft_anchor(
+    incumbent: &CreatureExport,
+    output: usize,
+) -> Result<(String, f64), GraftError> {
+    let anchor = resolve_anchor(incumbent, &output_uuid(incumbent, output)?)?;
+    Ok((anchor.uuid, anchor.gain))
+}
+
 /// Result of a graft: the new creature plus what was appended.
 #[derive(Debug, Clone)]
 pub struct Grafted {
@@ -498,22 +670,18 @@ pub fn graft_patch_with(
     if matches!(patch.root, Node::Leaf { .. }) {
         return Err(GraftError::RootIsLeaf);
     }
-    if patch.output >= incumbent.output {
-        return Err(GraftError::OutputOutOfRange {
-            output: patch.output,
-            outputs: incumbent.output,
-        });
-    }
+    let output_neuron = output_uuid(incumbent, patch.output)?;
+    // Where the correction can actually enter: the output itself, or — when
+    // the fleet has wrapped the output in `MINIMUM`/`MAXIMUM` clamps — the
+    // neuron behind them, with the gain back out to the output (Issue #58).
+    let anchor = resolve_anchor(incumbent, &output_neuron)?;
+    let target_uuid = anchor.uuid.clone();
+    // A correction of `c` at the anchor is worth `gain · c` at the output, so
+    // the outward edge carries `1 / gain` and the patch's leaves stay in the
+    // output space the residuals were measured in.
+    let edge = 1.0 / anchor.gain;
     let n = incumbent.neurons.len();
-    if n < incumbent.output
-        || incumbent.neurons[n - incumbent.output..]
-            .iter()
-            .any(|x| x.neuron_type != "output")
-    {
-        return Err(GraftError::OutputsNotLast);
-    }
     let first_output = n - incumbent.output;
-    let target_uuid = incumbent.neurons[first_output + patch.output].uuid.clone();
     let existing: HashSet<&str> = incumbent.neurons.iter().map(|x| x.uuid.as_str()).collect();
     let prefix = format!("forest-{}", patch.id());
     // The three bias-1 constants this patch's `IF` nodes read — shared across
@@ -532,25 +700,14 @@ pub fn graft_patch_with(
         existing: &existing,
     };
     let root_uuid = em.emit(&patch.root)?;
-    // How the correction enters the output depends on the output's squash:
-    // * point-wise squash: one untyped synapse adds to the pre-squash sum;
-    // * `IF` output: an untyped synapse would feed only the positive branch,
-    //   so the root feeds the positive branch directly and an IDENTITY relay
-    //   feeds the negative branch (two distinct (from, to) pairs);
-    // * other aggregates (MIN/MAX/MEAN/HYPOT): not additive — fail closed.
-    let target_squash = incumbent.neurons[first_output + patch.output]
-        .squash
-        .as_deref()
-        .unwrap_or("IDENTITY");
-    let parsed = neat_core::parse_squash_name(target_squash)
-        .map_err(|e| GraftError::Compile(e.to_string()))?;
-    let target_is_if = parsed == neat_core::SquashType::If;
-    if !target_is_if && parsed.is_aggregate() {
-        return Err(GraftError::UnsupportedOutputSquash(
-            target_squash.to_string(),
-        ));
-    }
-    // The root's outward edge: untyped into a point-wise output, `positive`
+    // How the correction enters the anchor depends on the anchor's squash:
+    // * point-wise (or IDENTITY): one untyped synapse adds to the pre-squash sum;
+    // * `IF`: an untyped synapse would feed only the positive branch, so the
+    //   root feeds the positive branch directly and an IDENTITY relay feeds
+    //   the negative branch (two distinct (from, to) pairs).
+    // `resolve_anchor` has already refused anything else.
+    let target_is_if = anchor.squash == SquashType::If;
+    // The root's outward edge: untyped into a point-wise anchor, `positive`
     // into an `IF` one, where the relay below carries the `negative` half.
     let relay = if target_is_if {
         Some(em.fresh("relay")?)
@@ -564,9 +721,9 @@ pub fn graft_patch_with(
             .expect("a split patch describes at least one node");
         *root = if target_is_if {
             root.clone()
-                .with_target_role(target_uuid.clone(), 1.0, SynapseType::Positive)
+                .with_target_role(target_uuid.clone(), edge, SynapseType::Positive)
         } else {
-            root.clone().with_target(target_uuid.clone(), 1.0)
+            root.clone().with_target(target_uuid.clone(), edge)
         };
     }
 
@@ -582,7 +739,7 @@ pub fn graft_patch_with(
     if let Some(relay) = relay {
         let spec = RelaySpec::new(relay, 0.0)
             .with_source(root_uuid.clone(), 1.0)
-            .with_target_role(target_uuid.clone(), 1.0, SynapseType::Negative);
+            .with_target_role(target_uuid.clone(), edge, SynapseType::Negative);
         creature =
             graft_relay_node(&creature, &spec).map_err(|e| GraftError::Canonical(e.to_string()))?;
     }
@@ -830,6 +987,52 @@ pub mod fixtures {
                     weight: 0.1,
                     synapse_type: None,
                 },
+            ],
+            semantic_version: Some("4.0.0".into()),
+            forward_only: true,
+            memetic: None,
+        }
+    }
+
+    /// A creature shaped like the production champion after the fleet wrapped
+    /// its `IF` body in two `MINIMUM` clamps: the output is
+    /// `min(input-3, min(0.98·input-3, 0.5·body))` and `body` is the `IF`
+    /// aggregate every graft used to attach to (Issue #58).
+    ///
+    /// Nothing can be added to a `MINIMUM` neuron additively, so a graft has to
+    /// walk past both clamps and attach to `body`, scaling its outward edge by
+    /// the `0.5` on the way back out.
+    pub fn min_clamped_if_creature(inputs: usize) -> CreatureExport {
+        assert!(inputs >= 4);
+        let neuron = |uuid: &str, kind: &str, bias: f64, squash: &str| NeuronExport {
+            id: None,
+            neuron_type: kind.into(),
+            uuid: uuid.into(),
+            bias,
+            squash: Some(squash.into()),
+        };
+        let synapse = |from: &str, to: &str, weight: f64, role: Option<&str>| SynapseExport {
+            from_uuid: from.into(),
+            to_uuid: to.into(),
+            weight,
+            synapse_type: role.map(str::to_string),
+        };
+        CreatureExport {
+            input: inputs,
+            output: 1,
+            neurons: vec![
+                neuron("body-if", "hidden", 0.01, "IF"),
+                neuron("clamp-0", "hidden", 0.0, "MINIMUM"),
+                neuron("output-0", "output", 0.0, "MINIMUM"),
+            ],
+            synapses: vec![
+                synapse("input-0", "body-if", 1.0, Some("condition")),
+                synapse("input-1", "body-if", 2.0, Some("positive")),
+                synapse("input-2", "body-if", -1.0, Some("negative")),
+                synapse("input-3", "clamp-0", 0.98, None),
+                synapse("body-if", "clamp-0", 0.5, None),
+                synapse("input-3", "output-0", 1.0, None),
+                synapse("clamp-0", "output-0", 1.0, None),
             ],
             semantic_version: Some("4.0.0".into()),
             forward_only: true,
@@ -1157,11 +1360,123 @@ mod tests {
             if rec[0] > 0.0 { pos += 1 } else { neg += 1 }
         }
         assert!(pos > 0 && neg > 0);
-        // A MAXIMUM output is refused.
+        // A MAXIMUM output over inputs alone has nothing behind it to graft
+        // onto, so it is still refused (Issue #58).
         let mut max_out = inc.clone();
         max_out.neurons[0].squash = Some("MAXIMUM".into());
         assert!(matches!(
             graft_patch(&max_out, &patch),
+            Err(GraftError::NoGraftAnchor(_))
+        ));
+    }
+
+    /// Issue #58: the fleet wrapped the champion's `IF` body in `MINIMUM`
+    /// clamps, and every candidate was refused. A graft must walk past the
+    /// clamps to the body they shield, and scale its outward edge by the gain
+    /// on the way back to the output, so an unclamped record moves by exactly
+    /// the patch's correction.
+    #[test]
+    fn a_clamped_output_grafts_at_the_body_the_clamps_shield() {
+        let inc = min_clamped_if_creature(4);
+        let patch = Patch::new(0, Node::stump(0, 0.0, -0.3, 0.4), Provenance::default());
+        for constants in MODES {
+            let grafted = graft_patch_with(&inc, &patch, constants).unwrap();
+            // The correction lands on the body, not on either clamp.
+            let inward: Vec<(f64, Option<&str>)> = grafted
+                .creature
+                .synapses
+                .iter()
+                .filter(|x| x.to_uuid == "body-if" && !inc.synapses.contains(x))
+                .map(|x| (x.weight, x.synapse_type.as_deref()))
+                .collect();
+            assert_eq!(
+                inward,
+                vec![(2.0, Some("positive")), (2.0, Some("negative"))],
+                "both branches of the body take the correction at 1/gain"
+            );
+            assert!(
+                grafted
+                    .creature
+                    .synapses
+                    .iter()
+                    .all(|x| x.to_uuid != "output-0" && x.to_uuid != "clamp-0"
+                        || inc.synapses.contains(x)),
+                "neither clamp is touched"
+            );
+            let mut base = compile_creature(&inc).unwrap();
+            let mut cand = compile_creature(&grafted.creature).unwrap();
+            let (mut clamped, mut clear) = (0, 0);
+            for rec in records(400, 4) {
+                let expected = patch.evaluate(&rec);
+                // Oracle: re-run the incumbent's clamp chain with the
+                // correction added to the body's value.
+                let traced = base.activate_and_trace(&rec, 1);
+                let body = traced[1]; // first non-input activation
+                let clamp = (0.98 * rec[3]).min(0.5 * (body + 2.0 * expected));
+                let want = rec[3].min(clamp);
+                let got = cand.activate(&rec, 1)[0];
+                assert!(
+                    (got - want).abs() <= 1e-5,
+                    "clamped candidate {got} != oracle {want}"
+                );
+                let before = base.activate(&rec, 1)[0];
+                // Where the body branch wins both before and after, the output
+                // moves by exactly the correction; where a clamp binds on
+                // either side the correction is capped, which is the incumbent
+                // structure doing its job and what the scorer then judges.
+                let body_wins_before = (before - 0.5 * body).abs() <= 1e-6;
+                let body_wins_after = (want - 0.5 * (body + 2.0 * expected)).abs() <= 1e-6;
+                if body_wins_before && body_wins_after {
+                    clear += 1;
+                    assert!(
+                        ((got - before) - expected).abs() <= 1e-5,
+                        "unclamped record moved by {} not {expected}",
+                        got - before
+                    );
+                } else {
+                    clamped += 1;
+                    assert!(
+                        (got - before).abs() <= expected.abs() + 1e-5,
+                        "a capped record moved by {} , more than the correction {expected}",
+                        got - before
+                    );
+                }
+            }
+            assert!(
+                clear > 0 && clamped > 0,
+                "fixture must cover clamped ({clamped}) and unclamped ({clear}) records"
+            );
+        }
+    }
+
+    /// The walk reports where a correction can enter and what it is worth
+    /// there, so a run can say which neuron it is grafting onto.
+    #[test]
+    fn the_anchor_walk_reports_the_neuron_and_the_gain() {
+        let (uuid, gain) = graft_anchor(&min_clamped_if_creature(4), 0).unwrap();
+        assert_eq!(uuid, "body-if");
+        assert!((gain - 0.5).abs() < 1e-12, "gain {gain}");
+        let (uuid, gain) = graft_anchor(&if_output_creature(3), 0).unwrap();
+        assert_eq!((uuid.as_str(), gain), ("output-0", 1.0));
+    }
+
+    /// A clamp with nothing graftable behind it still fails closed.
+    #[test]
+    fn a_clamp_with_no_reachable_body_fails_closed() {
+        let inc = if_output_creature(3);
+        let patch = Patch::new(0, Node::stump(0, 0.0, -0.1, 0.1), Provenance::default());
+        let mut min_over_inputs = inc.clone();
+        min_over_inputs.neurons[0].squash = Some("MINIMUM".into());
+        assert!(matches!(
+            graft_patch(&min_over_inputs, &patch),
+            Err(GraftError::NoGraftAnchor(_))
+        ));
+        // An aggregate that is not linear in the branch it selects is refused
+        // outright rather than walked past.
+        let mut mean_out = inc.clone();
+        mean_out.neurons[0].squash = Some("MEAN".into());
+        assert!(matches!(
+            graft_patch(&mean_out, &patch),
             Err(GraftError::UnsupportedOutputSquash(_))
         ));
     }
