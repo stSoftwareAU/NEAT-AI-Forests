@@ -418,6 +418,10 @@ neat_ai_forests <creature.json> <training-data-dir> import-xgboost --dump dump.j
 | `--gpu` | `off` | `off`, `auto`, `on` (needs the `gpu` cargo feature; CPU measured faster on unified memory) |
 | `--preserve-candidates` | off | keep per-iteration cohort directories |
 | `--max-consecutive-scorer-failures` | `3` | abort after this many failures in a row |
+| `--learnings-dir` | off | shared cache of full-corpus verdicts (#60); point every host at one git checkout and the fleet replays each other's wins |
+| `--learnings-host` | hostname | the file this machine appends to, so no two hosts ever conflict |
+| `--learnings-replay` | `8` | cached candidates replayed per iteration (0 = write only) |
+| `--learnings-retry-after-hours` | `168` | how long a candidate that only ever failed is left alone before it is offered again |
 
 `--help` and `--version` are the usual clap extras. The scorer's own
 `--sample-rate`, `--sample-phase`, `--gpu` and `--cost` flags are passed by
@@ -482,6 +486,7 @@ NEAT-AI-Forests/
 │   │   ├── histogram.rs       # CPU reference stump search (#5)
 │   │   ├── incumbent.rs       # immutable incumbent + checksum (#2)
 │   │   ├── journal.rs         # experiments.jsonl records (#10)
+│   │   ├── learnings.rs       # fleet-shared cache of what worked / failed (#60)
 │   │   ├── log.rs             # stderr logging
 │   │   ├── meta.rs            # creature tag preservation
 │   │   ├── oblique.rs         # multi-feature linear splits (#14)
@@ -497,7 +502,7 @@ NEAT-AI-Forests/
 │   │   └── xgboost.rs         # XGBoost dump conversion (#13)
 │   ├── examples/stump_search_bench.rs
 │   └── tests/                 # README contract, real-scorer integration
-├── docs/                      # architecture, caches, patch format, gpu, strategies, xgboost control, benchmarks
+├── docs/                      # architecture, caches, patch format, gpu, strategies, xgboost control, benchmarks, learnings cache
 │   └── archive/pr-summaries/  # one summary per merged PR
 ├── scripts/                   # quality helpers, auto-version.sh, report-experiments.sh, run-benchmark.sh, xgboost-control.py
 ├── quality.sh                 # local gate mirroring CI
@@ -509,6 +514,7 @@ NEAT-AI-Forests/
 - [docs/architecture.md](docs/architecture.md) — module map and data flow.
 - [docs/caches.md](docs/caches.md) — bin-cache and residual-sidecar binary formats and invalidation rules.
 - [docs/patch-format.md](docs/patch-format.md) — patch JSON, `IF` graft layout, exact routing semantics.
+- [docs/learnings.md](docs/learnings.md) — the shared cache of what worked and what failed, and how a fleet uses it.
 - [docs/gpu.md](docs/gpu.md) — WGSL kernel design, determinism, limits, fallback reporting.
 - [docs/strategies.md](docs/strategies.md) — sampling, jitter, diversity, random controls and how they report themselves.
 - [docs/xgboost-control.md](docs/xgboost-control.md) — the external control experiment.

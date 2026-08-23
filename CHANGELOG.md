@@ -5,6 +5,30 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A **shared learnings cache** (#60), off unless `--learnings-dir` is given. A
+  patch names feature indices, never neuron uuids, so it can be grafted onto a
+  different creature on a different host — even an island whose neurons share no
+  uuid with anything we have seen — provided the widths and the corpus match.
+  The cache exploits that in both directions: a win some host got past the full
+  scorer is replayed onto creatures that do not already carry it, so it is not
+  lost when the fittest creature moves on; and a candidate the fleet has already
+  scored and turned down is dropped from the cohort, so the slot goes to
+  something else instead of to a scorer call whose answer is on file. Both are
+  shortcuts, not assumptions: a replayed win clears the same full-corpus gate as
+  any other candidate, and a failure becomes worth retrying once
+  `--learnings-retry-after-hours` (default 168) has passed.
+
+  Records are `<--learnings-dir>/corpus-<identity>/<host>.jsonl`, one
+  append-only file per host — so machines sharing the directory through a git
+  repository never conflict — named by `--learnings-host` (the hostname by
+  default). `--learnings-replay` (default 8) caps how many are replayed per
+  iteration. Only full-corpus verdicts are cached: a graft refusal belongs to
+  the creature rather than the patch, and the sampled screen ranks rather than
+  judges. An unreadable or unwritable cache is logged and the run continues.
+  See `docs/learnings.md`.
+
 ### Fixed
 
 - A creature whose output is a `MINIMUM`/`MAXIMUM` clamp can be improved again

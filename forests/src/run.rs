@@ -160,6 +160,76 @@ fn write_best(
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// File this iteration's full-corpus verdicts in the shared cache (Issue #60).
+///
+/// Only candidates a full scorer call actually judged are filed: a screen
+/// opinion is a ranking, not a verdict, and a graft refusal belongs to the
+/// creature rather than to the patch (see `crate::learnings`). `known` is
+/// extended with whatever was filed, so a later iteration of the same run does
+/// not file it again.
+fn file_learnings(
+    store: Option<&crate::learnings::LearningsStore>,
+    known: &mut Vec<crate::learnings::Learning>,
+    record: &ExperimentRecord,
+    incumbent: &Incumbent,
+    corpus: &CorpusInfo,
+) {
+    let Some(store) = store else { return };
+    let verdicts: Vec<crate::learnings::Verdict<'_>> = record
+        .candidates
+        .iter()
+        .filter_map(|c| {
+            let delta = c.full_delta?;
+            let accepted = record.winner.as_deref() == Some(c.id.as_str());
+            // `patch` is the first of the stack and `combo` the rest of it,
+            // empty for a single-patch candidate.
+            let mut patches = vec![c.patch.clone()];
+            patches.extend(c.combo.iter().cloned());
+            Some(crate::learnings::Verdict {
+                id: c.id.as_str(),
+                patches,
+                outcome: if accepted {
+                    crate::learnings::Outcome::Accepted
+                } else {
+                    crate::learnings::Outcome::Rejected
+                },
+                delta,
+            })
+        })
+        .collect();
+    if verdicts.is_empty() {
+        return;
+    }
+    let ctx = crate::learnings::Context {
+        corpus: corpus.identity.clone(),
+        inputs: incumbent.creature.input,
+        outputs: incumbent.creature.output,
+        incumbent: record.incumbent_checksum.clone(),
+        incumbent_score: record.baseline_score,
+        host: String::new(),
+        at_unix: now_unix(),
+    };
+    let mut ctx = ctx;
+    ctx.host = store.host().to_string();
+    let filed = crate::learnings::file_verdicts(&verdicts, &ctx, known);
+    if filed.is_empty() {
+        return;
+    }
+    match store.append(&filed) {
+        Ok(()) => {
+            log::detail(&format!(
+                "learnings: filed {} verdict(s) to {}",
+                filed.len(),
+                store.file().display()
+            ));
+            known.extend(filed);
+        }
+        // Never fail a run over the cache: the creature and the journal are the
+        // deliverables, the cache is an optimisation.
+        Err(e) => log::warn(&format!("learnings not written: {e}")),
+    }
+}
+
 /// Run the complete optimiser.
 pub fn run_forests(
     cfg: &ForestsConfig,
@@ -194,6 +264,39 @@ pub fn run_forests(
     let winners_dir = cfg.output_dir.join("winners");
     std::fs::write(&best_path, &incumbent.text)
         .map_err(|e| format!("{}: {e}", best_path.display()))?;
+
+    // The fleet's shared cache of what has been tried (Issue #60). Loaded once
+    // — the directory is a git checkout the caller pulls between runs — and
+    // extended in memory as this run reaches its own verdicts, so the dedupe
+    // sees them too.
+    let learnings_store = cfg.learnings_dir.as_ref().map(|dir| {
+        crate::learnings::LearningsStore::new(
+            dir.clone(),
+            corpus.identity.clone(),
+            cfg.learnings_host
+                .clone()
+                .unwrap_or_else(crate::learnings::default_host),
+        )
+    });
+    let mut known: Vec<crate::learnings::Learning> = match &learnings_store {
+        Some(store) => match store.load() {
+            Ok(all) => {
+                log::info(&format!(
+                    "learnings: {} record(s) for this corpus in {}",
+                    all.len(),
+                    store.corpus_dir().display()
+                ));
+                all
+            }
+            Err(e) => {
+                // A cache that cannot be read is a cache miss, never a reason
+                // to abandon a run that would otherwise improve the creature.
+                log::warn(&format!("learnings unreadable ({e}); continuing without"));
+                Vec::new()
+            }
+        },
+        None => Vec::new(),
+    };
 
     let (seed, seed_source) = match cfg.seed {
         Some(s) => (s, "supplied"),
@@ -457,6 +560,74 @@ pub fn run_forests(
         // previous iteration's near-winners forward onto the new incumbent
         // (alone, together, and together with this iteration's best).
         let mut combo_groups: Vec<Vec<Patch>> = Vec::new();
+        // What the fleet already knows (Issue #60), ahead of this iteration's
+        // own discoveries: a patch another host got past the full scorer is
+        // better evidence than a proxy gain, and it is the only way a win
+        // survives the fittest creature moving on before we could re-apply it.
+        if !known.is_empty() {
+            let chosen = crate::learnings::choose(
+                &known,
+                &state.incumbent.checksum,
+                state.incumbent.creature.input,
+                state.incumbent.creature.output,
+                &crate::learnings::grafted_patch_ids(&state.incumbent.creature),
+                &crate::learnings::ReplayConfig {
+                    max: cfg.learnings_replay,
+                    retry_after_secs: cfg.learnings_retry_after_secs,
+                    now_unix: now_unix(),
+                },
+            );
+            if !chosen.is_empty() {
+                let (mut wins, mut retries) = (0, 0);
+                let mut replayed = Vec::new();
+                for learning in &chosen {
+                    match learning.outcome {
+                        crate::learnings::Outcome::Accepted => wins += 1,
+                        crate::learnings::Outcome::Rejected => retries += 1,
+                    }
+                    let group = learning.replay(&state.incumbent.checksum);
+                    if group.len() == 1 {
+                        replayed.extend(group);
+                    } else {
+                        combo_groups.push(group);
+                    }
+                }
+                log::detail(&format!(
+                    "replaying {} cached candidate(s): {wins} the fleet accepted elsewhere, {retries} due another try",
+                    chosen.len()
+                ));
+                // Ahead of this iteration's own discoveries: the cohort is
+                // capped, and known-good beats predicted-good.
+                replayed.append(&mut patches);
+                patches = replayed;
+                strategies.push("replay".into());
+            }
+            // The other half of the cheat: drop what the fleet has already
+            // proved does not work, so the slot goes to the next discovery
+            // rather than to a scorer call whose answer is on file. A patch
+            // that ever cleared the full scorer is never dropped, and after
+            // the retry window the mistake is worth making again.
+            let avoid = crate::learnings::known_failures(
+                &known,
+                &crate::learnings::ReplayConfig {
+                    max: cfg.learnings_replay,
+                    retry_after_secs: cfg.learnings_retry_after_secs,
+                    now_unix: now_unix(),
+                },
+            );
+            if !avoid.is_empty() {
+                let before = patches.len() + combo_groups.len();
+                patches.retain(|p| !avoid.contains(&p.id()));
+                combo_groups.retain(|g| !avoid.contains(&crate::candidates::combo_id(g)));
+                let dropped = before - (patches.len() + combo_groups.len());
+                if dropped > 0 {
+                    log::detail(&format!(
+                        "skipping {dropped} candidate(s) the fleet has already scored and turned down"
+                    ));
+                    strategies.push("avoid-known-failures".into());
+                }
+            }
+        }
         // Boosting rounds (#40): subtract the best patch from the sample
         // residuals, search again, and verify the bundle's prefixes together.
         if cfg.boost_rounds > 1
@@ -777,6 +948,13 @@ pub fn run_forests(
                     scorer_ms: full.scorer_ms,
                     created_at_unix: now_unix(),
                 };
+                file_learnings(
+                    learnings_store.as_ref(),
+                    &mut known,
+                    &record,
+                    &state.incumbent,
+                    &corpus,
+                );
                 append_journal_line(&journal_path, &JournalLine::Experiment(Box::new(record)))?;
                 append_journal_line(&journal_path, &JournalLine::Baseline(new_baseline.clone()))?;
                 // Promote atomically: write winner file, then best.json.
@@ -894,6 +1072,13 @@ pub fn run_forests(
                     outcome.false_positives,
                     outcome.false_negatives
                 ));
+                file_learnings(
+                    learnings_store.as_ref(),
+                    &mut known,
+                    &record,
+                    &state.incumbent,
+                    &corpus,
+                );
                 append_journal_line(&journal_path, &JournalLine::Experiment(Box::new(record)))?;
             }
         }
@@ -1040,6 +1225,194 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Issue #60 — end to end: one run files what the full scorer decided, and
+    /// a second run on a *different* creature replays it. That second half is
+    /// the whole point: by the time the fleet gets back to a win, the fittest
+    /// creature has usually moved on, and the patch is portable precisely
+    /// because it names feature indices rather than neuron uuids.
+    #[test]
+    fn the_fleet_cache_records_verdicts_and_replays_them_onto_another_creature() {
+        let (tmp, mut cfg) = fixture();
+        let shared = tmp.path().join("shared/learnings");
+        cfg.learnings_dir = Some(shared.clone());
+        cfg.learnings_host = Some("host-a".into());
+        let scorer = LocalMseScorer::new();
+        let first = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
+        assert!(first.acceptances >= 1);
+
+        let store =
+            crate::learnings::LearningsStore::new(&shared, String::new(), "host-a".to_string());
+        let corpus_dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&shared)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(
+            corpus_dirs.len(),
+            1,
+            "one directory per corpus: {corpus_dirs:?}"
+        );
+        let _ = store;
+        let files: Vec<String> = std::fs::read_dir(&corpus_dirs[0])
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(files, vec!["host-a.jsonl"], "one file per host");
+
+        let filed: Vec<crate::learnings::Learning> =
+            std::fs::read_to_string(corpus_dirs[0].join("host-a.jsonl"))
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+        assert!(
+            filed
+                .iter()
+                .any(|l| l.outcome == crate::learnings::Outcome::Accepted),
+            "the winner is filed"
+        );
+        assert!(
+            filed
+                .iter()
+                .any(|l| l.outcome == crate::learnings::Outcome::Rejected),
+            "so is what the full scorer turned down"
+        );
+        assert!(
+            filed.iter().all(|l| l.host == "host-a" && l.inputs == 3),
+            "every line says who filed it and how wide the creature was"
+        );
+
+        // A second host on a *sibling* creature — same widths, same corpus, no
+        // ancestry, so it carries none of the first run's patches. That is the
+        // case the cache exists for: the win would otherwise be lost with the
+        // creature it was found on. Its own search is switched off, so anything
+        // it grafts can only have come from the cache.
+        let sibling = tmp.path().join("sibling.json");
+        let mut c = neat_core::parse_creature_json(&identity_creature_json(3, 1)).unwrap();
+        c.neurons.last_mut().unwrap().bias = 1e-4;
+        std::fs::write(&sibling, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
+        let mut second = cfg.clone();
+        second.output_dir = tmp.path().join("out2");
+        second.learnings_host = Some("host-b".into());
+        second.creature = sibling;
+        second.max_iterations = Some(1);
+        second.top_k = 0;
+        second.random_candidates = 0;
+        second.combo_candidates = 0;
+        let r2 = run_forests(&second, &scorer, &CancelToken::new()).unwrap();
+        let journal = read_journal(&r2.journal_path).unwrap();
+        let replayed: Vec<&crate::journal::CandidateRecord> = journal
+            .iter()
+            .filter_map(|l| match l {
+                JournalLine::Experiment(e) => Some(&e.candidates),
+                _ => None,
+            })
+            .flatten()
+            .filter(|c| c.patch.provenance.strategy == "replay")
+            .collect();
+        assert!(
+            !replayed.is_empty(),
+            "nothing was replayed onto the sibling creature"
+        );
+        assert!(
+            replayed.iter().any(|c| filed
+                .iter()
+                .any(|l| l.id == c.id && l.outcome == crate::learnings::Outcome::Accepted)),
+            "the win the other host found is among them"
+        );
+        assert!(
+            replayed
+                .iter()
+                .all(|c| c.patch.provenance.backend == "learnings"),
+            "a replayed candidate says where it came from"
+        );
+        // The mistakes the first host paid for are not made again: nothing the
+        // full scorer turned down there is scored here.
+        let turned_down: std::collections::HashSet<&str> = filed
+            .iter()
+            .filter(|l| l.outcome == crate::learnings::Outcome::Rejected)
+            .map(|l| l.id.as_str())
+            .collect();
+        assert!(!turned_down.is_empty(), "the fixture must reject something");
+        let scored_again: Vec<&str> = journal
+            .iter()
+            .filter_map(|l| match l {
+                JournalLine::Experiment(e) => Some(&e.candidates),
+                _ => None,
+            })
+            .flatten()
+            .filter(|c| c.full_score.is_some())
+            .map(|c| c.id.as_str())
+            .filter(|id| turned_down.contains(id))
+            .collect();
+        assert!(
+            scored_again.is_empty(),
+            "spent a scorer call on what the fleet already turned down: {scored_again:?}"
+        );
+
+        // And the second host wrote its own file rather than touching the first's.
+        let files: Vec<String> = std::fs::read_dir(&corpus_dirs[0])
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(files.contains(&"host-b.jsonl".to_string()), "{files:?}");
+    }
+
+    /// The cache is opt-in, and switched off it must leave the optimiser
+    /// exactly as it was: nothing written anywhere, and — with the cache
+    /// writing but neither replaying nor avoiding — the same candidates in the
+    /// same order. Recording a verdict must never perturb the search that
+    /// produced it; only *acting* on one may.
+    #[test]
+    fn with_no_learnings_directory_nothing_changes_and_nothing_is_written() {
+        let ids = |journal: &std::path::Path| -> Vec<String> {
+            read_journal(journal)
+                .unwrap()
+                .iter()
+                .filter_map(|l| match l {
+                    JournalLine::Experiment(e) => Some(e.candidates.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .map(|c| c.id)
+                .collect()
+        };
+        let (tmp, cfg) = fixture();
+        let scorer = LocalMseScorer::new();
+        let off = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
+
+        let mut writing = cfg.clone();
+        writing.output_dir = tmp.path().join("out-writing");
+        writing.learnings_dir = Some(tmp.path().join("shared/learnings"));
+        writing.learnings_host = Some("host-a".into());
+        writing.learnings_replay = 0;
+        // Nothing is old enough to avoid or to retry, so the cache is
+        // write-only for the length of this run.
+        writing.learnings_retry_after_secs = 0;
+        let on = run_forests(&writing, &scorer, &CancelToken::new()).unwrap();
+
+        assert_eq!(
+            ids(&off.journal_path),
+            ids(&on.journal_path),
+            "writing verdicts changed which candidates were tried"
+        );
+        assert_eq!(off.best_score, on.best_score);
+        assert!(
+            !tmp.path().join("shared").exists() || tmp.path().join("shared/learnings").exists(),
+            "the writing run owns that directory"
+        );
+        // The run with the option off touched nothing outside its output dir.
+        let stray: Vec<std::path::PathBuf> = std::fs::read_dir(cfg.output_dir.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.file_name().is_some_and(|n| n == "learnings"))
+            .collect();
+        assert!(stray.is_empty(), "{stray:?}");
     }
 
     #[test]
