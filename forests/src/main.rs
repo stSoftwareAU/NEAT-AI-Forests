@@ -97,14 +97,20 @@ struct Cli {
     /// Diversity cap: stumps per feature in the top-K (0 = unlimited).
     #[arg(long, default_value_t = 2)]
     max_per_feature: usize,
-    /// Maximum tree depth (1 = stumps only, up to 3).
-    #[arg(long, default_value_t = 1)]
+    /// Maximum tree depth (1 = stumps only, up to 3). Depth is what pays:
+    /// stumps alone returned no improvement at all in the measured rotation.
+    #[arg(long, default_value_t = 3)]
     max_depth: usize,
     /// Tree growth policy for depth > 1.
-    #[arg(long, value_enum, default_value_t = GrowthPolicy::LevelWise)]
+    #[arg(long, value_enum, default_value_t = GrowthPolicy::BestFirst)]
     growth: GrowthPolicy,
+    /// Distinct stump features grown into trees each iteration (on top of the
+    /// unconstrained best-first tree). Trees are the most valuable candidates
+    /// per scorer call; more roots means more of them competing for the cohort.
+    #[arg(long, default_value_t = 8)]
+    tree_roots: usize,
     /// Leaf magnitude scales tried around the analytical optimum (comma separated).
-    #[arg(long, value_delimiter = ',', default_values_t = [1.0f32, 0.5, 1.5, -1.0])]
+    #[arg(long, value_delimiter = ',', default_values_t = [1.0f32, 0.5, 0.25])]
     magnitude_scales: Vec<f32>,
     /// Neighbouring bins tried around each top threshold.
     #[arg(long, default_value_t = 0)]
@@ -271,6 +277,7 @@ fn main() -> ExitCode {
         max_per_feature: cli.max_per_feature,
         max_depth: cli.max_depth,
         growth: cli.growth,
+        tree_roots: cli.tree_roots,
         magnitude_scales: cli.magnitude_scales.clone(),
         threshold_jitter: cli.threshold_jitter,
         random_candidates: cli.random_candidates,

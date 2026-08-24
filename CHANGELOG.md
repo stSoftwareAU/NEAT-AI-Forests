@@ -5,6 +5,33 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The candidate cohort is spent where the journal says it pays (#63), and the
+  defaults are now the measured-best configuration.** Full scoring is about half
+  of wall-clock, so the resource being allocated is the full-corpus scorer call.
+  Measured over 23 production runs and ~3,600 calls, a depth-3 tree returned
+  `3.50e-5` of score per call and a one-sided stump `2.48e-7` — 141× less — yet
+  one-sided stumps took 24 % of the budget and trees 8 %. Two accidents caused
+  that: the tree-root count was hard-coded at 3, and `expand_discoveries` emitted
+  one-sided variants before magnitude variants, so the `--candidates` cap cut
+  exactly where the returns began.
+
+  Magnitude variants are now emitted before one-sided ones, and `--tree-roots`
+  controls how many distinct stump features are grown into trees. Defaults move
+  with the evidence: `--max-depth` 1 → **3** (stumps alone measured zero
+  improvement per hour across a whole run), `--growth` level-wise →
+  **best-first** (1.94e-3 per hour against 6.5e-4 for depth-2), `--tree-roots`
+  **8**, and `--magnitude-scales` `1,0.5,1.5,-1` → **`1,0.5,0.25`** (a shrunk
+  leaf wins 15.9 % of the time against 6.2 % for the analytical optimum, z = 9.3;
+  1.5 won nothing in 56 attempts and -1.0 was never reached before the cap).
+
+  A/B on a production creature — same source, same seed, same wall clock —
+  gave `+4.92e-4` against the control's `+2.45e-4`: **1.9× the improvement per
+  wall hour on fewer scorer calls** (63 against 72). Both verified by
+  `rust_scorer` and NEAT-AI's TypeScript `ConfirmScore`. See
+  `docs/benchmarks.md`.
+
 ### Added
 
 - A **shared learnings cache** (#60), off unless `--learnings-dir` is given. A
