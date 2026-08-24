@@ -14,7 +14,7 @@
   },
   "provenance": {
     "strategy": "histogram-stump",
-    "backend": "gpu:Apple M4 (Metal)",
+    "backend": "cpu",
     "predictedGain": 12.7,
     "affectedRecords": 4021,
     "searchRecords": 200000,

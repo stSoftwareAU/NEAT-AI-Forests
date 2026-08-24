@@ -18,19 +18,6 @@ pub const DEFAULT_CHUNK_RECORDS: usize = 4096;
 /// Default in-memory search sample (records). `0` streams the full corpus.
 pub const DEFAULT_SEARCH_RECORDS: u64 = 200_000;
 
-/// GPU preference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum GpuMode {
-    /// Use the GPU when the `gpu` feature is compiled in and an adapter exists.
-    Auto,
-    /// Require the GPU; fail if unavailable.
-    On,
-    /// CPU only (default: measured faster on unified-memory hosts, see docs/benchmarks.md).
-    #[default]
-    Off,
-}
-
 /// Tree growth policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -198,8 +185,6 @@ pub struct ForestsConfig {
     pub parity_abs: Option<f64>,
     /// Parity rel tolerance.
     pub parity_rel: f64,
-    /// GPU preference.
-    pub gpu: GpuMode,
     /// Keep per-iteration candidate directories.
     pub preserve_candidates: bool,
     /// Consecutive scorer failures tolerated before aborting.
@@ -266,7 +251,6 @@ impl Default for ForestsConfig {
             baseline_drift_epsilon: 1e-6,
             parity_abs: Some(1e-7),
             parity_rel: 1e-4,
-            gpu: GpuMode::Off,
             preserve_candidates: false,
             max_consecutive_scorer_failures: 3,
             learnings_dir: None,

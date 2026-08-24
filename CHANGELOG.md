@@ -5,6 +5,28 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- **The GPU histogram path and the `--gpu` switch (#67).** The kernel was built,
+  measured and kept behind a cargo feature that nothing ever compiled, which
+  left a flag whose only correct setting was `off`: `auto` meant "an adapter
+  exists" rather than "the GPU is faster", so on any host with an adapter it
+  selected a path measured at **0.17×** the 8-thread CPU one — the 490 MB upload
+  of the `u8` matrix dominates, and the kernel cannot beat threads writing into
+  cache-resident histograms.
+
+  The ceiling was small even if it had worked: across every production run to
+  date the histogram search is **19.4 % of wall clock** (14,140 s of 72,967 s),
+  the rest being full-corpus scoring. Gone with it: `forests/src/gpu.rs`, the
+  WGSL kernel, `docs/gpu.md`, `GpuMode`, the `gpu` cargo feature and the `wgpu`
+  / `pollster` / `bytemuck` dependencies. The journal still records a search
+  backend, so a path added later can be told apart from this one in journals
+  written before it existed.
+
+  `--scorer-arg=--gpu=off` is unaffected — that is NEAT-AI-scorer's own flag for
+  a different code path. The real search-time lever is reusing accumulations
+  across tree levels (#69), which depth-3-by-default (#63) has made worth doing.
+
 ### Changed
 
 - **The candidate cohort is spent where the journal says it pays (#63), and the

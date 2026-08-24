@@ -52,7 +52,7 @@ production.
 
 Every phase in the [issue list](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues)
 has landed as code: immutable incumbent and scorer-parity gate, quantile-bin and
-residual caches, CPU stump search with an optional wgpu/WGSL GPU accelerator,
+residual caches, CPU stump search,
 portable patches grafted as ordinary `IF` structure, two-phase screening with
 authoritative promotion, the 45-minute evolution loop and journal, depth-2/3
 trees, sampling and random "dirty tricks", oblique splits, the XGBoost external
@@ -81,7 +81,6 @@ parent/
 
 ```bash
 cargo build --release                       # CPU build
-cargo build --release --features gpu        # + wgpu/WGSL histogram accumulation
 
 ./target/release/neat_ai_forests creature.json training/ \
   --scorer ../NEAT-AI-scorer/target/release/rust_scorer \
@@ -146,7 +145,6 @@ neat_ai_forests <creature.json> <training-data-dir> import-xgboost --dump dump.j
 | `--baseline-drift-epsilon` | `1e-6` | tolerated same-call vs stored baseline disagreement |
 | `--skip-parity` | off | skip the local-MSE vs scorer parity gate (non-MSE costs) |
 | `--parity-abs` / `--parity-rel` | `1e-7` / `1e-4` | parity tolerances |
-| `--gpu` | `off` | `off`, `auto`, `on` (needs the `gpu` cargo feature; CPU measured faster on unified memory) |
 | `--preserve-candidates` | off | keep per-iteration cohort directories |
 | `--max-consecutive-scorer-failures` | `3` | abort after this many failures in a row |
 | `--learnings-dir` | off | shared cache of full-corpus verdicts (#60); point every host at one git checkout and the fleet replays each other's wins |
@@ -166,7 +164,7 @@ Forests, not by you.
 2. **Bin cache** — stream the corpus once per feature block and persist ~256 equal-population quantile edges per observation (`forests-bins.cache`, reused only for the identical corpus/version/bin count).
 3. **Residuals** — run the incumbent over every record; store `target − prediction` and the pre-squash *correction-space* residual in a sidecar keyed by incumbent checksum × corpus identity.
 4. **Baseline** — score the incumbent alone with the full-corpus scorer; compare its `error` with the local MSE (parity gate, fail closed); journal the result.
-5. **Search** — build the quantised search set (sampled rows/features as configured), accumulate per-feature histograms (GPU when available, CPU otherwise), rank stumps; optionally grow depth-2/3 trees and oblique splits.
+5. **Search** — build the quantised search set (sampled rows/features as configured), accumulate per-feature histograms, rank stumps; optionally grow depth-2/3 trees and oblique splits.
 6. **Candidates** — expand discoveries into patches (analytical optimum, one-sided variants, magnitude scales, threshold jitter, random controls), graft each onto a clone, discard anything NEAT-AI-core rejects — including anything `neat_core::creature_validate` rules invalid, with the reason journalled (see [docs/architecture.md](docs/architecture.md#creature-validation)).
 7. **Screen** — the scorer's record-sampling mode ranks the cohort; the top `--promote-count` plus an exploratory bypass quota go on.
 8. **Promote** — full-corpus scorer call with the baseline in the same cohort; accept only `Δscore > --min-improvement` and only if the same-call baseline matches the stored one.
@@ -269,7 +267,7 @@ flowchart TD
 
 The search mechanism and the acceptance mechanism are intentionally independent.
 
-Forests may use approximate arithmetic, samples, heuristics, statistics, random guesses or GPU kernels to decide **what is worth trying**. None of those may decide **what is better**.
+Forests may use approximate arithmetic, samples, heuristics, statistics, random guesses or approximations to decide **what is worth trying**. None of those may decide **what is better**.
 
 Only the authoritative scorer gets that vote.
 
@@ -360,7 +358,6 @@ The most interesting concepts for this experiment include:
 
 - **quantile/binning of continuous observations** so every raw value is not tested as a threshold;
 - **histogram split search** using compact sufficient statistics;
-- **GPU-parallel histogram construction**;
 - **row subsampling**;
 - **feature/column subsampling**;
 - **error/gradient-biased sampling** so search effort concentrates on informative records;
@@ -370,14 +367,13 @@ The most interesting concepts for this experiment include:
 
 We want to understand and adapt useful techniques to the NEAT-AI problem, not copy XGBoost's architecture wholesale.
 
-Forests is Rust-first and will use `wgpu`/WGSL where GPU acceleration earns its complexity, allowing Metal on macOS and other supported backends elsewhere.
+Forests is Rust-first. A GPU histogram kernel was built and measured at 0.17x the CPU path on unified memory, and deleted (#67): search is under a fifth of wall clock, so the lever is reusing accumulations across tree levels (#69), not another backend.
 
 ### Search philosophy: dirty is fine, dishonest is not
 
 Examples of fair experimental tactics include:
 
 - exhaustive quantile stump search;
-- GPU histogram search;
 - random feature subsets;
 - random/stratified record subsets;
 - residual-magnitude-weighted sampling;
@@ -408,7 +404,6 @@ Useful measurements include:
 - cumulative scorer improvement;
 - candidates searched/scored per minute;
 - improvement rate by strategy;
-- CPU vs GPU economics;
 - depth-1 vs deeper-tree economics;
 - how concentrated each gain is across the corpus;
 - whether repeated residual grafting continues producing improvements or quickly saturates;
@@ -428,7 +423,7 @@ If dumb luck repeatedly wins, generate more dumb luck.
 NEAT-AI-Forests/
 ├── Cargo.toml                 # workspace
 ├── forests/
-│   ├── Cargo.toml             # neat_ai_forests (lib + bin), optional `gpu` feature
+│   ├── Cargo.toml             # neat_ai_forests (lib + bin)
 │   ├── src/
 │   │   ├── main.rs            # CLI
 │   │   ├── lib.rs
@@ -438,7 +433,6 @@ NEAT-AI-Forests/
 │   │   ├── candidates.rs      # candidate population (#8)
 │   │   ├── config.rs          # ForestsConfig + validation
 │   │   ├── corpus.rs          # corpus identity + bounded-memory streaming
-│   │   ├── gpu.rs             # wgpu/WGSL histogram accumulation (#6)
 │   │   ├── graft.rs           # patch → IF structure on a clone (#7), validated (#39)
 │   │   ├── histogram.rs       # CPU reference stump search (#5)
 │   │   ├── incumbent.rs       # immutable incumbent + checksum (#2)
@@ -459,7 +453,7 @@ NEAT-AI-Forests/
 │   │   └── xgboost.rs         # XGBoost dump conversion (#13)
 │   ├── examples/stump_search_bench.rs
 │   └── tests/                 # README contract, real-scorer integration
-├── docs/                      # architecture, caches, patch format, gpu, strategies, xgboost control, benchmarks, learnings cache
+├── docs/                      # architecture, caches, patch format, strategies, xgboost control, benchmarks, learnings cache
 │   └── archive/pr-summaries/  # one summary per merged PR
 ├── scripts/                   # quality helpers, auto-version.sh, report-experiments.sh, run-benchmark.sh, xgboost-control.py
 ├── quality.sh                 # local gate mirroring CI
@@ -474,7 +468,6 @@ NEAT-AI-Forests/
 - [docs/caches.md](docs/caches.md) — bin-cache and residual-sidecar binary formats and invalidation rules.
 - [docs/patch-format.md](docs/patch-format.md) — patch JSON, `IF` graft layout, exact routing semantics.
 - [docs/learnings.md](docs/learnings.md) — the shared cache of what worked and what failed, and how a fleet uses it.
-- [docs/gpu.md](docs/gpu.md) — WGSL kernel design, determinism, limits, fallback reporting.
 - [docs/strategies.md](docs/strategies.md) — sampling, jitter, diversity, random controls and how they report themselves.
 - [docs/xgboost-control.md](docs/xgboost-control.md) — the external control experiment.
 - [docs/benchmarks.md](docs/benchmarks.md) — measured economics and the production-run protocol.
@@ -524,7 +517,7 @@ work before the next was worth trying.
 | 0 | Bootstrap, immutable baseline and scorer contracts | [#1](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/1), [#2](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/2) |
 | 1 | Quantile cache and incumbent residuals | [#3](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/3), [#4](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/4) |
 | 2 | Correct CPU stump search | [#5](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/5) |
-| 3 | GPU histogram acceleration | [#6](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/6) |
+| 3 | GPU histogram acceleration (built, measured 0.17x the CPU path, deleted in [#67](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/67)) | [#6](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/6) |
 | 4 | Portable tree patches and conservative IF grafts | [#7](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/7), [#8](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/8) |
 | 5 | Cheap screening + authoritative promotion | [#9](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/9) |
 | 6 | First 45-minute iterative Forest evolution loop | [#10](https://github.com/stSoftwareAU/NEAT-AI-Forests/issues/10) |

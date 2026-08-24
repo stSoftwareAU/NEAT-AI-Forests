@@ -28,7 +28,7 @@ use crate::candidates::{
 };
 use crate::config::ForestsConfig;
 use crate::corpus::{CorpusInfo, corpus_info};
-use crate::histogram::search_stumps;
+use crate::histogram::{HistogramSet, search_stumps};
 use crate::incumbent::{Incumbent, load_incumbent, now_unix};
 use crate::journal::{
     CandidateRecord, ExperimentRecord, FullSummary, JournalLine, ScreenSummary, SummaryRecord,
@@ -229,6 +229,13 @@ fn file_learnings(
         Err(e) => log::warn(&format!("learnings not written: {e}")),
     }
 }
+
+/// Label journalled as the search backend that produced a split (Issue #67).
+///
+/// Kept as a field rather than dropped: every discovery records how it was
+/// found, so a second search path added later can be told apart from this one
+/// in journals written before it existed.
+const SEARCH_BACKEND: &str = "cpu";
 
 /// Run the complete optimiser.
 pub fn run_forests(
@@ -434,13 +441,14 @@ pub fn run_forests(
             iteration_seed,
         )?;
         let bins_per_feature = set.bins_per_feature(&bins);
-        let (hist, backend) = crate::gpu::accumulate(
-            cfg.gpu,
+        let hist = HistogramSet::from_source_threads(
             &set.source,
             &bins_per_feature,
             cfg.analysis_threads,
         )?;
-        let backend_label = backend.label();
+        // Journalled against every discovery, so a future second search path
+        // can be told apart from this one after the fact (Issue #67).
+        let backend_label = SEARCH_BACKEND.to_string();
         let controls = cfg.search_controls();
         let threshold = set.threshold(&bins);
         let stumps = search_stumps(&hist, &threshold, &controls, &backend_label);
@@ -641,8 +649,7 @@ pub fn run_forests(
                 {
                     break;
                 }
-                let (h, _) = crate::gpu::accumulate(
-                    cfg.gpu,
+                let h = HistogramSet::from_source_threads(
                     &boosted.source,
                     &bins_per_feature,
                     cfg.analysis_threads,

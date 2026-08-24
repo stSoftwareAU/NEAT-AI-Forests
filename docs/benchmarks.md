@@ -26,13 +26,15 @@ Command: `scripts/run-benchmark.sh 200000 2461 8` → `stump_search_bench`
 
 ### Verdicts
 
-- **GPU histogram accumulation is not worthwhile on this host.** The one-shot
+- **GPU histogram accumulation was not worthwhile, and the path is gone (#67).** The one-shot
   upload of the `u8` matrix (490 MB) plus partial read-back dominates, and the
   kernel itself cannot beat 8 CPU threads writing into cache-resident
-  histograms. `--gpu off` is therefore the default; the kernel remains behind
-  the `gpu` feature for discrete-GPU hosts where the upload can be amortised
-  across many accumulations (trees re-accumulate per level; that reuse is the
-  first optimisation to try if the GPU is ever revisited).
+  histograms. A flag whose only correct setting was `off`, behind a cargo
+  feature nothing compiled, was complexity for nothing — deleted along with the
+  `wgpu` / `pollster` / `bytemuck` dependencies. Search is under a fifth of wall
+  clock, so the lever is reusing accumulations across tree levels (#69), not
+  another backend. The kernel is in the git history if a host ever makes the
+  upload worth amortising.
 - **Chunk-parallel CPU accumulation was 2× slower than single-threaded**
   (8 private 15 MB histogram sets thrash the cache). Splitting by feature range
   instead keeps each worker's histograms in L2 and is bit-identical to the
