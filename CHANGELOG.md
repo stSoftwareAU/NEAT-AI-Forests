@@ -5,6 +5,29 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`affectedFraction` no longer exceeds 1 under `--row-sampling
+  residual-weighted` (#64).** In one production run 898 of 1,024 candidates
+  reported a share above 1, the largest being 11.67 — a patch supposedly
+  correcting 1,167 % of the search set.
+
+  The numerator was not the problem. `strategies::plan` gives each kept row an
+  importance weight (stratum population over stratum sample), so the histogram
+  counts — and `affectedRecords` with them — estimate a count over the *whole
+  corpus*. The journal then divided that by the number of rows searched, mixing
+  a corpus-scale numerator with a sample-scale denominator. It now divides by
+  the search set's weighted total, which is the like-for-like comparison and
+  equals the row count whenever every weight is 1 (every stride-sampled set, and
+  every run before weighting existed). The new `journal::affected_fraction`
+  clamps to `[0, 1]` and falls back to the row count when no weighted total is
+  recorded.
+
+  Nothing about scoring or acceptance was affected — the scorer never sees these
+  fields — but they are what `neat_ai_forests report` aggregates, and a share
+  above 1 quietly poisoned any comparison between a weighted run and a stride
+  run. Both fields now say in their documentation which scale they are on.
+
 ### Removed
 
 - **The GPU histogram path and the `--gpu` switch (#67).** The kernel was built,

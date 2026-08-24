@@ -13,6 +13,30 @@ use serde::{Deserialize, Serialize};
 use crate::baseline::AuthoritativeBaseline;
 use crate::patch::Patch;
 
+/// The share of the search set a candidate corrects (Issue #64).
+///
+/// `affected` and `weighted_total` must be on the **same scale**. Under
+/// `--row-sampling residual-weighted` each kept row carries an importance
+/// weight — stratum population over stratum sample — so the histogram counts,
+/// and therefore `affected`, estimate a count over the whole corpus rather than
+/// over the rows actually searched. Dividing that by the row count produced
+/// fractions above 1 (up to 11.67 in a production run); dividing by the
+/// weighted total is the like-for-like comparison and lands back in `[0, 1]`.
+///
+/// `records` is the fallback for a search set with no weighted total.
+pub fn affected_fraction(affected: f64, weighted_total: f64, records: u64) -> f64 {
+    let total = if weighted_total > 0.0 {
+        weighted_total
+    } else {
+        records as f64
+    };
+    if total > 0.0 {
+        (affected / total).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
 /// Per-candidate journal entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,9 +53,13 @@ pub struct CandidateRecord {
     pub features: Vec<usize>,
     /// Predicted proxy gain.
     pub predicted_gain: f64,
-    /// Affected records on the search set.
+    /// Rows the patch corrects. Under `--row-sampling residual-weighted` each
+    /// searched row carries an importance weight, so this is an **estimate of
+    /// the count over the whole corpus**, not over the rows searched — compare
+    /// it against `affectedFraction`, never against `searchRecords` (#64).
     pub affected_records: u64,
-    /// Affected fraction on the search set.
+    /// `affected_records` over the search set's weighted total, so it stays in
+    /// `[0, 1]` whatever the sampling scheme (#64).
     pub affected_fraction: f64,
     /// Screen (sampled, non-authoritative) score.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -252,6 +280,27 @@ pub fn read_journal(path: &Path) -> Result<Vec<JournalLine>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #64 — a weighted search set estimates counts over the corpus, so
+    /// the denominator has to be weighted too or the share exceeds 1.
+    #[test]
+    fn the_affected_share_stays_within_zero_and_one_under_weighting() {
+        // Stride sampling: every weight 1, so the weighted total is the row
+        // count and nothing changes.
+        assert!((affected_fraction(50.0, 200.0, 200) - 0.25).abs() < 1e-12);
+        // Residual-weighted: 200 rows standing for 2000 corpus records. A
+        // patch touching a quarter of them reports 500 against 2000, not
+        // against 200.
+        assert!((affected_fraction(500.0, 2000.0, 200) - 0.25).abs() < 1e-12);
+        // The shape that produced 11.67 in production: a weighted numerator
+        // over a row-count denominator.
+        assert!(affected_fraction(2_249_060.0, 2_266_178.0, 199_777) <= 1.0);
+        // No weighted total recorded: fall back to the row count.
+        assert!((affected_fraction(50.0, 0.0, 200) - 0.25).abs() < 1e-12);
+        // Degenerate inputs never produce NaN or a negative share.
+        assert_eq!(affected_fraction(1.0, 0.0, 0), 0.0);
+        assert_eq!(affected_fraction(-1.0, 10.0, 10), 0.0);
+    }
 
     #[test]
     fn lines_round_trip_and_malformed_is_error() {
