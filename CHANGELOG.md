@@ -5,32 +5,37 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- **`--if-correction typed-pair` (#68)** — a correction reaches both branches of
-  an `IF` anchor as two synapses of different roles between the same ordered
-  pair, instead of an IDENTITY relay neuron standing in as a second distinct
-  source. Mathematically identical, and a neuron cheaper: about `1.1e-7` of
-  score per accepted patch, and the complexity penalty stops growing a neuron
-  at a time with every graft. `neat_core` 0.10.6 keys uniqueness by
-  `(fromUUID, toUUID, type)` and permits the shape for `IF` targets
-  (NEAT-AI-core#577), and `rust_scorer` sums both roles.
+- **A correction now reaches both branches of an `IF` anchor as two synapses,
+  not through an IDENTITY relay neuron (#68).** The relay existed only because a
+  creature could carry one synapse per ordered `(from, to)` pair, so a second
+  distinct source had to be invented. All three engines now key synapses by
+  `(fromUUID, toUUID, type)` and permit the pair for `IF` targets —
+  NEAT-AI-core 0.10.6 (NEAT-AI-core#577), `rust_scorer` built against it, and
+  @stsoftware/neat-ai **6.6.40** (NEAT-AI#3873) — so the root simply feeds both
+  roles.
 
-  **It is not the default, and must not be used in a fleet yet.**
-  @stsoftware/neat-ai 6.6.39 still keys synapses by `(from, to)` and *silently
-  keeps one of the pair on load* — measured, not inferred: a six-synapse
-  creature loads as five, without an error. The same JSON therefore means two
-  different things in the two engines, which is the divergence that once
-  produced a production improvement that was not real. `--if-correction relay`
-  stays the default until NEAT-AI#3873 lands.
+  Mathematically identical, pinned record for record against the relay shape,
+  and one neuron cheaper per graft: about `1.1e-7` of score each, and the
+  complexity penalty stops growing a neuron at a time with every graft. On the
+  production creature 455 relays had accumulated, worth `4.96e-5` (#66).
 
-  `ts_parity::a_typed_pair_is_still_dropped_by_typescript` is the gate: it
-  asserts the *current* divergence, so it starts failing the moment TypeScript
-  is fixed, and its failure message says exactly what to do — make `typed-pair`
-  the default, flip the assertion to equality, and drop the flag.
+  `--if-correction relay` still emits the old shape for creatures that must load
+  under an older engine. **Older engines do not fail loudly**: TypeScript before
+  6.6.40 silently keeps one of the pair — a six-synapse creature loading as five
+  — and a `rust_scorer` built against neat-core before 0.10.6 rejects the
+  creature outright with "Duplicate synapse". A fleet adopting this must
+  therefore bump its `@stsoftware/neat-ai` pin **and** rebuild its scorer
+  binary.
 
-  `neat-core.expected-version` moves to 0.10.6, which is the first version that
-  accepts the shape.
+  `ts_parity::typescript_keeps_both_roles_of_a_typed_pair` asserts TypeScript
+  loads every synapse of a default graft, and the scored parity cases gain
+  `if-typed-pair`, so a drop back to an older engine fails there rather than in
+  a check-in nobody can explain.
+
+  `neat-core.expected-version` moves to 0.10.6, the first version that accepts
+  the shape.
 
 ### Added
 

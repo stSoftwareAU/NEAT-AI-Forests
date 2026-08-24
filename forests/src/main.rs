@@ -104,12 +104,11 @@ struct Cli {
     /// Tree growth policy for depth > 1.
     #[arg(long, value_enum, default_value_t = GrowthPolicy::BestFirst)]
     growth: GrowthPolicy,
-    /// How a correction reaches both branches of an `IF` anchor: `relay` (an
-    /// IDENTITY neuron per graft — the only shape every engine agrees on) or
-    /// `typed-pair` (one source feeding both roles, a neuron cheaper). Leave it
-    /// at `relay` in the fleet until NEAT-AI TypeScript keys synapses by
-    /// (from, to, type) — 6.6.39 silently drops one of the pair on load.
-    #[arg(long, value_enum, default_value_t = IfCorrection::Relay)]
+    /// How a correction reaches both branches of an `IF` anchor: `typed-pair`
+    /// (one source feeding both roles — a neuron cheaper, and what every engine
+    /// agrees on from @stsoftware/neat-ai 6.6.40) or `relay` (an IDENTITY
+    /// neuron per graft, for creatures that must load under an older one).
+    #[arg(long, value_enum, default_value_t = IfCorrection::TypedPair)]
     if_correction: IfCorrection,
     /// Distinct stump features grown into trees each iteration (on top of the
     /// unconstrained best-first tree). Trees are the most valuable candidates

@@ -23,8 +23,18 @@
 //!                 positive:   right child ifN (weight 1)  |  one_p (weight = right leaf)
 //!                 negative:   left  child ifN (weight 1)  |  one_n (weight = left leaf)
 //! root ifN ──(weight 1/gain, untyped)──▶ anchor            (point-wise squash)
-//! root ifN ──(positive)──▶ anchor  and  root ifN → relayN (IDENTITY) ──(negative)──▶ anchor   (IF)
+//! root ifN ──(positive)──▶ anchor  and  root ifN ──(negative)──▶ anchor    (IF)
 //! ```
+//!
+//! An `IF` anchor keeps a sum per synapse role, so a correction that must
+//! apply whichever way it branches has to land in both. Two synapses of
+//! different roles between the same ordered pair say that directly (Issue #68);
+//! NEAT-AI-core keys uniqueness by `(from, to, type)` and allows it for `IF`
+//! targets, `rust_scorer` sums both, and @stsoftware/neat-ai keeps both from
+//! 6.6.40. Before that a creature could carry only one synapse per pair, so an
+//! IDENTITY relay had to be invented purely to be a second distinct source —
+//! `--if-correction relay` still emits it, for creatures that must load under
+//! an older engine.
 //!
 //! The **anchor** is the output neuron itself for every creature Forests
 //! started with. Where the output is a `MINIMUM`/`MAXIMUM` clamp — as the
@@ -65,10 +75,11 @@
 //! batch goes to [`neat_core::graft_if_nodes`], which places each node, emits
 //! the role strings and validates the assembled creature once — a child may
 //! leave its outward edge to the parent that reads it, which is why a nested
-//! tree no longer needs a local renderer. Where the target output is itself an
-//! `IF` aggregate, the root's outward edge carries the `positive` role
-//! ([`IfNodeSpec::with_target_role`]) and [`neat_core::graft_relay_node`] adds
-//! the IDENTITY relay that carries the same value into the `negative` branch.
+//! tree no longer needs a local renderer. Where the anchor is itself an `IF`
+//! aggregate, the root's outward edges carry the `positive` and `negative`
+//! roles ([`IfNodeSpec::with_target_role`], twice); under
+//! `--if-correction relay` the second is replaced by an IDENTITY relay from
+//! [`neat_core::graft_relay_node`].
 //!
 //! Every grafted creature is still pinned against the abstract evaluator record
 //! by record, and against NEAT-AI-core's own helpers shape by shape.
@@ -646,7 +657,7 @@ impl GraftOptions {
     pub fn new(constants: GraftConstants) -> Self {
         Self {
             constants,
-            if_correction: IfCorrection::Relay,
+            if_correction: IfCorrection::TypedPair,
         }
     }
 
@@ -1392,13 +1403,10 @@ mod tests {
             .filter(|s| s.to_uuid == "output-0" && s.from_uuid.starts_with("forest-"))
             .collect();
         assert_eq!(into_out.len(), 2);
-        assert_eq!(
-            into_out
-                .iter()
-                .map(|s| s.synapse_type.as_deref())
-                .collect::<Vec<_>>(),
-            [Some("positive"), Some("negative")]
-        );
+        let mut roles: Vec<Option<&str>> =
+            into_out.iter().map(|s| s.synapse_type.as_deref()).collect();
+        roles.sort();
+        assert_eq!(roles, [Some("negative"), Some("positive")]);
         let mut base = compile_creature(&inc).unwrap();
         let mut cand = compile_creature(&g.creature).unwrap();
         let (mut pos, mut neg) = (0, 0);
@@ -1441,9 +1449,11 @@ mod tests {
                 .filter(|x| x.to_uuid == "body-if" && !inc.synapses.contains(x))
                 .map(|x| (x.weight, x.synapse_type.as_deref()))
                 .collect();
+            let mut inward = inward;
+            inward.sort_by(|a, b| a.1.cmp(&b.1));
             assert_eq!(
                 inward,
-                vec![(2.0, Some("positive")), (2.0, Some("negative"))],
+                vec![(2.0, Some("negative")), (2.0, Some("positive"))],
                 "both branches of the body take the correction at 1/gain"
             );
             assert!(
@@ -1542,14 +1552,14 @@ mod tests {
     fn feeding_both_branches_from_one_source_matches_the_relay_exactly() {
         let inc = if_output_creature(4);
         let patch = Patch::new(0, Node::stump(1, 0.2, -0.3, 0.4), Provenance::default());
-        let relayed = graft_patch_options(&inc, &patch, GraftOptions::new(GraftConstants::Shared))
-            .expect("relay graft");
-        let direct = graft_patch_options(
+        let relayed = graft_patch_options(
             &inc,
             &patch,
-            GraftOptions::new(GraftConstants::Shared).with_if_correction(IfCorrection::TypedPair),
+            GraftOptions::new(GraftConstants::Shared).with_if_correction(IfCorrection::Relay),
         )
-        .expect("typed-pair graft");
+        .expect("relay graft");
+        let direct = graft_patch_with(&inc, &patch, GraftConstants::Shared)
+            .expect("typed-pair graft — the default");
 
         assert_eq!(
             relayed.added_neurons - direct.added_neurons,
@@ -2208,6 +2218,24 @@ mod tests {
                 .with_condition(names[0].clone(), f64::from(-0.25f32))
                 .with_positive(names[1].clone(), f64::from(0.07f32))
                 .with_negative(names[2].clone(), f64::from(-0.05f32))
+                .with_target_role("output-0", 1.0, SynapseType::Positive)
+                .with_target_role("output-0", 1.0, SynapseType::Negative);
+            let expected = graft_if_nodes(&base_with_ones(&inc, &names), &[root])
+                .expect("the canonical helper builds both typed edges");
+            assert_eq!(ours.creature, expected, "{constants:?}");
+
+            // The relay shape is still exactly what the relay helper builds.
+            let relayed = graft_patch_options(
+                &inc,
+                &patch,
+                GraftOptions::new(constants).with_if_correction(IfCorrection::Relay),
+            )
+            .unwrap();
+            let root = IfNodeSpec::new(format!("{prefix}-if0"), 0.0)
+                .with_condition("input-3", 1.0)
+                .with_condition(names[0].clone(), f64::from(-0.25f32))
+                .with_positive(names[1].clone(), f64::from(0.07f32))
+                .with_negative(names[2].clone(), f64::from(-0.05f32))
                 .with_target_role("output-0", 1.0, SynapseType::Positive);
             let expected = graft_if_nodes(&base_with_ones(&inc, &names), &[root])
                 .expect("the canonical helper builds the typed root");
@@ -2216,7 +2244,7 @@ mod tests {
                 .with_target_role("output-0", 1.0, SynapseType::Negative);
             let expected =
                 graft_relay_node(&expected, &relay).expect("the canonical helper builds the relay");
-            assert_eq!(ours.creature, expected, "{constants:?}");
+            assert_eq!(relayed.creature, expected, "{constants:?} relay");
         }
     }
 
@@ -2289,11 +2317,17 @@ mod tests {
     /// ordered `(from, to)` pair appears twice, and the shared validator
     /// accepts it.
     fn assert_creature_is_valid(creature: &CreatureExport, what: &str) {
-        let mut seen: HashSet<(&str, &str)> = HashSet::new();
+        // Keyed by `(from, to, type)` since NEAT-AI-core #577: an `IF` target
+        // may read more than one role from one source, which is how a
+        // correction reaches both branch sums without a relay (Issue #68).
+        // Written out here rather than reused from the module under test, so
+        // the oracle is not the code it checks.
+        let mut seen: HashSet<(&str, &str, &str)> = HashSet::new();
         for s in &creature.synapses {
+            let role = s.synapse_type.as_deref().unwrap_or("");
             assert!(
-                seen.insert((s.from_uuid.as_str(), s.to_uuid.as_str())),
-                "{what}: duplicate synapse {} → {}",
+                seen.insert((s.from_uuid.as_str(), s.to_uuid.as_str(), role)),
+                "{what}: duplicate synapse {} → {} ({role})",
                 s.from_uuid,
                 s.to_uuid
             );

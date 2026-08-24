@@ -18,12 +18,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use neat_ai_forests::config::GraftConstants;
-use neat_ai_forests::config::IfCorrection;
 use neat_ai_forests::corpus::write_bin_file;
 use neat_ai_forests::graft::fixtures::{if_output_creature, min_clamped_if_creature, small_mlp};
-use neat_ai_forests::graft::{
-    GraftOptions, graft_patch, graft_patch_options, graft_patch_with, graft_patches_with,
-};
+use neat_ai_forests::graft::{graft_patch, graft_patch_with, graft_patches_with};
 use neat_ai_forests::patch::{Condition, Node, Patch, Provenance, Term};
 
 fn scorer_binary() -> Option<PathBuf> {
@@ -175,6 +172,18 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
             .unwrap()
             .0,
         ),
+        // Issue #68 — the default graft's typed pair, scored rather than only
+        // counted: one source into the `IF` output as both roles must give the
+        // same score in both engines, not merely load with every synapse.
+        (
+            "if-typed-pair",
+            graft_patch(
+                &if_output_creature(4),
+                &Patch::new(0, Node::stump(2, -0.1, 0.2, 0.0), Provenance::default()),
+            )
+            .unwrap()
+            .creature,
+        ),
         // Issue #58 — a `MINIMUM`-clamped output: the graft attaches behind the
         // clamps and scales its outward edge, a shape neither engine had seen.
         ("clamp-base", min_clamped_if_creature(4)),
@@ -309,18 +318,18 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
     }
 }
 
-/// Issue #68 — `--if-correction typed-pair` emits one source into an `IF`
-/// target as both `positive` and `negative`, which `neat_core` 0.10.6 accepts
-/// and `rust_scorer` sums. **NEAT-AI's TypeScript does not**: 6.6.39 keys
-/// synapses by `(from, to)` and silently keeps one of the pair on load, so the
-/// same creature means two different things in the two engines.
+/// Issue #68 — the default graft emits one source into an `IF` target as both
+/// `positive` and `negative`. `neat_core` 0.10.6 accepts it, `rust_scorer` sums
+/// both roles, and @stsoftware/neat-ai **6.6.40** keeps both on load
+/// (NEAT-AI#3873).
 ///
-/// This test is the gate on flipping that default. It asserts the *current*
-/// divergence, so it starts failing the moment NEAT-AI#3873 lands — at which
-/// point the assertion flips to equality, `--if-correction typed-pair` becomes
-/// the default, and the flag goes away.
+/// Anything older silently keeps one — a six-synapse creature loading as five,
+/// with no error raised — so the same JSON would mean two different things in
+/// the two engines. This test is what stops that regressing: it asserts
+/// TypeScript loads every synapse of a default graft, so a fleet that drops
+/// back to an older pin fails here rather than in a check-in nobody can explain.
 #[test]
-fn a_typed_pair_is_still_dropped_by_typescript() {
+fn typescript_keeps_both_roles_of_a_typed_pair() {
     let (Some(_scorer), Some(ts_root)) = (scorer_binary(), std::env::var_os("NEAT_AI_TS_ROOT"))
     else {
         eprintln!("skipping: needs rust_scorer and NEAT_AI_TS_ROOT");
@@ -331,12 +340,11 @@ fn a_typed_pair_is_still_dropped_by_typescript() {
         return;
     }
     let tmp = tempfile::tempdir().unwrap();
-    let creature = graft_patch_options(
+    let creature = graft_patch(
         &if_output_creature(4),
         &Patch::new(0, Node::stump(1, 0.2, 0.0, 0.3), Provenance::default()),
-        GraftOptions::new(GraftConstants::Shared).with_if_correction(IfCorrection::TypedPair),
     )
-    .expect("neat_core accepts a typed pair into an IF target")
+    .expect("the default graft emits a typed pair into an IF target")
     .creature;
     let path = tmp.path().join("typed-pair.json");
     std::fs::write(
@@ -386,10 +394,12 @@ console.log(JSON.stringify({ json: raw.synapses.length, loaded: c.exportJSON().s
     let v: serde_json::Value = serde_json::from_str(&line).unwrap();
     let (json, loaded) = (v["json"].as_u64().unwrap(), v["loaded"].as_u64().unwrap());
     assert_eq!(
-        loaded + 1,
+        loaded,
         json,
-        "TypeScript now keeps the typed pair ({loaded} of {json} synapses). \
-         NEAT-AI#3873 has landed: make `--if-correction typed-pair` the default, \
-         flip this assertion to equality, and add the shape to the parity cases."
+        "TypeScript dropped {} of {json} synapses. A source feeding an `IF` \
+         target as two roles needs @stsoftware/neat-ai 6.6.40 or newer \
+         (NEAT-AI#3873); on an older pin the two engines disagree about what \
+         this creature computes, and every check-in is gated on them agreeing.",
+        json - loaded
     );
 }
