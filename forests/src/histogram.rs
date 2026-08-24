@@ -171,6 +171,32 @@ impl HistogramSet {
         }
     }
 
+    /// Remove `other`'s contribution, where `other` accumulated a subset of
+    /// this set's rows (Issue #69).
+    ///
+    /// A split partitions its parent's rows exactly, so one child's histogram
+    /// is the parent's minus the other's and need not be accumulated at all.
+    /// Accumulating the *smaller* child and subtracting for the larger keeps
+    /// the cancellation small and does the least work.
+    ///
+    /// Counts and squares are clamped at zero. They are non-negative by
+    /// construction, and float cancellation on a bin whose rows all belong to
+    /// the other child can otherwise leave a value like `-1e-16` — harmless
+    /// arithmetically, but enough to make a variance negative and a gain `NaN`.
+    pub fn subtract(&mut self, other: &Self) {
+        for (a, b) in self.features.iter_mut().zip(&other.features) {
+            for i in 0..a.count.len() {
+                a.count[i] = (a.count[i] - b.count[i]).max(0.0);
+                a.sum[i] -= b.sum[i];
+                a.sum_sq[i] = (a.sum_sq[i] - b.sum_sq[i]).max(0.0);
+            }
+        }
+        self.records = self.records.saturating_sub(other.records);
+        self.total_count = (self.total_count - other.total_count).max(0.0);
+        self.total_sum -= other.total_sum;
+        self.total_sum_sq = (self.total_sum_sq - other.total_sum_sq).max(0.0);
+    }
+
     /// Merge another set (same shape).
     pub fn merge(&mut self, other: &Self) {
         for (a, b) in self.features.iter_mut().zip(&other.features) {
@@ -527,6 +553,82 @@ pub fn brute_force_best_stump(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #69 — the sibling trick: a split partitions its parent's rows
+    /// exactly, so the second child is the parent minus the first and need not
+    /// be accumulated at all. Pinned against exact accumulation of both.
+    #[test]
+    fn a_sibling_histogram_is_the_parent_minus_the_other_child() {
+        // Two features, four bins each, weights and residuals both varied so
+        // every accumulator field is exercised.
+        let records = 400;
+        let mut seed = 3u64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 40) as f32 / (1u64 << 24) as f32
+        };
+        let mut bins_data = Vec::with_capacity(records * 2);
+        let mut residual = Vec::with_capacity(records);
+        let mut weight = Vec::with_capacity(records);
+        for _ in 0..records {
+            bins_data.push((next() * 4.0) as u8 % 4);
+            bins_data.push((next() * 4.0) as u8 % 4);
+            residual.push(next() * 2.0 - 1.0);
+            weight.push(0.5 + next());
+        }
+        let chunk = BinnedChunk {
+            records,
+            features: 2,
+            bins: bins_data,
+            residual,
+            weight: Some(weight),
+            first_index: 0,
+        };
+        let bins = vec![4usize, 4];
+        let left_mask: Vec<bool> = (0..chunk.records).map(|r| chunk.bins[r * 2] < 2).collect();
+        let right_mask: Vec<bool> = left_mask.iter().map(|k| !k).collect();
+
+        let mut parent = HistogramSet::new(&bins);
+        parent.accumulate(&chunk, None);
+        let mut left = HistogramSet::new(&bins);
+        left.accumulate(&chunk, Some(&left_mask));
+        let mut exact_right = HistogramSet::new(&bins);
+        exact_right.accumulate(&chunk, Some(&right_mask));
+
+        let mut derived = parent.clone();
+        derived.subtract(&left);
+
+        assert_eq!(derived.records, exact_right.records);
+        assert!((derived.total_count - exact_right.total_count).abs() <= 1e-9);
+        assert!((derived.total_sum - exact_right.total_sum).abs() <= 1e-9);
+        assert!((derived.total_sum_sq - exact_right.total_sum_sq).abs() <= 1e-9);
+        for (d, e) in derived.features.iter().zip(&exact_right.features) {
+            for b in 0..d.count.len() {
+                assert!((d.count[b] - e.count[b]).abs() <= 1e-9, "count bin {b}");
+                assert!((d.sum[b] - e.sum[b]).abs() <= 1e-9, "sum bin {b}");
+                assert!((d.sum_sq[b] - e.sum_sq[b]).abs() <= 1e-9, "sumSq bin {b}");
+            }
+        }
+        // Subtracting a set from itself leaves nothing negative to trip the
+        // gain arithmetic up: counts and squares are clamped at zero.
+        let mut empty = left.clone();
+        empty.subtract(&left);
+        assert!(
+            empty
+                .features
+                .iter()
+                .all(|f| f.count.iter().all(|c| *c >= 0.0))
+        );
+        assert!(
+            empty
+                .features
+                .iter()
+                .all(|f| f.sum_sq.iter().all(|s| *s >= 0.0))
+        );
+        assert_eq!(empty.records, 0);
+    }
     use crate::bins::{BinCache, BinMeta, quantile_edges};
 
     fn cache_for(values: &[Vec<f32>], bins: usize) -> BinCache {

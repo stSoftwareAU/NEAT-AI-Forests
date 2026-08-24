@@ -5,6 +5,28 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Tree growth reuses histograms instead of re-accumulating them (#69).** A
+  split partitions its parent's rows exactly, so one child's histogram is the
+  parent's minus the other's. `grow_tree` now carries a histogram on each leaf,
+  accumulates only the *smaller* child of every split, and derives its sibling
+  by subtraction — the standard gradient-boosting trick, which halves the
+  accumulation at every level and compounds with depth. Accumulating the smaller
+  side does the least work and keeps the float cancellation small;
+  `HistogramSet::subtract` clamps counts and squares at zero, since cancellation
+  on a bin whose rows all belong to the sibling can otherwise leave a value like
+  `-1e-16` — harmless arithmetically but enough to make a variance negative and
+  a gain `NaN`.
+
+  Measured on a production-shaped search set (200 k records × 300 features,
+  8 tree roots, depth 3, best-first — the defaults), median of five runs:
+  **5122 ms → 3087 ms, 1.66×**. At 100 k × 1000 it is 8570 ms → 6518 ms.
+
+  The trees themselves do not move: a fingerprint over every candidate grown at
+  both growth policies, every depth 1–3, and with and without a fixed root is
+  pinned byte for byte, so the change had to prove it altered only the cost.
+
 ### Removed
 
 - **The GPU histogram path and the `--gpu` switch (#67).** The kernel was built,
