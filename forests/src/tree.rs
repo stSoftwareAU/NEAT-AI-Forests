@@ -61,6 +61,20 @@ struct Leaf {
     /// Best split found for this leaf in the last pass.
     best: Option<StumpCandidate>,
     frozen: bool,
+    /// This leaf's histogram, carried down the tree rather than re-accumulated
+    /// (Issue #69). `None` until the pass that fills it.
+    hist: Option<HistogramSet>,
+}
+
+/// A split whose second child's histogram is its parent's minus its sibling's
+/// (Issue #69), recorded until the sibling has been accumulated.
+struct PendingSibling {
+    /// Index in the new leaf list of the child that is accumulated.
+    accumulated: usize,
+    /// Index of the child derived by subtraction.
+    derived: usize,
+    /// The parent's histogram, consumed to make the derived child's.
+    parent: Option<HistogramSet>,
 }
 
 fn reaches(path: &[PathStep], bins: &[u8]) -> bool {
@@ -76,32 +90,46 @@ fn leaf_correction(sum: f64, count: f64, max: f64) -> f32 {
     }
 }
 
-/// Accumulate one histogram set per open leaf in a single pass.
-fn leaf_histograms(
+/// Accumulate the histograms of the named leaves in a single pass over the
+/// source (Issue #69).
+///
+/// A leaf keeps its histogram for as long as it stays open, and a split gives
+/// one child its histogram by subtraction, so `todo` normally names exactly one
+/// leaf per split — the smaller of the sibling pair.
+fn accumulate_leaves(
     source: &dyn ChunkSource,
     bins_per_feature: &[usize],
-    leaves: &[Leaf],
-) -> Result<Vec<HistogramSet>, String> {
-    let mut sets: Vec<HistogramSet> = leaves
+    leaves: &mut [Leaf],
+    todo: &[usize],
+) -> Result<(), String> {
+    if todo.is_empty() {
+        return Ok(());
+    }
+    let mut sets: Vec<HistogramSet> = todo
         .iter()
         .map(|_| HistogramSet::new(bins_per_feature))
         .collect();
     let mut mask = Vec::new();
     source.for_each_chunk(&mut |chunk| {
         let nf = chunk.features;
-        for (leaf, set) in leaves.iter().zip(sets.iter_mut()) {
-            if leaf.frozen {
+        for (slot, &i) in todo.iter().enumerate() {
+            let path = &leaves[i].path;
+            if path.is_empty() {
+                sets[slot].accumulate(chunk, None);
                 continue;
             }
             mask.clear();
             mask.extend(
-                (0..chunk.records).map(|r| reaches(&leaf.path, &chunk.bins[r * nf..(r + 1) * nf])),
+                (0..chunk.records).map(|r| reaches(path, &chunk.bins[r * nf..(r + 1) * nf])),
             );
-            set.accumulate(chunk, Some(&mask));
+            sets[slot].accumulate(chunk, Some(&mask));
         }
         Ok(())
     })?;
-    Ok(sets)
+    for (slot, &i) in todo.iter().enumerate() {
+        leaves[i].hist = Some(std::mem::replace(&mut sets[slot], HistogramSet::new(&[])));
+    }
+    Ok(())
 }
 
 fn build_node(
@@ -202,23 +230,34 @@ pub fn grow_tree(
         sum: 0.0,
         best: None,
         frozen: false,
+        hist: None,
     }];
     let mut out = Vec::new();
     let max_splits = (1usize << max_depth) - 1;
     let mut splits = 0;
     let mut current_depth = 0;
     loop {
-        // Evaluate every open leaf.
-        let sets = leaf_histograms(source, bins_per_feature, &leaves)?;
-        let total_records = sets
+        // Evaluate every open leaf. Only the leaves without a histogram cost a
+        // pass over the source; the rest carried theirs down (Issue #69).
+        let todo: Vec<usize> = leaves
             .iter()
-            .map(|s| s.total_count)
+            .enumerate()
+            .filter(|(_, l)| !l.frozen && l.hist.is_none())
+            .map(|(i, _)| i)
+            .collect();
+        accumulate_leaves(source, bins_per_feature, &mut leaves, &todo)?;
+        let total_records = leaves
+            .iter()
+            .filter_map(|l| l.hist.as_ref().map(|h| h.total_count))
             .sum::<f64>()
             .max(leaves.iter().map(|l| l.count).sum());
-        for (leaf, set) in leaves.iter_mut().zip(&sets) {
+        for leaf in leaves.iter_mut() {
             if leaf.frozen {
                 continue;
             }
+            let Some(set) = leaf.hist.as_ref() else {
+                continue;
+            };
             leaf.count = set.total_count;
             leaf.sum = set.total_sum;
             let mut found = if let (true, Some((f, b))) = (leaf.path.is_empty(), root) {
@@ -261,10 +300,17 @@ pub fn grow_tree(
             break;
         }
         let mut next = Vec::new();
+        let mut pending: Vec<PendingSibling> = Vec::new();
         for (i, leaf) in leaves.into_iter().enumerate() {
             if expand.contains(&i) && splits < max_splits && leaf.path.len() < max_depth {
                 let c = leaf.best.clone().unwrap();
                 splits += 1;
+                // The children partition this leaf's rows, so only one of them
+                // needs accumulating: the smaller, whose sibling is then this
+                // leaf's histogram minus it (Issue #69). Doing the smaller one
+                // does the least work and keeps the cancellation small.
+                let accumulate_right = c.right_records <= c.left_records;
+                let parent_hist = leaf.hist;
                 for right in [false, true] {
                     let mut path = leaf.path.clone();
                     path.push(PathStep {
@@ -283,8 +329,17 @@ pub fn grow_tree(
                         sum,
                         best: None,
                         frozen: false,
+                        // The derived child is filled in below, once its
+                        // sibling has been accumulated.
+                        hist: None,
                     });
                 }
+                let n = next.len();
+                pending.push(PendingSibling {
+                    accumulated: if accumulate_right { n - 1 } else { n - 2 },
+                    derived: if accumulate_right { n - 2 } else { n - 1 },
+                    parent: parent_hist,
+                });
             } else {
                 next.push(Leaf {
                     frozen: true,
@@ -293,6 +348,19 @@ pub fn grow_tree(
             }
         }
         leaves = next;
+        // Accumulate only the smaller sibling of every split made this round;
+        // the larger one gets what is left of its parent.
+        let todo: Vec<usize> = pending.iter().map(|p| p.accumulated).collect();
+        accumulate_leaves(source, bins_per_feature, &mut leaves, &todo)?;
+        for p in pending {
+            let Some(mut derived) = p.parent else {
+                continue;
+            };
+            if let Some(done) = leaves[p.accumulated].hist.as_ref() {
+                derived.subtract(done);
+                leaves[p.derived].hist = Some(derived);
+            }
+        }
         let depth = leaves.iter().map(|l| l.path.len()).max().unwrap_or(0);
         if depth > current_depth || matches!(controls.growth, GrowthPolicy::BestFirst) {
             current_depth = depth;
@@ -458,6 +526,60 @@ mod tests {
             label: "t".into(),
         };
         (cache, src, values, residual)
+    }
+
+    /// Issue #69 — the tree a run actually gets must not move when the
+    /// histograms behind it are reused instead of re-accumulated. Pinned on a
+    /// deterministic fixture at both growth policies and every depth, so the
+    /// optimisation has to prove it changed only the cost.
+    #[test]
+    fn reusing_histograms_leaves_the_grown_trees_unchanged() {
+        let (cache, src, _, _) = and_fixture();
+        let bins: Vec<usize> = (0..3).map(|f| cache.bins(f)).collect();
+        let stump = SearchControls {
+            min_leaf_records: 20.0,
+            top_k: 5,
+            ..Default::default()
+        };
+        let mut seen = Vec::new();
+        for growth in [GrowthPolicy::LevelWise, GrowthPolicy::BestFirst] {
+            for max_depth in 1..=3 {
+                let controls = TreeSearchControls {
+                    stump: stump.clone(),
+                    max_depth,
+                    growth,
+                };
+                for root in [None, Some((0usize, 31usize))] {
+                    let got = grow_tree(
+                        &src,
+                        &bins,
+                        &|f, b| cache.threshold(f, b),
+                        &|f| f,
+                        &controls,
+                        root,
+                    )
+                    .unwrap();
+                    seen.push(
+                        got.iter()
+                            .map(|c| {
+                                format!(
+                                    "{}:{:.9}:{:.1}:{:?}",
+                                    c.depth, c.gain, c.affected_records, c.root
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" | "),
+                    );
+                }
+            }
+        }
+        let fingerprint = crate::incumbent::sha256_hex(seen.join("\n").as_bytes());
+        assert_eq!(
+            fingerprint,
+            "b7319de43691c966d8ee2bc0f4dcae428c2f90298498bc41fb481b91cc002e7f",
+            "grown trees changed:\n{}",
+            seen.join("\n")
+        );
     }
 
     #[test]
