@@ -7,6 +7,33 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Added
 
+- **`--if-correction typed-pair` (#68)** — a correction reaches both branches of
+  an `IF` anchor as two synapses of different roles between the same ordered
+  pair, instead of an IDENTITY relay neuron standing in as a second distinct
+  source. Mathematically identical, and a neuron cheaper: about `1.1e-7` of
+  score per accepted patch, and the complexity penalty stops growing a neuron
+  at a time with every graft. `neat_core` 0.10.6 keys uniqueness by
+  `(fromUUID, toUUID, type)` and permits the shape for `IF` targets
+  (NEAT-AI-core#577), and `rust_scorer` sums both roles.
+
+  **It is not the default, and must not be used in a fleet yet.**
+  @stsoftware/neat-ai 6.6.39 still keys synapses by `(from, to)` and *silently
+  keeps one of the pair on load* — measured, not inferred: a six-synapse
+  creature loads as five, without an error. The same JSON therefore means two
+  different things in the two engines, which is the divergence that once
+  produced a production improvement that was not real. `--if-correction relay`
+  stays the default until NEAT-AI#3873 lands.
+
+  `ts_parity::a_typed_pair_is_still_dropped_by_typescript` is the gate: it
+  asserts the *current* divergence, so it starts failing the moment TypeScript
+  is fixed, and its failure message says exactly what to do — make `typed-pair`
+  the default, flip the assertion to equality, and drop the flag.
+
+  `neat-core.expected-version` moves to 0.10.6, which is the first version that
+  accepts the shape.
+
+### Added
+
 - **`neat_ai_forests prune-learnings` (#61)** — keeps the shared cache from
   growing without bound, and safe to run from cron on an idle host:
 

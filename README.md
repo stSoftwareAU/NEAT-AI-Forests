@@ -155,6 +155,7 @@ experiment back on the table.
 | `--combo-candidates` | `4` | combinations: top-2…top-N distinct discoveries stacked on one clone, plus last iteration's near-winners carried forward |
 | `--candidates` | `64` | maximum grafted candidates per iteration |
 | `--graft-constants` | `shared` | who owns a graft's three bias-1 constants: `shared` (one set per creature) or `per-patch` (`forest-<patch id>-one-c/p/n`, three extra constant neurons per patch, blast radius of one patch) |
+| `--if-correction` | `relay` | how a correction reaches both branches of an `IF` anchor: `relay` (an IDENTITY neuron per graft) or `typed-pair` (one source feeding both roles, a neuron cheaper). Leave it at `relay` in a fleet until NEAT-AI TypeScript keys synapses by `(from, to, type)` — 6.6.39 silently drops one of the pair on load |
 | `--screen-sample-rate` | `0.05` | scorer sample rate for the screen; 0 disables; skipped automatically when the cohort already fits `--promote-count` |
 | `--screen-threshold` | `0` | sampled Δ required to promote |
 | `--promote-count` | `8` | candidates promoted to full scoring |

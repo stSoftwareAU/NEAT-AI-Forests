@@ -18,9 +18,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use neat_ai_forests::config::GraftConstants;
+use neat_ai_forests::config::IfCorrection;
 use neat_ai_forests::corpus::write_bin_file;
 use neat_ai_forests::graft::fixtures::{if_output_creature, min_clamped_if_creature, small_mlp};
-use neat_ai_forests::graft::{graft_patch, graft_patch_with, graft_patches_with};
+use neat_ai_forests::graft::{
+    GraftOptions, graft_patch, graft_patch_options, graft_patch_with, graft_patches_with,
+};
 use neat_ai_forests::patch::{Condition, Node, Patch, Provenance, Term};
 
 fn scorer_binary() -> Option<PathBuf> {
@@ -304,4 +307,89 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
             "{per_patch}: score moved by {d_rust}, more than a complexity term"
         );
     }
+}
+
+/// Issue #68 — `--if-correction typed-pair` emits one source into an `IF`
+/// target as both `positive` and `negative`, which `neat_core` 0.10.6 accepts
+/// and `rust_scorer` sums. **NEAT-AI's TypeScript does not**: 6.6.39 keys
+/// synapses by `(from, to)` and silently keeps one of the pair on load, so the
+/// same creature means two different things in the two engines.
+///
+/// This test is the gate on flipping that default. It asserts the *current*
+/// divergence, so it starts failing the moment NEAT-AI#3873 lands — at which
+/// point the assertion flips to equality, `--if-correction typed-pair` becomes
+/// the default, and the flag goes away.
+#[test]
+fn a_typed_pair_is_still_dropped_by_typescript() {
+    let (Some(_scorer), Some(ts_root)) = (scorer_binary(), std::env::var_os("NEAT_AI_TS_ROOT"))
+    else {
+        eprintln!("skipping: needs rust_scorer and NEAT_AI_TS_ROOT");
+        return;
+    };
+    if !deno_ok() {
+        eprintln!("skipping: deno not installed");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let creature = graft_patch_options(
+        &if_output_creature(4),
+        &Patch::new(0, Node::stump(1, 0.2, 0.0, 0.3), Provenance::default()),
+        GraftOptions::new(GraftConstants::Shared).with_if_correction(IfCorrection::TypedPair),
+    )
+    .expect("neat_core accepts a typed pair into an IF target")
+    .creature;
+    let path = tmp.path().join("typed-pair.json");
+    std::fs::write(
+        &path,
+        neat_core::creature_to_json_pretty(&creature).unwrap(),
+    )
+    .unwrap();
+
+    let ts_root = PathBuf::from(ts_root);
+    let probe = ts_root.join(".forests-typed-pair-probe.ts");
+    std::fs::write(
+        &probe,
+        r#"
+import { Creature } from "@stsoftware/neat-ai";
+const raw = JSON.parse(await Deno.readTextFile(Deno.args[0]));
+const c = Creature.fromJSON(raw);
+c.validate();
+console.log(JSON.stringify({ json: raw.synapses.length, loaded: c.exportJSON().synapses.length }));
+"#,
+    )
+    .unwrap();
+    let out = Command::new("deno")
+        .current_dir(&ts_root)
+        .args([
+            "run",
+            "--no-prompt",
+            "--allow-read",
+            "--allow-env",
+            "--allow-import",
+            "--allow-net",
+        ])
+        .arg(&probe)
+        .arg(&path)
+        .output()
+        .expect("run deno");
+    let _ = std::fs::remove_file(&probe);
+    assert!(
+        out.status.success(),
+        "deno failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let line = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .expect("probe output")
+        .to_string();
+    let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+    let (json, loaded) = (v["json"].as_u64().unwrap(), v["loaded"].as_u64().unwrap());
+    assert_eq!(
+        loaded + 1,
+        json,
+        "TypeScript now keeps the typed pair ({loaded} of {json} synapses). \
+         NEAT-AI#3873 has landed: make `--if-correction typed-pair` the default, \
+         flip this assertion to equality, and add the shape to the parity cases."
+    );
 }

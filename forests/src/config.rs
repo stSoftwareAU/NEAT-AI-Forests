@@ -83,6 +83,30 @@ pub enum FeatureSelection {
     ErrorRanked,
 }
 
+/// How a correction reaches both branches of an `IF` anchor (Issue #68).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[clap(rename_all = "kebab-case")]
+pub enum IfCorrection {
+    /// The root feeds the `positive` branch and an IDENTITY relay carries the
+    /// same value into the `negative` one.
+    ///
+    /// One neuron per graft, and the only shape every engine agrees on today.
+    Relay,
+    /// The root feeds both branches directly, as two synapses of different
+    /// roles between the same ordered pair.
+    ///
+    /// Mathematically identical and one neuron cheaper — about `1.1e-7` of
+    /// score per accepted patch, which is why it is worth having. **Do not use
+    /// it in the fleet until NEAT-AI TypeScript keys synapses by
+    /// `(from, to, type)` (NEAT-AI#3873).** `neat_core` 0.10.6 accepts the
+    /// shape and `rust_scorer` sums both roles, but @stsoftware/neat-ai 6.6.39
+    /// silently keeps one of the two on load — measured, not inferred — so the
+    /// same creature means different things in the two engines and every
+    /// check-in is gated on them agreeing.
+    TypedPair,
+}
+
 /// Complete configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,6 +165,8 @@ pub struct ForestsConfig {
     pub max_depth: usize,
     /// Growth policy for depth > 1.
     pub growth: GrowthPolicy,
+    /// How a correction reaches both branches of an `IF` anchor (Issue #68).
+    pub if_correction: IfCorrection,
     /// Distinct stump features grown into trees each iteration, on top of the
     /// unconstrained best-first tree (Issue #63).
     ///
@@ -235,6 +261,7 @@ impl Default for ForestsConfig {
             max_per_feature: 2,
             max_depth: 3,
             growth: GrowthPolicy::BestFirst,
+            if_correction: IfCorrection::Relay,
             tree_roots: 8,
             magnitude_scales: vec![1.0, 0.5, 0.25],
             threshold_jitter: 0,

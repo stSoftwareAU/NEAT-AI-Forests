@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use neat_ai_forests::config::{
-    FeatureSelection, ForestsConfig, GraftConstants, GrowthPolicy, RowSampling,
+    FeatureSelection, ForestsConfig, GraftConstants, GrowthPolicy, IfCorrection, RowSampling,
 };
 use neat_ai_forests::histogram::StumpKind;
 use neat_ai_forests::{CancelToken, ExternalScorer, log};
@@ -104,6 +104,13 @@ struct Cli {
     /// Tree growth policy for depth > 1.
     #[arg(long, value_enum, default_value_t = GrowthPolicy::BestFirst)]
     growth: GrowthPolicy,
+    /// How a correction reaches both branches of an `IF` anchor: `relay` (an
+    /// IDENTITY neuron per graft — the only shape every engine agrees on) or
+    /// `typed-pair` (one source feeding both roles, a neuron cheaper). Leave it
+    /// at `relay` in the fleet until NEAT-AI TypeScript keys synapses by
+    /// (from, to, type) — 6.6.39 silently drops one of the pair on load.
+    #[arg(long, value_enum, default_value_t = IfCorrection::Relay)]
+    if_correction: IfCorrection,
     /// Distinct stump features grown into trees each iteration (on top of the
     /// unconstrained best-first tree). Trees are the most valuable candidates
     /// per scorer call; more roots means more of them competing for the cohort.
@@ -370,6 +377,7 @@ fn main() -> ExitCode {
         max_per_feature: cli.max_per_feature,
         max_depth: cli.max_depth,
         growth: cli.growth,
+        if_correction: cli.if_correction,
         tree_roots: cli.tree_roots,
         magnitude_scales: cli.magnitude_scales.clone(),
         threshold_jitter: cli.threshold_jitter,
