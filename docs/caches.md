@@ -38,7 +38,7 @@ record count, widths and `requestedBins`.
 
 **Reader.** `neat_ai_forests::bins::BinCache::from_bytes` parses and validates
 (magic, trailing bytes, ascending edges, `effectiveBins` agreement). The
-`u8` bin index and contiguous `f32` edge arrays are what the GPU kernel uploads.
+`u8` bin index and contiguous `f32` edge arrays are what the accumulator reads.
 
 ## `forests-residuals-<checksum12>.cache` — residual sidecar (Issue #4)
 

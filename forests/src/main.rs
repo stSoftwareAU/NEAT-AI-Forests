@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use neat_ai_forests::config::{
-    FeatureSelection, ForestsConfig, GpuMode, GraftConstants, GrowthPolicy, RowSampling,
+    FeatureSelection, ForestsConfig, GraftConstants, GrowthPolicy, RowSampling,
 };
 use neat_ai_forests::histogram::StumpKind;
 use neat_ai_forests::{CancelToken, ExternalScorer, log};
@@ -160,9 +160,6 @@ struct Cli {
     /// Parity relative tolerance.
     #[arg(long, default_value_t = 1e-4)]
     parity_rel: f64,
-    /// GPU histogram search preference (needs the `gpu` cargo feature; CPU is faster on unified-memory hosts).
-    #[arg(long, value_enum, default_value_t = GpuMode::Off)]
-    gpu: GpuMode,
     /// Keep per-iteration candidate directories under `workspace/`.
     #[arg(long)]
     preserve_candidates: bool,
@@ -301,7 +298,6 @@ fn main() -> ExitCode {
             Some(cli.parity_abs)
         },
         parity_rel: cli.parity_rel,
-        gpu: cli.gpu,
         preserve_candidates: cli.preserve_candidates,
         max_consecutive_scorer_failures: cli.max_consecutive_scorer_failures,
         learnings_dir: cli.learnings_dir.clone(),

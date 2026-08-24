@@ -15,7 +15,6 @@
 //! | quantile-bin cache | [`bins`] | #3 |
 //! | residual extraction | [`residuals`] | #4 |
 //! | CPU histogram stump search | [`histogram`] | #5 |
-//! | GPU histogram accumulation | [`gpu`] (feature `gpu`) | #6 |
 //! | portable patch + `IF` graft | [`patch`], [`graft`] | #7 |
 //! | candidate population | [`candidates`] | #8 |
 //! | screen + promote | [`promote`] | #9 |
@@ -26,7 +25,7 @@
 //! | oblique splits | [`oblique`] | #14 |
 //! | economics report | [`report`] | #15 |
 //!
-//! Cheap search (histograms, samples, GPU, random guesses) only ever *proposes*
+//! Cheap search (histograms, samples, random guesses) only ever *proposes*
 //! candidates. Only a full-corpus NEAT-AI-scorer result can *accept* one.
 
 #![warn(missing_docs)]
@@ -37,7 +36,6 @@ pub mod cancel;
 pub mod candidates;
 pub mod config;
 pub mod corpus;
-pub mod gpu;
 pub mod graft;
 pub mod histogram;
 pub mod incumbent;
@@ -61,7 +59,7 @@ pub use baseline::{AuthoritativeBaseline, ParityPolicy, establish_baseline};
 pub use bins::{BinCache, BinCacheError, DEFAULT_BINS, ensure_bin_cache};
 pub use cancel::CancelToken;
 pub use candidates::{Candidate, CandidateConfig, generate_candidates};
-pub use config::{ForestsConfig, GpuMode, GraftConstants, GrowthPolicy};
+pub use config::{ForestsConfig, GraftConstants, GrowthPolicy};
 pub use corpus::{CorpusInfo, corpus_info};
 pub use graft::{GraftError, graft_patch, graft_patch_with};
 pub use histogram::{

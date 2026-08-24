@@ -17,7 +17,7 @@ flowchart LR
     I --> B[baseline<br/>scorer full + parity gate]
     R --> S[strategies<br/>search set: rows / features / weights]
     K --> S
-    S --> H[histogram / gpu<br/>per-feature sufficient statistics]
+    S --> H[histogram<br/>per-feature sufficient statistics]
     H --> ST[stumps]
     H --> TR[tree depth 2-3]
     S --> OB[oblique raw-sample search]
@@ -50,7 +50,6 @@ flowchart LR
 | `baseline` | full-corpus scorer call on the incumbent alone; local-MSE parity gate (abort / skip) | **scorer** |
 | `strategies` | search-set construction: stride / uniform / stratified / residual-weighted rows, all / random / error-ranked features, raw-value re-read for oblique | — |
 | `histogram` | CPU reference: `count / Σr / Σr²` per bin, prefix scans, left-only / right-only / two-leaf gains, deterministic top-K, brute-force oracle | — |
-| `gpu` | wgpu/WGSL accumulation with per-invocation private partials (no atomics), CPU fold in slice order | — |
 | `tree` | level-wise / best-first growth on path-masked histograms, depth ≤ 3 | — |
 | `oblique` | 2–3 feature linear conditions on a raw sample; projection sort + coordinate jitter | — |
 | `patch` | portable `Leaf` / `Split(Condition{terms, threshold})` tree, `f32` evaluator mirroring the `IF` kernel, provenance, content id | — |
@@ -134,7 +133,7 @@ position in the list can move.
 ## Determinism
 
 - A run's seed is drawn (or supplied) and written to the `runHeader`; per-iteration seeds derive from it. Sampling, random stumps, bypass selection and oblique combos all use the seeded RNG.
-- Histogram accumulation is order-independent in `f64` on the CPU; on the GPU every partial is a sequential loop and the CPU fold is in slice order, so results are reproducible run to run.
+- Histogram accumulation is order-independent in `f64`, so results are reproducible run to run whatever the thread count.
 - Ranking is always on the CPU with the tie-break `gain desc, feature, bin, kind`.
 - Candidate ids are content hashes of `(output, root)`; the same incumbent, caches and seed yield the same ids (tested).
 

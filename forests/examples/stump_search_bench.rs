@@ -2,17 +2,16 @@
 //!
 //! Builds a synthetic search set with the Enceladus width (2461 features by
 //! default) and times: CPU exhaustive accumulation, GPU accumulation (when the
-//! `gpu` feature and an adapter are available), stump ranking, and sampled
+//! stump ranking, and sampled
 //! variants (row / feature fractions). Prints one JSON object so the numbers
 //! can be pasted into `docs/benchmarks.md`.
 //!
 //! ```text
-//! cargo run --release --example stump_search_bench [--features gpu] -- [records] [features] [threads]
+//! cargo run --release --example stump_search_bench -- [records] [features] [threads]
 //! ```
 
 use std::time::Instant;
 
-use neat_ai_forests::gpu;
 use neat_ai_forests::histogram::{
     BinnedChunk, HistogramSet, MemorySource, SearchControls, search_stumps,
 };
@@ -87,23 +86,6 @@ fn main() {
         .zip(&top)
         .all(|(a, b)| a.feature == b.feature && a.bin == b.bin);
 
-    let (gpu_ms, gpu_backend, gpu_agrees) = match gpu::GpuAccumulator::new() {
-        Ok(g) => {
-            let _warm = g.accumulate(&src, &bins_per_feature);
-            let t = Instant::now();
-            let set = g.accumulate(&src, &bins_per_feature).unwrap();
-            let ms = t.elapsed().as_millis();
-            let top_gpu = search_stumps(&set, &thresholds, &controls, "gpu");
-            let agrees = top.iter().zip(&top_gpu).all(|(a, b)| {
-                a.feature == b.feature
-                    && a.bin == b.bin
-                    && (a.gain - b.gain).abs() <= 1e-4 * a.gain.abs().max(1.0)
-            });
-            (Some(ms), g.adapter_name().to_string(), Some(agrees))
-        }
-        Err(e) => (None, format!("unavailable: {e}"), None),
-    };
-
     // Sampled variants: row fraction 0.25, feature fraction 0.25.
     let quarter = MemorySource {
         chunks: src
@@ -152,7 +134,6 @@ fn main() {
         "buildMs": build_ms,
         "cpu": {"accumulateMs": cpu_ms, "rankMs": rank_ms, "cellsPerSecond": cells / (cpu_ms.max(1) as f64 / 1000.0), "recordsPerSecond": records as f64 / (cpu_ms.max(1) as f64 / 1000.0)},
         "cpuThreads": {"threads": threads, "accumulateMs": cpu_par_ms, "speedupVsSingle": cpu_ms as f64 / cpu_par_ms.max(1) as f64, "agreesWithSingleTop16": par_agrees},
-        "gpu": {"backend": gpu_backend, "accumulateMs": gpu_ms, "agreesWithCpuTop16": gpu_agrees, "speedupVsSingleCpu": gpu_ms.map(|g| cpu_ms as f64 / g.max(1) as f64), "speedupVsThreadedCpu": gpu_ms.map(|g| cpu_par_ms as f64 / g.max(1) as f64)},
         "sampled": {"rowsQuarterMs": rows_quarter_ms, "featuresQuarterMs": feat_quarter_ms},
         "topStump": top.first().map(|s| serde_json::json!({"feature": s.feature, "bin": s.bin, "gain": s.gain, "kind": s.kind})),
         "plantedFeature": 7,
