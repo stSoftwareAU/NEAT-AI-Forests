@@ -455,17 +455,15 @@ pub fn run_forests(
                 max_depth: cfg.max_depth,
                 growth: cfg.growth,
             };
+            // `None` is the unconstrained best-first tree; the rest fix the
+            // first split to one of the best-ranked stumps, one per distinct
+            // feature (Issue #63).
             let mut roots: Vec<Option<(usize, usize)>> = vec![None];
-            let mut seen = Vec::new();
-            for s in &stumps {
-                if seen.len() >= 3 {
-                    break;
-                }
-                if !seen.contains(&s.feature) {
-                    seen.push(s.feature);
-                    roots.push(Some((s.feature, s.bin)));
-                }
-            }
+            roots.extend(
+                crate::tree::root_features(&stumps, cfg.tree_roots)
+                    .into_iter()
+                    .map(Some),
+            );
             for root in roots {
                 for t in grow_tree(
                     &set.source,

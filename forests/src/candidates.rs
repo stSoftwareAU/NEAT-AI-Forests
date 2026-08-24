@@ -228,28 +228,11 @@ pub fn expand_discoveries(
             prov(d, d.strategy.clone(), vec![]),
         ));
     }
-    // Pass 2: one-sided variants of two-leaf stumps (most records untouched).
-    for d in discoveries {
-        for right in [false, true] {
-            if let Some(root) = zero_side(&d.root, right) {
-                let mut p = Patch::new(
-                    output,
-                    root,
-                    prov(
-                        d,
-                        format!("{}/one-sided", d.strategy),
-                        vec![format!("zeroed={}", if right { "right" } else { "left" })],
-                    ),
-                );
-                // Only the kept side is affected now.
-                if let Some((l, r)) = d.side_records {
-                    p.provenance.affected_records = if right { l } else { r } as u64;
-                }
-                out.push(p);
-            }
-        }
-    }
-    // Pass 3: magnitude variants.
+    // Pass 2: magnitude variants. Ahead of the one-sided ones because the
+    // cohort is capped and this is where the returns are: measured over 23
+    // production runs and roughly 3,600 full-corpus scorer calls, a magnitude
+    // variant returned 2.1e-6 of score per call and a one-sided stump 2.5e-7
+    // (Issue #63). Whatever the cap cuts should be the cheaper family.
     for &scale in &cfg.magnitude_scales {
         if scale == 1.0 {
             continue;
@@ -271,6 +254,27 @@ pub fn expand_discoveries(
             );
             p.provenance.predicted_gain = gain;
             out.push(p);
+        }
+    }
+    // Pass 3: one-sided variants of two-leaf stumps (most records untouched).
+    for d in discoveries {
+        for right in [false, true] {
+            if let Some(root) = zero_side(&d.root, right) {
+                let mut p = Patch::new(
+                    output,
+                    root,
+                    prov(
+                        d,
+                        format!("{}/one-sided", d.strategy),
+                        vec![format!("zeroed={}", if right { "right" } else { "left" })],
+                    ),
+                );
+                // Only the kept side is affected now.
+                if let Some((l, r)) = d.side_records {
+                    p.provenance.affected_records = if right { l } else { r } as u64;
+                }
+                out.push(p);
+            }
         }
     }
     // Pass 4: threshold jitter to neighbouring bins (axis stumps only).
@@ -560,6 +564,57 @@ mod tests {
         };
         let doubled: Vec<Patch> = patches.iter().chain(&patches).cloned().collect();
         assert_eq!(generate_candidates(&inc, doubled, &capped).0.len(), 3);
+    }
+
+    /// Issue #63 — the cohort is capped, so the order candidates are emitted
+    /// in decides what the scorer ever sees. Measured over 23 production runs
+    /// and ~3,600 full-corpus calls, a magnitude variant returns 2.1e-6 of
+    /// score per call and a one-sided stump 2.5e-7 — 8× less. Magnitude
+    /// variants must therefore be emitted first.
+    #[test]
+    fn magnitude_variants_are_offered_before_one_sided_stumps() {
+        let inc = Incumbent::from_creature(identity_creature(4, 1), "t").unwrap();
+        let stump = StumpCandidate {
+            feature: 1,
+            bin: 4,
+            threshold: 0.0,
+            kind: StumpKind::TwoLeaf,
+            left_correction: -0.1,
+            right_correction: 0.2,
+            gain: 1.0,
+            left_records: 5.0,
+            right_records: 5.0,
+            affected_records: 10.0,
+            affected_fraction: 1.0,
+            backend: "cpu".into(),
+        };
+        let d = vec![Discovery::from_stump(&stump, 1, "cpu")];
+        let patches = expand_discoveries(&d, &cache(), 0, &inc.checksum, 7, &cfg());
+        let order: Vec<&str> = patches
+            .iter()
+            .map(|p| p.provenance.strategy.as_str())
+            .collect();
+        let first_scale = order.iter().position(|s| s.ends_with("/scale"));
+        let first_one_sided = order.iter().position(|s| s.ends_with("/one-sided"));
+        assert!(
+            first_scale < first_one_sided,
+            "scale must be offered before one-sided: {order:?}"
+        );
+        // And a cohort with room for only the base plus two more takes the
+        // magnitude variants, not the one-sided ones.
+        let capped = CandidateConfig {
+            max_candidates: 3,
+            ..cfg()
+        };
+        let (cands, _) = generate_candidates(&inc, patches, &capped);
+        let kept: Vec<&str> = cands
+            .iter()
+            .map(|c| c.patch.provenance.strategy.as_str())
+            .collect();
+        assert!(
+            kept.iter().all(|s| !s.ends_with("/one-sided")),
+            "a one-sided stump took a slot from a magnitude variant: {kept:?}"
+        );
     }
 
     #[test]

@@ -128,9 +128,10 @@ neat_ai_forests <creature.json> <training-data-dir> import-xgboost --dump dump.j
 | `--stump-kinds` | all three | `left-only`, `right-only`, `two-leaf` |
 | `--top-k` | `16` | stumps kept per search |
 | `--max-per-feature` | `2` | diversity cap per feature (0 = off) |
-| `--max-depth` | `1` | tree depth 1–3 |
-| `--growth` | `level-wise` | `level-wise` or `best-first` |
-| `--magnitude-scales` | `1,0.5,1.5,-1` | leaf scales around the analytical optimum |
+| `--max-depth` | `3` | tree depth 1–3 |
+| `--growth` | `best-first` | `level-wise` or `best-first` |
+| `--tree-roots` | `8` | distinct stump features grown into trees each iteration, on top of the unconstrained best-first tree; trees are the most valuable candidates per scorer call |
+| `--magnitude-scales` | `1.0,0.5,0.25` | leaf scales around the analytical optimum |
 | `--threshold-jitter` | `0` | neighbouring bins tried per top stump |
 | `--random-candidates` | `4` | deliberately random stumps per iteration |
 | `--oblique-candidates` | `0` | oblique 2–3 feature splits per iteration |

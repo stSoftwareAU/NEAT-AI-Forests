@@ -48,6 +48,91 @@ Command: `scripts/run-benchmark.sh 200000 2461 8` → `stump_search_bench`
   at these speeds their value is diversity (more distinct cohorts per hour),
   not raw search time.
 
+## What a scorer call is worth, by candidate family (Issue #63)
+
+Full scoring is roughly half of wall-clock, so the resource to allocate is the
+**full-corpus scorer call**, and the question is what each family of candidate
+returns per call. Measured across 23 production runs and about 3,600 calls:
+
+| strategy | full scores | winners | win rate | score gained per call |
+|---|---|---|---|---|
+| `histogram-tree-depth3` | 94 | 22 | 23.4 % | **3.50e-5** |
+| `histogram-tree-depth3/one-sided` | 81 | 15 | 18.5 % | 2.71e-5 |
+| `histogram-tree-depth2/scale` | 30 | 13 | 43.3 % | 1.74e-5 |
+| `histogram-tree-depth2` | 111 | 17 | 15.3 % | 1.28e-5 |
+| `histogram-stump` | 1008 | 66 | 6.5 % | 2.15e-6 |
+| `histogram-stump/scale` | 1057 | 149 | 14.1 % | 2.11e-6 |
+| `oblique-split/one-sided` | 61 | 1 | 1.6 % | 3.56e-7 |
+| `histogram-stump/one-sided` | 858 | 11 | 1.3 % | 2.48e-7 |
+
+A depth-3 tree is worth 141× a one-sided stump per call and 16× a plain stump.
+Two things follow, and both were accidents of implementation order rather than
+decisions: the tree-root count was hard-coded at 3, and the cohort cap cut
+exactly where the magnitude variants began. `--tree-roots` and the reordered
+expansion in `candidates::expand_discoveries` are the response.
+
+### Shrinkage
+
+Split the same runs by leaf magnitude:
+
+| scale | full scores | winners | win rate |
+|---|---|---|---|
+| 1.0 (the analytical optimum) | 2539 | 157 | 6.18 % |
+| **0.5** | **1057** | **168** | **15.89 %** |
+| 1.5 | 56 | 0 | 0 % |
+
+Shrunk leaves win 2.6× as often, and beat the unscaled leaf in 15 of 17 runs
+where both were tried at least 20 times (two-proportion z = 9.3). This is the
+familiar boosting result — the analytically optimal step overshoots — and it is
+why magnitude variants are now emitted before one-sided ones.
+
+### Where the screen sits
+
+Winners are spread almost evenly across screen ranks 1–8 (rank 1 holds only
+17 % of them; all eight are needed for 94.5 %), so the screen excludes the bad
+reliably but barely orders the rest. Modelling the cost — 27 s search, 29 s
+screen, 85 s full scoring per iteration — `--promote-count` 4 would cost more
+winners than the extra iterations return, and 12 would waste calls. The default
+of 8 is where it should be; the lever is the cohort, not the cut.
+
+### Variant economics (22 runs)
+
+| variant | runs | Δscore per wall hour |
+|---|---|---|
+| depth-3 best-first | 5 | 1.94e-3 |
+| depth-3 + sampling tricks | 2 | 1.69e-3 |
+| sampling tricks | 5 | 7.37e-4 |
+| depth-2 | 3 | 6.52e-4 |
+| depth-2 + boosting | 1 | 6.09e-4 |
+| oblique | 1 | 3.26e-4 |
+| boosting only | 1 | 1.42e-4 |
+| stumps only (`--max-depth 1`) | 1 | **0** |
+
+Depth is what pays. A rotation that spends cycles on stumps alone is spending
+them on the one arm measured at zero.
+
+### The A/B (2026-08-24)
+
+Same source creature, same seed, same 25-minute budget, one arm per binary:
+
+| arm | iterations | acceptances | Δscore | wall | Δ per hour | full scores |
+|---|---|---|---|---|---|---|
+| control (roots 3, one-sided first) | 8 | 7 | 2.4483e-4 | 27.1 min | 5.42e-4 | 72 |
+| **`--tree-roots 8`, magnitude first** | 7 | 7 | **4.9213e-4** | 28.4 min | **1.0396e-3** | 63 |
+
+1.9× the improvement per wall hour, on *fewer* scorer calls and fewer
+iterations — the extra tree roots cost about 20 s of search per iteration and
+paid for it several times over. The cohort composition tells the story:
+
+| | trees | shrunk | one-sided |
+|---|---|---|---|
+| control | 18.8 % | 15.8 % | 43.6 % |
+| experiment | 45.3 % | 45.3 % | 0 % |
+
+The experiment's first acceptance was a `histogram-tree-depth3/scale` — a
+family that never appeared in the control's cohort at all, because the cap cut
+before the magnitude variants of trees were reached.
+
 ## Production evidence (2026-08-21)
 
 Run on the production champion (2511 inputs, 1 `IF` output, 1761 neurons,
