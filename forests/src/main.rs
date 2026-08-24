@@ -178,7 +178,11 @@ struct Cli {
     #[arg(long, default_value_t = 8)]
     learnings_replay: usize,
     /// Hours before a candidate that only ever failed is offered again.
-    #[arg(long, default_value_t = neat_ai_forests::learnings::DEFAULT_RETRY_AFTER_SECS / 3600)]
+    ///
+    /// Global so `prune-learnings` can check its own retention against it: a
+    /// rejection dropped before it was ever retried is an experiment silently
+    /// skipped rather than freed (Issue #61).
+    #[arg(long, global = true, default_value_t = neat_ai_forests::learnings::DEFAULT_RETRY_AFTER_SECS / 3600)]
     learnings_retry_after_hours: u64,
 }
 
@@ -212,6 +216,38 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         output: usize,
     },
+    /// Prune this host's file in the shared learnings cache (Issue #61).
+    ///
+    /// Safe to run from cron, when the host is idle. Only ever touches the file
+    /// this host writes: the rule that keeps a shared directory conflict-free
+    /// on write keeps it conflict-free on prune.
+    PruneLearnings {
+        /// Shared learnings cache root (the same `--learnings-dir` runs use).
+        #[arg(long)]
+        dir: PathBuf,
+        /// Corpus identity to prune, as it appears in the directory name.
+        /// Omit to prune this host's file in every corpus the directory holds,
+        /// which is what a cron job wants.
+        #[arg(long)]
+        corpus: Option<String>,
+        /// Host whose file to prune (default: this machine's hostname).
+        #[arg(long)]
+        host: Option<String>,
+        /// Drop rejections older than this. Dropping one puts that experiment
+        /// back on the table, which is the point.
+        #[arg(long, default_value_t = 720)]
+        rejected_after_hours: u64,
+        /// Drop acceptances older than this. Far longer: wins are what the
+        /// cache is for and a small fraction of the volume.
+        #[arg(long, default_value_t = 4320)]
+        accepted_after_hours: u64,
+        /// Keep at most this many records, newest first (0 = uncapped).
+        #[arg(long, default_value_t = 0)]
+        max_records: usize,
+        /// Report what would go without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Convert an XGBoost JSON dump into Forest patches and judge them with the scorer.
     ImportXgboost {
         /// `booster.get_dump(dump_format="json")` written as a JSON array.
@@ -228,6 +264,66 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(Command::PruneLearnings {
+        dir,
+        corpus,
+        host,
+        rejected_after_hours,
+        accepted_after_hours,
+        max_records,
+        dry_run,
+    }) = &cli.command
+    {
+        // Pruning must never race the retry window: a rejection dropped before
+        // it was ever offered again is an experiment silently skipped rather
+        // than freed (Issue #61).
+        let retry_hours = cli.learnings_retry_after_hours;
+        if *rejected_after_hours <= retry_hours {
+            eprintln!(
+                "--rejected-after-hours {rejected_after_hours} must exceed --learnings-retry-after-hours {retry_hours}, or a rejection is dropped before it is ever retried"
+            );
+            return ExitCode::FAILURE;
+        }
+        let host = host
+            .clone()
+            .unwrap_or_else(neat_ai_forests::learnings::default_host);
+        let corpora = match corpus {
+            Some(c) => vec![c.clone()],
+            None => match neat_ai_forests::learnings::corpora(dir) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::FAILURE;
+                }
+            },
+        };
+        let policy = neat_ai_forests::learnings::PrunePolicy {
+            rejected_after_secs: rejected_after_hours.saturating_mul(3600),
+            accepted_after_secs: accepted_after_hours.saturating_mul(3600),
+            max_records: *max_records,
+            now_unix: neat_ai_forests::incumbent::now_unix(),
+        };
+        let mut total = neat_ai_forests::learnings::PruneOutcome::default();
+        for corpus in &corpora {
+            let store = neat_ai_forests::learnings::LearningsStore::new(
+                dir.clone(),
+                corpus.clone(),
+                host.clone(),
+            );
+            match store.prune(&policy, *dry_run) {
+                Ok(outcome) => total.add(&outcome),
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&total).unwrap_or_default()
+        );
+        return ExitCode::SUCCESS;
+    }
     if let Some(Command::Report { journal }) = &cli.command {
         return match neat_ai_forests::report_from_journal(journal) {
             Ok(r) => {
@@ -339,7 +435,8 @@ fn main() -> ExitCode {
                 *allow_missing_divergence,
             ));
         }
-        Some(Command::Report { .. }) => unreachable!(),
+        // Both are handled before the creature and corpus are required.
+        Some(Command::Report { .. }) | Some(Command::PruneLearnings { .. }) => unreachable!(),
         None => {}
     }
     let cancel = CancelToken::new();

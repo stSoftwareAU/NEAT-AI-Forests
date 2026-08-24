@@ -5,7 +5,44 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
-### Fixed
+### Added
+
+- **`neat_ai_forests prune-learnings` (#61)** — keeps the shared cache from
+  growing without bound, and safe to run from cron on an idle host:
+
+  ```bash
+  neat_ai_forests prune-learnings --dir <learnings-dir> [--dry-run]
+  ```
+
+  It prunes **only the file this host writes**, so the rule that keeps a shared
+  directory conflict-free on write keeps it conflict-free on prune — no locking,
+  no coordination. With no `--corpus` it does so in every corpus directory it
+  finds, since a scheduled job has no way to know which corpora a host has
+  worked on.
+
+  Rejections go after `--rejected-after-hours` (default 30 days), acceptances
+  after `--accepted-after-hours` (default 180 days, since wins are the point of
+  the cache and a small fraction of the volume), and repeats of a candidate
+  already filed against the same creature go whatever their age, newest kept.
+  `--max-records` caps a host's file, newest first.
+
+  Dropping an old rejection is not only housekeeping: it puts that experiment
+  back on the table. So the command **refuses a retention shorter than
+  `--learnings-retry-after-hours`** — a rejection dropped before it was ever
+  retried is an experiment silently skipped rather than freed. The rewrite is a
+  temporary file and a rename, and the file's length is checked before and
+  after: if a run appended in between, nothing is written and the command says
+  to try again when the host is idle.
+
+  There are deliberately no tombstones — a marker separating "never tried" from
+  "tried and forgotten" would survive pruning and so grow without bound, and the
+  retry queue already offers the longest-untried first.
+
+  The README-as-contract test now covers subcommand flags as well as top-level
+  ones, so a flag that only exists under a subcommand still has to be
+  documented — and cannot be documented unless it exists.
+
+### Changed
 
 - **`affectedFraction` no longer exceeds 1 under `--row-sampling
   residual-weighted` (#64).** In one production run 898 of 1,024 candidates

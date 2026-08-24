@@ -104,10 +104,41 @@ multiplies that. Filing is deduplicated on (candidate, creature), which absorbs
 the common case of cycle after cycle starting from the same creature, but the
 directory still grows.
 
-Nothing here ever deletes: "much later" is a fleet-wide retention policy, not a
-decision one run should take on its own. Pruning is tracked separately in
-Issue #61 — old enough failures can be dropped entirely, which also puts those
-experiments back on the table.
+No *run* ever deletes: how long a fleet keeps its learnings is a retention
+policy, not a decision a single run should take mid-flight. That is what
+`prune-learnings` is for (Issue #61):
+
+```bash
+neat_ai_forests prune-learnings --dir <learnings-dir> [--dry-run]
+```
+
+Safe to run from cron on an idle host, and the defaults are the ones a cron job
+wants. It prunes **only the file this host writes** — the rule that keeps the
+directory conflict-free on write keeps it conflict-free on prune — and with no
+`--corpus` it does so in every corpus directory it finds, since a scheduled job
+has no way to know which corpora a host has worked on.
+
+Rejections go after `--rejected-after-hours` (default 30 days), acceptances
+after `--accepted-after-hours` (default 180 days, because wins are the point of
+the cache and a small fraction of the volume), and repeats of a candidate
+already filed against the same creature go whatever their age, newest kept.
+
+Dropping an old rejection is **not** only housekeeping: it puts that experiment
+back on the table, which is intended. So the command refuses a retention shorter
+than `--learnings-retry-after-hours` — a rejection dropped before it was ever
+retried is an experiment silently skipped rather than freed.
+
+The rewrite is a temporary file and a rename, so a reader sees either the old
+file or the new one. A run appending while it works would lose its lines to that
+rename, so the file's length is checked before and after; if anything arrived in
+between, nothing is written and the command says to run it when the host is
+idle. It fails in the direction that keeps records.
+
+There are deliberately **no tombstones**. A marker distinguishing "never tried"
+from "tried and forgotten" would survive pruning and so grow without bound,
+which is the problem being solved — and the retry queue already offers the
+longest-untried first, so a forgotten failure comes up before a fresh one
+either way.
 
 ## Failure is never fatal
 

@@ -14,12 +14,30 @@ fn readme() -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
+/// Top-level `--help` plus each subcommand's, so a flag that only exists under
+/// a subcommand still has to be documented — and cannot be documented if it
+/// does not exist (Issue #61 added `prune-learnings`, whose flags live there).
 fn help() -> String {
+    let mut all = help_for(&[]);
+    for sub in [
+        "report",
+        "export-matrix",
+        "import-xgboost",
+        "prune-learnings",
+    ] {
+        all.push('\n');
+        all.push_str(&help_for(&[sub]));
+    }
+    all
+}
+
+fn help_for(args: &[&str]) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_neat_ai_forests"))
+        .args(args)
         .arg("--help")
         .output()
         .expect("run --help");
-    assert!(out.status.success());
+    assert!(out.status.success(), "{args:?} --help failed");
     String::from_utf8(out.stdout).unwrap()
 }
 
@@ -61,13 +79,6 @@ const FOREIGN_FLAGS: &[&str] = &[
     "--example",
     "--no-deps",
     "--locked",
-    "--depth",
-    "--rounds",
-    "--out",
-    "--dump",
-    "--max-records",
-    "--output",
-    "--allow-missing-divergence",
 ];
 
 #[test]
