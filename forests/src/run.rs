@@ -449,6 +449,10 @@ pub fn run_forests(
         // Journalled against every discovery, so a future second search path
         // can be told apart from this one after the fact (Issue #67).
         let backend_label = SEARCH_BACKEND.to_string();
+        // Σ of the search set's importance weights — the denominator any
+        // weighted count has to be compared against (Issue #64). Equal to the
+        // row count when every weight is 1, which is every stride-sampled set.
+        let searched_weight = hist.total_count;
         let controls = cfg.search_controls();
         let threshold = set.threshold(&bins);
         let stumps = search_stumps(&hist, &threshold, &controls, &backend_label);
@@ -792,11 +796,15 @@ pub fn run_forests(
                     features: c.features(),
                     predicted_gain: c.predicted_gain(),
                     affected_records: c.affected_records(),
-                    affected_fraction: if set.records() > 0 {
-                        c.affected_records() as f64 / set.records() as f64
-                    } else {
-                        0.0
-                    },
+                    // The weighted total, not the row count: under
+                    // residual-weighted sampling the numerator estimates a
+                    // corpus-wide count and the two must be on one scale
+                    // (Issue #64).
+                    affected_fraction: crate::journal::affected_fraction(
+                        c.affected_records() as f64,
+                        searched_weight,
+                        set.records(),
+                    ),
                     screen_score: None,
                     screen_delta: None,
                     promoted: false,

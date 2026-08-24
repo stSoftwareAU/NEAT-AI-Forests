@@ -219,9 +219,13 @@ pub struct Provenance {
     pub backend: String,
     /// Predicted proxy gain (sum-of-squares reduction in correction space). Not a score.
     pub predicted_gain: f64,
-    /// Records whose correction is non-zero under the patch (on the search set).
+    /// Records whose correction is non-zero under the patch. Weighted by the
+    /// search set's importance weights, so under `residual-weighted` sampling
+    /// it estimates the count over the whole corpus rather than over
+    /// `search_records` — the journal's `affectedFraction` is the ratio that
+    /// accounts for that (#64).
     pub affected_records: u64,
-    /// Records in the search set.
+    /// Rows in the search set (unweighted).
     pub search_records: u64,
     /// Checksum of the incumbent the patch was searched against.
     pub incumbent_checksum: String,

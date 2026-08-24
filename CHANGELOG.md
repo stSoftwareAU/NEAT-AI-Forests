@@ -5,27 +5,28 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
-### Changed
+### Fixed
 
-- **Tree growth reuses histograms instead of re-accumulating them (#69).** A
-  split partitions its parent's rows exactly, so one child's histogram is the
-  parent's minus the other's. `grow_tree` now carries a histogram on each leaf,
-  accumulates only the *smaller* child of every split, and derives its sibling
-  by subtraction — the standard gradient-boosting trick, which halves the
-  accumulation at every level and compounds with depth. Accumulating the smaller
-  side does the least work and keeps the float cancellation small;
-  `HistogramSet::subtract` clamps counts and squares at zero, since cancellation
-  on a bin whose rows all belong to the sibling can otherwise leave a value like
-  `-1e-16` — harmless arithmetically but enough to make a variance negative and
-  a gain `NaN`.
+- **`affectedFraction` no longer exceeds 1 under `--row-sampling
+  residual-weighted` (#64).** In one production run 898 of 1,024 candidates
+  reported a share above 1, the largest being 11.67 — a patch supposedly
+  correcting 1,167 % of the search set.
 
-  Measured on a production-shaped search set (200 k records × 300 features,
-  8 tree roots, depth 3, best-first — the defaults), median of five runs:
-  **5122 ms → 3087 ms, 1.66×**. At 100 k × 1000 it is 8570 ms → 6518 ms.
+  The numerator was not the problem. `strategies::plan` gives each kept row an
+  importance weight (stratum population over stratum sample), so the histogram
+  counts — and `affectedRecords` with them — estimate a count over the *whole
+  corpus*. The journal then divided that by the number of rows searched, mixing
+  a corpus-scale numerator with a sample-scale denominator. It now divides by
+  the search set's weighted total, which is the like-for-like comparison and
+  equals the row count whenever every weight is 1 (every stride-sampled set, and
+  every run before weighting existed). The new `journal::affected_fraction`
+  clamps to `[0, 1]` and falls back to the row count when no weighted total is
+  recorded.
 
-  The trees themselves do not move: a fingerprint over every candidate grown at
-  both growth policies, every depth 1–3, and with and without a fixed root is
-  pinned byte for byte, so the change had to prove it altered only the cost.
+  Nothing about scoring or acceptance was affected — the scorer never sees these
+  fields — but they are what `neat_ai_forests report` aggregates, and a share
+  above 1 quietly poisoned any comparison between a weighted run and a stride
+  run. Both fields now say in their documentation which scale they are on.
 
 ### Removed
 
