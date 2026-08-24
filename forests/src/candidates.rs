@@ -15,7 +15,7 @@ use rand::rngs::StdRng;
 
 use crate::bins::BinCache;
 use crate::config::GraftConstants;
-use crate::graft::graft_patch_with;
+use crate::graft::graft_patch_options;
 use crate::histogram::{StumpCandidate, StumpKind};
 use crate::incumbent::Incumbent;
 use crate::oblique::ObliqueCandidate;
@@ -45,6 +45,8 @@ pub struct CandidateConfig {
     pub notes: Vec<String>,
     /// Who owns each graft's three bias-1 constants (Issue #56).
     pub graft_constants: GraftConstants,
+    /// How a correction reaches both branches of an `IF` anchor (Issue #68).
+    pub if_correction: crate::config::IfCorrection,
 }
 
 /// A grafted candidate.
@@ -394,7 +396,7 @@ pub fn generate_candidates(
             discarded.push((id, "all-zero correction".into()));
             continue;
         }
-        match graft_patch_with(&incumbent.creature, &patch, cfg.graft_constants) {
+        match graft_patch_options(&incumbent.creature, &patch, cfg.graft_options()) {
             Ok(g) => out.push(Candidate {
                 id,
                 patch,
@@ -406,6 +408,13 @@ pub fn generate_candidates(
         }
     }
     (out, discarded)
+}
+
+impl CandidateConfig {
+    /// The graft shape this configuration asks for.
+    pub fn graft_options(&self) -> crate::graft::GraftOptions {
+        crate::graft::GraftOptions::new(self.graft_constants).with_if_correction(self.if_correction)
+    }
 }
 
 /// Id of a combination: hash of the member ids in order.
@@ -512,6 +521,7 @@ mod tests {
             threshold_jitter: 1,
             notes: vec![],
             graft_constants: GraftConstants::default(),
+            if_correction: crate::config::IfCorrection::Relay,
         }
     }
 
