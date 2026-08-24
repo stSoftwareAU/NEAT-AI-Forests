@@ -83,6 +83,34 @@ pub enum FeatureSelection {
     ErrorRanked,
 }
 
+/// How a correction reaches both branches of an `IF` anchor (Issue #68).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[clap(rename_all = "kebab-case")]
+pub enum IfCorrection {
+    /// The root feeds the `positive` branch and an IDENTITY relay carries the
+    /// same value into the `negative` one.
+    ///
+    /// One neuron per graft. Kept for creatures that must load under
+    /// @stsoftware/neat-ai older than 6.6.40, which silently drops one of a
+    /// typed pair.
+    Relay,
+    /// The root feeds both branches directly, as two synapses of different
+    /// roles between the same ordered pair.
+    ///
+    /// Mathematically identical and one neuron cheaper — about `1.1e-7` of
+    /// score per accepted patch, and the complexity penalty stops growing a
+    /// neuron at a time with every graft.
+    ///
+    /// The default since every engine agrees on it: `neat_core` 0.10.6 keys
+    /// uniqueness by `(fromUUID, toUUID, type)` (NEAT-AI-core#577),
+    /// `rust_scorer` sums both roles, and @stsoftware/neat-ai **6.6.40** keeps
+    /// both on load (NEAT-AI#3873). Anything older silently keeps one — a
+    /// six-synapse creature loading as five, with no error — so a creature
+    /// emitted this way must not be given to an engine behind that version.
+    TypedPair,
+}
+
 /// Complete configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,6 +169,8 @@ pub struct ForestsConfig {
     pub max_depth: usize,
     /// Growth policy for depth > 1.
     pub growth: GrowthPolicy,
+    /// How a correction reaches both branches of an `IF` anchor (Issue #68).
+    pub if_correction: IfCorrection,
     /// Distinct stump features grown into trees each iteration, on top of the
     /// unconstrained best-first tree (Issue #63).
     ///
@@ -235,6 +265,7 @@ impl Default for ForestsConfig {
             max_per_feature: 2,
             max_depth: 3,
             growth: GrowthPolicy::BestFirst,
+            if_correction: IfCorrection::TypedPair,
             tree_roots: 8,
             magnitude_scales: vec![1.0, 0.5, 0.25],
             threshold_jitter: 0,

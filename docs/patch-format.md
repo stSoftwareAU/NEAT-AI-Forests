@@ -71,7 +71,7 @@ per split:  forest-P-ifN     hidden IF, bias 0
                 positive:    right child ifN (weight 1)  |  one_p (weight = right leaf)
                 negative:    left  child ifN (weight 1)  |  one_n (weight = left leaf)
 root ifN ──(weight 1, untyped)──▶ output-j                       point-wise output squash
-root ifN ──(positive)──▶ output-j,  root ifN → relayN (IDENTITY) ──(negative)──▶ output-j    IF output
+root ifN ──(positive)──▶ output-j  and  root ifN ──(negative)──▶ output-j     IF output
 ```
 
 That is NEAT-AI-core's own canonical shape (`neat_core::decision_tree`,
@@ -79,9 +79,18 @@ NEAT-AI-core #555): every node is described as a `neat_core::IfNodeSpec` and
 every shape is built by NEAT-AI-core (#42, #48). The post-order batch goes to
 `neat_core::graft_if_nodes` in one all-or-nothing graft — a child carries no
 outward edge of its own, the parent that reads it supplies one — and where the
-target output is itself an `IF` aggregate the root's outward edge carries the
-`positive` role and `neat_core::graft_relay_node` adds the IDENTITY relay that
-carries the same correction into the `negative` branch.
+target is itself an `IF` aggregate the root's outward edges carry the `positive`
+and `negative` roles — two synapses between the same ordered pair, which
+NEAT-AI-core permits for `IF` targets because uniqueness is keyed by
+`(from, to, type)` (Issue #68). An `IF` keeps a sum per role, so a correction
+that must apply whichever way it branches has to land in both.
+
+That needs every engine to key synapses the same way: NEAT-AI-core 0.10.6,
+a `rust_scorer` built against it, and @stsoftware/neat-ai **6.6.40** or newer.
+Older TypeScript silently keeps one of the pair on load and an older
+`rust_scorer` rejects the creature outright, so `--if-correction relay` still
+emits the IDENTITY relay that used to be the only way to be a second distinct
+source.
 
 The duplicate-pair rule — NEAT-AI-core's `validate_no_duplicate_synapses`
 (#556), wrapped as `check_no_duplicate_synapses` — is part of the validation

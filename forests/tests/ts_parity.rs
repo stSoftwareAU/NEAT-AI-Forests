@@ -172,6 +172,18 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
             .unwrap()
             .0,
         ),
+        // Issue #68 — the default graft's typed pair, scored rather than only
+        // counted: one source into the `IF` output as both roles must give the
+        // same score in both engines, not merely load with every synapse.
+        (
+            "if-typed-pair",
+            graft_patch(
+                &if_output_creature(4),
+                &Patch::new(0, Node::stump(2, -0.1, 0.2, 0.0), Provenance::default()),
+            )
+            .unwrap()
+            .creature,
+        ),
         // Issue #58 — a `MINIMUM`-clamped output: the graft attaches behind the
         // clamps and scales its outward edge, a shape neither engine had seen.
         ("clamp-base", min_clamped_if_creature(4)),
@@ -304,4 +316,90 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
             "{per_patch}: score moved by {d_rust}, more than a complexity term"
         );
     }
+}
+
+/// Issue #68 — the default graft emits one source into an `IF` target as both
+/// `positive` and `negative`. `neat_core` 0.10.6 accepts it, `rust_scorer` sums
+/// both roles, and @stsoftware/neat-ai **6.6.40** keeps both on load
+/// (NEAT-AI#3873).
+///
+/// Anything older silently keeps one — a six-synapse creature loading as five,
+/// with no error raised — so the same JSON would mean two different things in
+/// the two engines. This test is what stops that regressing: it asserts
+/// TypeScript loads every synapse of a default graft, so a fleet that drops
+/// back to an older pin fails here rather than in a check-in nobody can explain.
+#[test]
+fn typescript_keeps_both_roles_of_a_typed_pair() {
+    let (Some(_scorer), Some(ts_root)) = (scorer_binary(), std::env::var_os("NEAT_AI_TS_ROOT"))
+    else {
+        eprintln!("skipping: needs rust_scorer and NEAT_AI_TS_ROOT");
+        return;
+    };
+    if !deno_ok() {
+        eprintln!("skipping: deno not installed");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let creature = graft_patch(
+        &if_output_creature(4),
+        &Patch::new(0, Node::stump(1, 0.2, 0.0, 0.3), Provenance::default()),
+    )
+    .expect("the default graft emits a typed pair into an IF target")
+    .creature;
+    let path = tmp.path().join("typed-pair.json");
+    std::fs::write(
+        &path,
+        neat_core::creature_to_json_pretty(&creature).unwrap(),
+    )
+    .unwrap();
+
+    let ts_root = PathBuf::from(ts_root);
+    let probe = ts_root.join(".forests-typed-pair-probe.ts");
+    std::fs::write(
+        &probe,
+        r#"
+import { Creature } from "@stsoftware/neat-ai";
+const raw = JSON.parse(await Deno.readTextFile(Deno.args[0]));
+const c = Creature.fromJSON(raw);
+c.validate();
+console.log(JSON.stringify({ json: raw.synapses.length, loaded: c.exportJSON().synapses.length }));
+"#,
+    )
+    .unwrap();
+    let out = Command::new("deno")
+        .current_dir(&ts_root)
+        .args([
+            "run",
+            "--no-prompt",
+            "--allow-read",
+            "--allow-env",
+            "--allow-import",
+            "--allow-net",
+        ])
+        .arg(&probe)
+        .arg(&path)
+        .output()
+        .expect("run deno");
+    let _ = std::fs::remove_file(&probe);
+    assert!(
+        out.status.success(),
+        "deno failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let line = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .expect("probe output")
+        .to_string();
+    let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+    let (json, loaded) = (v["json"].as_u64().unwrap(), v["loaded"].as_u64().unwrap());
+    assert_eq!(
+        loaded,
+        json,
+        "TypeScript dropped {} of {json} synapses. A source feeding an `IF` \
+         target as two roles needs @stsoftware/neat-ai 6.6.40 or newer \
+         (NEAT-AI#3873); on an older pin the two engines disagree about what \
+         this creature computes, and every check-in is gated on them agreeing.",
+        json - loaded
+    );
 }

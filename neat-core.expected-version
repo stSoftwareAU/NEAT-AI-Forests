@@ -13,4 +13,11 @@
 # memetic weight type — its grafts only ever set `memetic: None` — so no code
 # change is required. Verified by a clean `cargo build --release` and the full
 # test suite passing against sibling neat-core 0.10.0.
-0.10.0
+# 0.10.0 -> 0.10.6: adopt neat-core #577, which keys synapse uniqueness by
+# (fromUUID, toUUID, type) and lets an `IF` target read more than one role from
+# the same source. That is what `--if-correction typed-pair` emits, and 0.10.5
+# and earlier reject it. Nothing else changes: the default graft still uses the
+# IDENTITY relay, which every version accepts. Verified by a clean
+# `cargo build --release` and the full test suite against sibling neat-core
+# 0.10.6.
+0.10.6

@@ -546,6 +546,7 @@ pub fn run_forests(
             threshold_jitter: cfg.threshold_jitter,
             notes: set.notes.clone(),
             graft_constants: cfg.graft_constants,
+            if_correction: cfg.if_correction,
         };
         let mut patches = expand_discoveries(
             &discoveries,

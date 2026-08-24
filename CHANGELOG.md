@@ -5,6 +5,38 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A correction now reaches both branches of an `IF` anchor as two synapses,
+  not through an IDENTITY relay neuron (#68).** The relay existed only because a
+  creature could carry one synapse per ordered `(from, to)` pair, so a second
+  distinct source had to be invented. All three engines now key synapses by
+  `(fromUUID, toUUID, type)` and permit the pair for `IF` targets —
+  NEAT-AI-core 0.10.6 (NEAT-AI-core#577), `rust_scorer` built against it, and
+  @stsoftware/neat-ai **6.6.40** (NEAT-AI#3873) — so the root simply feeds both
+  roles.
+
+  Mathematically identical, pinned record for record against the relay shape,
+  and one neuron cheaper per graft: about `1.1e-7` of score each, and the
+  complexity penalty stops growing a neuron at a time with every graft. On the
+  production creature 455 relays had accumulated, worth `4.96e-5` (#66).
+
+  `--if-correction relay` still emits the old shape for creatures that must load
+  under an older engine. **Older engines do not fail loudly**: TypeScript before
+  6.6.40 silently keeps one of the pair — a six-synapse creature loading as five
+  — and a `rust_scorer` built against neat-core before 0.10.6 rejects the
+  creature outright with "Duplicate synapse". A fleet adopting this must
+  therefore bump its `@stsoftware/neat-ai` pin **and** rebuild its scorer
+  binary.
+
+  `ts_parity::typescript_keeps_both_roles_of_a_typed_pair` asserts TypeScript
+  loads every synapse of a default graft, and the scored parity cases gain
+  `if-typed-pair`, so a drop back to an older engine fails there rather than in
+  a check-in nobody can explain.
+
+  `neat-core.expected-version` moves to 0.10.6, the first version that accepts
+  the shape.
+
 ### Added
 
 - **`neat_ai_forests prune-learnings` (#61)** — keeps the shared cache from
