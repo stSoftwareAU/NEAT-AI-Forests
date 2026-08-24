@@ -100,7 +100,24 @@ neat_ai_forests <creature.json> <training-data-dir> [OPTIONS]
 neat_ai_forests report <experiments.jsonl>
 neat_ai_forests <creature.json> <training-data-dir> export-matrix  [--out CSV] [--max-records N] [--output J]
 neat_ai_forests <creature.json> <training-data-dir> import-xgboost --dump dump.json [--output J] [--allow-missing-divergence]
+neat_ai_forests prune-learnings --dir <learnings-dir> [--corpus ID] [--host H] [--dry-run]
 ```
+
+`prune-learnings` keeps the shared cache (#61) from growing without bound, and
+is safe to run from cron on an idle host. It only ever touches the file this
+host writes, so it needs no coordination with the rest of the fleet, and
+dropping an old rejection is the point rather than a side effect: it puts that
+experiment back on the table.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--dir` | — | the shared learnings cache root, as passed to `--learnings-dir` |
+| `--corpus` | every corpus found | which corpus directory to prune |
+| `--host` | hostname | whose file to prune; only ever this one |
+| `--rejected-after-hours` | `720` | drop rejections older than this — must exceed `--learnings-retry-after-hours`, or a rejection is dropped before it is ever retried |
+| `--accepted-after-hours` | `4320` | drop acceptances older than this; far longer, since wins are what the cache is for |
+| `--max-records` | `0` | cap on the records a host keeps, newest first (0 = uncapped) |
+| `--dry-run` | off | report what would go without writing anything |
 
 | Flag | Default | Meaning |
 |---|---|---|
