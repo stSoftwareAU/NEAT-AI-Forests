@@ -227,6 +227,32 @@ This experiment exists to continue evolution without risking a creature that alr
 9. **Random accidents are legitimate discoveries.** We care about measurable improvement, not whether the winning idea looked clever beforehand.
 10. **Negative results are results.** A dirty trick that consumes time but produces no verified improvements should be measured and discarded.
 
+### What the invariants do not cover: adaptive data analysis
+
+Every invariant above makes a **single** decision honest. None of them makes
+**thousands** of decisions against the same corpus honest.
+
+Acceptance is measured on the full production corpus every time — the same
+records, for every iteration of every run, and for the sibling optimisers
+(Discovery, Lamarck and ordinary NEAT evolution) that select against it too.
+That is **adaptive data analysis**: once a corpus has answered thousands of
+queries, the accepted set is fitted to that corpus in a way no individual
+scorer call can reveal. With a target as low-SNR as 90-day price movement it is
+the dominant risk in this experiment — larger than any choice of split search.
+The names for it are
+[Dwork et al. 2015, *The reusable holdout*](https://doi.org/10.1126/science.aaa9375)
+and [Blum & Hardt 2015, *The Ladder*](https://arxiv.org/abs/1502.04585).
+
+**Is any corpus slice held back from every optimiser? No — there is no holdout
+today.** `--search-records` samples rows for the *search* and
+`--screen-sample-rate` samples records for the *screen*, but the authoritative
+call scores the whole corpus, and no slice is withheld from Forests or from any
+sibling. So "the scorer decides" is an **in-corpus** guarantee: `best.json` is
+the creature that scored best on the corpus everything else was also selected
+on. Until a shared, never-optimised-against slice exists, read a reported Δ as
+an upper bound on out-of-sample gain, and treat the smallest accepted gains —
+those near `--min-improvement` — as the least trustworthy.
+
 ---
 
 ## Non-goals
@@ -408,6 +434,121 @@ Every candidate must record what produced it. Random search must be called rando
 The metric that matters is not elegance or proxy gain. It is:
 
 > **scorer-verified improvement per wall-clock hour.**
+
+---
+
+## Where this sits in the literature
+
+Everything above is in house terms — 🌳 Forests, "dirty tricks", "trust only the
+scorer" — and those stay. But every mechanism in the pipeline already has a name
+in the research literature, and naming them makes the experiment legible to
+anyone who has not read the issue history. It also bounds the novelty claim
+honestly: most of this is established method, and exactly one part is unusual.
+
+```mermaid
+flowchart LR
+    RES["residuals → shallow tree → add"] --> L1["gradient boosting<br/>Friedman 2001 · GrowNet 2020"]
+    SPLIT["split search"] --> L2["histogram / oblique splits<br/>XGBoost 2016 · OC1 1994 · Breiman 2001"]
+    GRAFT["patch → native IF structure"] --> L3["automated software transplantation<br/>Barr 2015 · genetic improvement 2018"]
+    SCREEN["sampled screen → full score"] --> L4["racing<br/>Hoeffding 1994 · F-Race 2002 · Hyperband 2017"]
+    CACHE["shared learnings cache"] --> L5["memory-based search<br/>tabu 1986 · adaptive operator selection 2010"]
+    ACCEPT["accept on the same corpus, every time"] --> L6["adaptive data analysis<br/>Dwork 2015 · Blum &amp; Hardt 2015"]
+
+    classDef ours fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#0b2545
+    classDef lit fill:#fef3c7,stroke:#b45309,stroke-width:2px,color:#451a03
+    classDef risk fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
+    class RES,SPLIT,GRAFT,SCREEN,CACHE ours
+    class L1,L2,L3,L4,L5 lit
+    class ACCEPT,L6 risk
+```
+
+### The core loop is gradient boosting
+
+Measure the residuals of a fitted model, fit a shallow tree to them, add it to
+the model, recompute the residuals — that is **gradient boosting**
+([Friedman 2001, *Greedy function approximation: a gradient boosting machine*](https://doi.org/10.1214/aos/1013203451)).
+The `--boost-rounds` flag, the shrinkage result in
+[docs/benchmarks.md](docs/benchmarks.md#shrinkage), and the whole "recompute
+residuals after every acceptance" invariant are that method, not a house
+invention.
+
+Doing it with a **neural network as the base model** is **GrowNet**
+([Badirli et al. 2020, *Gradient Boosting Neural Networks*](https://arxiv.org/abs/2002.07971)),
+which boosts shallow networks as weak learners; Forests inverts the pairing and
+boosts tree-shaped corrections onto a mature network. Putting trees and nets in
+one differentiable model is a line of its own:
+[Kontschieder et al. 2015, *Deep Neural Decision Forests*](https://doi.org/10.1109/ICCV.2015.172)
+and [Popov et al. 2019, *NODE*](https://arxiv.org/abs/1909.06312). Forests
+differs from all of these in what it optimises — nothing here is trained by
+gradient descent end to end, and the base model is frozen — but the loop is the
+same loop.
+
+**The XGBoost control is the incumbent method, and should be read that way.**
+Gradient-boosted trees ([Chen & Guestrin 2016, *XGBoost*](https://arxiv.org/abs/1603.02754))
+are what a practitioner would reach for on exactly this problem shape:
+tabular features, a scalar target, residual structure left in a fitted model.
+The control in [docs/xgboost-control.md](docs/xgboost-control.md) is therefore
+not a curiosity — it is the comparison that decides whether native search is
+worth having.
+
+### The graft is software transplantation
+
+Turning a patch into **native `IF` structure inside the creature**, rather than
+carrying a second model at runtime, is the unusual part, and its closest
+precedent is not from machine learning:
+[Barr et al. 2015, *Automated Software Transplantation* (ISSTA)](https://doi.org/10.1145/2771783.2771796)
+moves a working feature from one program into another and validates the host by
+running it. The wider field is genetic improvement
+([Petke et al. 2018, *Genetic Improvement of Software: A Comprehensive Survey*](https://doi.org/10.1109/TEVC.2017.2693219)),
+which searches for edits to an existing program under a test-based acceptance
+gate — structurally the same contract as "graft onto a clone, let the scorer
+decide". Citing it bounds the claim: the novelty is real, and it is narrow.
+
+### Two-phase screening is racing
+
+Running every candidate on a cheap sample, dropping what the sample can resolve
+as a loser, and spending the expensive evaluation only on survivors is
+**racing**:
+[Maron & Moore 1994, *Hoeffding races*](https://proceedings.neurips.cc/paper/1993/hash/02a32ad2669e6fe298e607fe7cc0e1a0-Abstract.html),
+[Birattari et al. 2002, *F-Race*](https://dl.acm.org/doi/10.5555/2955491.2955494),
+[Jamieson & Talwalkar 2016, successive halving](https://arxiv.org/abs/1502.07943)
+and [Li et al. 2017, *Hyperband*](https://arxiv.org/abs/1603.06560).
+
+That literature also raises the question we have to answer here: **a sampled
+screen only earns the right to drop an arm once it has the power to resolve the
+effect size in play.** Ours are around 1e-4 per accepted iteration and smaller,
+against a 5 % sample — see
+[docs/benchmarks.md](docs/benchmarks.md#where-the-screen-sits) for what the
+screen is and is not powered for, and why `--explore-quota` exists. An
+under-powered screen does not merely waste calls; it silently vetoes true wins.
+
+### The shared learnings cache is memory-based search
+
+Replaying verified wins and refusing to pay twice for a known failure is
+**memory-based search**: a tabu list of recently rejected moves
+([Glover 1986, *Future paths for integer programming and links to artificial intelligence*](https://doi.org/10.1016/0305-0548%2886%2990048-1)),
+with `--learnings-retry-after-hours` as its tenure. Choosing what to try next
+from the measured payoff of past choices is **adaptive operator selection**
+([Fialho et al. 2010, *Analyzing bandit-based adaptive operator selection mechanisms*](https://doi.org/10.1007/s10472-010-9213-y))
+— which is what `neat_ai_forests report`'s per-strategy economics are for.
+
+### Splits
+
+Axis-aligned quantile stumps are the ordinary decision-tree/random-forest
+baseline ([Breiman 2001, *Random Forests*](https://doi.org/10.1023/A:1010933404324)).
+The `--oblique-candidates` path — a split on a weighted sum of two or three
+features — is oblique induction
+([Murthy et al. 1994, *A System for Induction of Oblique Decision Trees* (OC1)](https://doi.org/10.1613/jair.63)),
+and NEAT-AI's `IF` aggregate can express one natively. Their measured economics
+are in [docs/benchmarks.md](docs/benchmarks.md), and so far the axis-aligned
+baseline wins.
+
+### The exposure
+
+The one thing in the pipeline that is **not** covered by any of the methods
+above is that acceptance is measured against the same corpus every time.
+That is adaptive data analysis, and it is written up with the
+[safety invariants](#what-the-invariants-do-not-cover-adaptive-data-analysis).
 
 ---
 

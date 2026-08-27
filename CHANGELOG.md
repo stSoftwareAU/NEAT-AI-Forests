@@ -39,6 +39,32 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Added
 
+- **README section "Where this sits in the literature" (#93)** — every
+  mechanism in the pipeline named against the research that already describes
+  it: the residual loop as gradient boosting (Friedman 2001, GrowNet), the
+  graft as automated software transplantation (Barr et al. 2015, and the
+  genetic-improvement survey), the two-phase screen as racing (Hoeffding races,
+  F-Race, successive halving, Hyperband), the learnings cache as memory-based
+  search (tabu search, adaptive operator selection), and the split families
+  against OC1 and random forests. The XGBoost control is framed as the
+  incumbent method for this problem shape rather than a curiosity.
+
+  Two things follow the citations rather than just decorating them.
+  `docs/benchmarks.md` now states **what the 5 % screen is powered for**: it
+  carries ≈4.5× the standard error of the authoritative call, against effects
+  of 1e-4 and smaller, so it vetoes the clearly-bad and does not rank —
+  which is what the evenly-spread screen ranks and the bypass false negatives
+  were already saying. And the safety invariants now name the exposure they do
+  not cover: acceptance is measured on the same corpus every time, for every
+  optimiser, which is **adaptive data analysis** (Dwork et al. 2015, Blum &
+  Hardt 2015). **No corpus slice is held back from any optimiser today**, so
+  the scorer's verdict is an in-corpus guarantee and a reported Δ is an upper
+  bound on out-of-sample gain.
+
+  No house terminology was removed; `docs_contract.rs` and the new
+  README-contract tests pin the citations, the power statement and the holdout
+  answer in place.
+
 - **`neat_ai_forests prune-learnings` (#61)** — keeps the shared cache from
   growing without bound, and safe to run from cron on an idle host:
 
