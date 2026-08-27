@@ -41,6 +41,16 @@ fn help_for(args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
+/// The body of a `## `-level section, up to the next `## ` heading.
+fn section<'a>(doc: &'a str, heading: &str) -> &'a str {
+    let start = doc
+        .find(heading)
+        .unwrap_or_else(|| panic!("README has no {heading:?} section"));
+    let rest = &doc[start..];
+    let end = rest[3..].find("\n## ").map_or(rest.len(), |i| i + 3);
+    &rest[..end]
+}
+
 fn long_flags(text: &str) -> BTreeSet<String> {
     let bytes = text.as_bytes();
     let mut out = BTreeSet::new();
@@ -129,13 +139,90 @@ fn charter_sections_survive() {
     assert!(r.contains("neat_ai_forests report"));
 }
 
+/// Issue #93: every mechanism in the pipeline has a name in the research
+/// literature, and the README has to name it — in a section of its own, with a
+/// citation per mechanism.
+#[test]
+fn literature_section_cites_the_research() {
+    let r = readme();
+    let lit = section(&r, "## Where this sits in the literature");
+    for citation in [
+        // residual loop → gradient boosting, with a network as the base model
+        "Friedman 2001",
+        "Badirli",
+        "GrowNet",
+        "Kontschieder",
+        "Popov",
+        // the XGBoost control is the incumbent method for this problem shape
+        "Chen & Guestrin",
+        // the graft → automated software transplantation / genetic improvement
+        "Barr et al. 2015",
+        "Automated Software Transplantation",
+        "Petke",
+        // two-phase screening → racing
+        "Maron & Moore",
+        "Birattari",
+        "Jamieson",
+        "Li et al. 2017",
+        "Hyperband",
+        // learnings cache → memory-based search
+        "Glover 1986",
+        "Fialho",
+        // splits
+        "Murthy",
+        "OC1",
+        "Breiman 2001",
+    ] {
+        assert!(
+            lit.contains(citation),
+            "'Where this sits in the literature' omits {citation:?}"
+        );
+    }
+}
+
+/// Issue #93: naming the research must not cost the house terminology.
+#[test]
+fn house_terminology_survives_the_literature_section() {
+    let r = readme();
+    for needle in ["dirty tricks", "trust only the scorer", "🌳"] {
+        assert!(r.contains(needle), "README lost house term: {needle:?}");
+    }
+}
+
+/// Issue #93: the exposure that thousands of acceptances against one corpus
+/// creates is adaptive data analysis, and the README must say so — next to the
+/// invariants that promise the scorer is the final authority — and answer the
+/// holdout question outright.
+#[test]
+fn adaptive_data_analysis_exposure_is_stated_with_the_holdout_answer() {
+    let r = readme();
+    let invariants = section(&r, "## Safety invariants");
+    for needle in [
+        "adaptive data analysis",
+        "Dwork",
+        "Blum",
+        "held back from every optimiser",
+        "no holdout",
+    ] {
+        assert!(
+            invariants.contains(needle),
+            "the safety invariants do not state the adaptive-overfitting exposure: {needle:?}"
+        );
+    }
+}
+
+#[test]
+fn section_body_stops_at_the_next_heading() {
+    let doc = "# t\n\n## A\n\nbody a\n\n## B\n\nbody b\n";
+    assert!(section(doc, "## A").contains("body a"));
+    assert!(!section(doc, "## A").contains("body b"));
+    assert!(section(doc, "## B").contains("body b"));
+}
+
 #[test]
 fn repository_layout_lists_every_source_file() {
     let r = readme();
-    let start = r.find("## Repository layout").expect("layout section");
-    let section = &r[start..];
-    let end = section[3..].find("\n## ").map_or(section.len(), |i| i + 3);
-    let tree = &section[..end];
+    let tree = section(&r, "## Repository layout");
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     for entry in std::fs::read_dir(&src).unwrap() {
         let name = entry.unwrap().file_name().to_string_lossy().to_string();

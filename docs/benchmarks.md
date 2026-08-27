@@ -85,14 +85,42 @@ Split the same runs by leaf magnitude:
 
 Shrunk leaves win 2.6× as often, and beat the unscaled leaf in 15 of 17 runs
 where both were tried at least 20 times (two-proportion z = 9.3). This is the
-familiar boosting result — the analytically optimal step overshoots — and it is
-why magnitude variants are now emitted before one-sided ones.
+familiar boosting result — the analytically optimal step overshoots, and a
+shrunk step generalises better
+([Friedman 2001](https://doi.org/10.1214/aos/1013203451), §5: the shrinkage
+parameter `ν`) — and it is why magnitude variants are now emitted before
+one-sided ones. `--magnitude-scales` is that shrinkage parameter, searched
+rather than fixed.
 
 ### Where the screen sits
 
-Winners are spread almost evenly across screen ranks 1–8 (rank 1 holds only
-17 % of them; all eight are needed for 94.5 %), so the screen excludes the bad
-reliably but barely orders the rest. Modelling the cost — 27 s search, 29 s
+Two-phase screening with authoritative promotion is **racing**: evaluate every
+arm cheaply, drop the arms the cheap evaluation can resolve as losers, and spend
+the expensive evaluation only on the survivors —
+[Maron & Moore 1994 (Hoeffding races)](https://proceedings.neurips.cc/paper/1993/hash/02a32ad2669e6fe298e607fe7cc0e1a0-Abstract.html),
+[Birattari et al. 2002 (F-Race)](https://dl.acm.org/doi/10.5555/2955491.2955494),
+[Jamieson & Talwalkar 2016 (successive halving)](https://arxiv.org/abs/1502.07943),
+[Li et al. 2017 (Hyperband)](https://arxiv.org/abs/1603.06560). Every one of
+those methods drops an arm only when the cheap evaluation has the **power** to
+resolve the difference, which is the precondition to check here.
+
+**What the 5 % screen is powered for.** The screen scores a 5 % stride sample
+(≈113 k of 2.27 M records), so on the same Δ it carries roughly
+√20 ≈ 4.5× the standard error of the authoritative call. The effects it is
+asked to resolve are far smaller than that margin: accepted gains run at
+1e-4 per iteration early and taper to ≈2e-5 (production evidence below),
+per-call family gains are 3.5e-5 down to 2.5e-7 (above), and
+`--min-improvement` accepts at 1e-6. So the screen is powered to reject
+candidates that are **clearly worse**, and is not powered to order candidates at
+the 1e-4-and-below scale where real acceptances live. The measurements agree:
+winners are spread almost evenly across screen ranks 1–8 (rank 1 holds only
+17 % of them; all eight are needed for 94.5 %), and on the first-generation
+production run the screen rejected half of the exploratory bypass candidates
+that later cleared the full threshold. Read a screen rejection as a veto on the
+obviously bad, never as a verdict — an under-powered screen silently vetoes true
+wins, which is exactly what `--explore-quota` exists to keep measuring.
+
+Modelling the cost — 27 s search, 29 s
 screen, 85 s full scoring per iteration — `--promote-count` 4 would cost more
 winners than the extra iterations return, and 12 would waste calls. The default
 of 8 is where it should be; the lever is the cohort, not the cut.
