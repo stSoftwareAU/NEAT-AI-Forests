@@ -128,6 +128,15 @@ impl CreatureMeta {
 
     /// Serialise `creature` with creature-level and per-neuron tags attached.
     /// Neuron tags whose uuid is not in the creature are dropped silently.
+    ///
+    /// `memetic` is removed here rather than left to whoever built `creature`.
+    /// It is a field `CreatureExport` models, so a source that carries one
+    /// round-trips it back out, and it describes a structure a graft has
+    /// changed: its bias and weight keys resolve by runtime neuron id, and a
+    /// graft shifts every id after the constants it inserts ahead of the first
+    /// hidden neuron. A stale record therefore does not merely go out of date,
+    /// it silently names *other* neurons. The creature-level `uuid` needs no
+    /// removal — `CreatureExport` does not model it, so it is already gone.
     pub fn serialize_with(
         &self,
         creature: &CreatureExport,
@@ -136,6 +145,7 @@ impl CreatureMeta {
         let text = neat_core::creature_to_json(creature).map_err(|e| e.to_string())?;
         let mut value: Map<String, Value> =
             serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        value.remove("memetic");
         if !self.tags.is_empty() {
             value.insert("tags".into(), tags_value(&self.tags));
         }
@@ -200,6 +210,33 @@ mod tests {
             ["discovered", "intelligentDesign", "forests"]
         );
         assert!(!back.neuron_tags.contains_key("ghost"));
+        neat_core::parse_creature_json(&json).unwrap();
+    }
+
+    /// `memetic` is a field `CreatureExport` models, so it survives a parse and
+    /// would be written straight back out. The creature it describes no longer
+    /// exists once a patch is grafted in, and its keys are read positionally by
+    /// runtime neuron id — which the graft shifts by inserting constants ahead
+    /// of the first hidden neuron. Dropping it is this module's contract, and
+    /// the test above cannot see it: its fixture creature carries none.
+    #[test]
+    fn memetic_is_dropped_from_a_creature_that_carries_one() {
+        let mut creature = identity_creature(1, 1);
+        creature.memetic = Some(neat_core::MemeticExport {
+            biases: [("1".to_string(), 0.25)].into_iter().collect(),
+            ..Default::default()
+        });
+        assert!(
+            neat_core::creature_to_json(&creature)
+                .unwrap()
+                .contains("memetic"),
+            "precondition: NEAT-AI-core round-trips memetic"
+        );
+        let json = CreatureMeta::default()
+            .serialize_with(&creature, true)
+            .unwrap();
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert!(v.get("memetic").is_none(), "{json}");
         neat_core::parse_creature_json(&json).unwrap();
     }
 }

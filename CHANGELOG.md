@@ -37,7 +37,29 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
   `neat-core.expected-version` moves to 0.10.6, the first version that accepts
   the shape.
 
+### Fixed
+
+- **A published creature no longer carries the source's `memetic` record
+  (#95).** `meta.rs` has always documented dropping it — the record describes
+  fine-tuning of a structure the graft has since altered, and its bias/weight
+  keys resolve by runtime neuron id, which the constants a graft inserts ahead
+  of the first hidden neuron shift — but nothing in Forests enforced it. It
+  only ever disappeared because `neat_core::graft_if_nodes` happens to clear
+  it, so an iteration with no `IF` node emitted, or a neat-core that starts
+  preserving it, would have published a record silently naming *other* neurons.
+  `CreatureMeta::serialize_with` now removes it, and the unit test proves it on
+  a creature that actually carries one; the previous test's fixture creature
+  had none, so it could never have failed.
+
 ### Added
+
+- **End-to-end provenance-contract test (#95)** — the three rules the fleet's
+  check-in guard applies to an optimiser's output, asserted on the creature a
+  whole run publishes rather than on the serialiser in isolation: no
+  creature-level tag name lost, no per-neuron tag set lost (with the graft's own
+  tags added on top), and no stale `uuid` / `memetic` carried forward. The
+  README's new "What a published creature keeps" section states the same
+  contract for a reader.
 
 - **README section "Where this sits in the literature" (#93)** — every
   mechanism in the pipeline named against the research that already describes

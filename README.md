@@ -194,12 +194,32 @@ Forests, not by you.
 
 | Path | Content |
 |---|---|
-| `best.json` | best scorer-verified creature (pretty JSON, original tags preserved, `score`/`error`/`forests` tags upserted) |
+| `best.json` | best scorer-verified creature (pretty JSON — see [what a published creature keeps](#what-a-published-creature-keeps)) |
 | `experiments.jsonl` | append-only journal, one JSON object per line with a `record` discriminator |
 | `winners/winner-NNNN.json` | every accepted intermediate |
 | `workspace/incumbent.json`, `incumbent.meta.json`, `baseline.json` | immutable copy, checksum metadata, authoritative baseline record |
 | `<cache-dir>/forests-bins.cache` | quantile-bin cache (see [docs/caches.md](docs/caches.md)) |
 | `<cache-dir>/forests-residuals-<checksum>.cache` | residual sidecar per incumbent |
+
+### What a published creature keeps
+
+A creature is only worth checking in if it still carries the provenance it
+arrived with — a better score does not buy the right to delete the discovery
+and intelligent-design history of neurons Forests never touched. Every creature
+Forests writes (`best.json`, `winners/winner-NNNN.json`) therefore holds to
+this, which is also what the fleet's check-in guard verifies before committing:
+
+| Metadata | What happens to it |
+|---|---|
+| creature-level `tags` | preserved in their original order; `score`, `error` and `forests` upserted |
+| per-neuron `tags` | preserved by neuron uuid, for every neuron the source carried |
+| neurons the graft appended | tagged `forests` / `forests-patch` with the run, iteration, patch and verified Δscore that created them |
+| creature-level `uuid` | dropped — NEAT-AI derives it from content, and the content changed |
+| `memetic` | dropped — it describes fine-tuning of the structure the graft has just altered, and its keys resolve by runtime neuron id, which the constants a graft inserts shift |
+
+`run::tests::published_creature_keeps_source_provenance_and_drops_stale_identity`
+asserts all five on a creature a whole run published, not on the serialiser
+alone.
 
 ### Journal records
 
