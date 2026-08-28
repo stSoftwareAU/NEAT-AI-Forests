@@ -1508,6 +1508,92 @@ mod tests {
         assert!(rep.improvement_per_wall_hour.is_some());
     }
 
+    /// The fleet refuses a check-in that lost the source champion's provenance
+    /// (GRQ #4216). Its three rules, asserted on the creature a whole run
+    /// publishes rather than on `serialize_with` alone:
+    ///
+    /// 1. every creature-level tag **name** on the source is still there
+    ///    (values move — `score` and `error` are re-stamped every run);
+    /// 2. every source neuron that carried tags still carries them, and the
+    ///    neurons the graft appended carry their own on top;
+    /// 3. the creature-level `uuid` and `memetic` are **gone** — both describe
+    ///    a structure that no longer exists once a patch is grafted in.
+    #[test]
+    fn published_creature_keeps_source_provenance_and_drops_stale_identity() {
+        let (_tmp, cfg) = fixture();
+        // Re-write the source with the metadata a mature champion carries.
+        let mut source: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg.creature).unwrap()).unwrap();
+        source["uuid"] = serde_json::json!("6ec3d0b6-0f4c-4a0e-9f4a-2a5f9f7c1b23");
+        source["memetic"] = serde_json::json!({"biases": {"1": 0.25}});
+        source["tags"] = serde_json::json!([
+            {"name": "score", "value": "0.100000"},
+            {"name": "error", "value": "0.900000"},
+            {"name": "lamarck", "value": "🧬 Lamarck · 3 accepts / 9 iters"},
+        ]);
+        source["neurons"][0]["tags"] = serde_json::json!([
+            {"name": "discovered", "value": "ReLU6"},
+            {"name": "intelligentDesign", "value": "STEP -> ELU"},
+        ]);
+        std::fs::write(
+            &cfg.creature,
+            serde_json::to_string_pretty(&source).unwrap(),
+        )
+        .unwrap();
+
+        let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
+        assert!(
+            r.acceptances >= 1,
+            "the run must publish a grafted creature"
+        );
+        let published = std::fs::read_to_string(&r.best_path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&published).unwrap();
+        neat_core::parse_creature_json(&published).unwrap();
+
+        // Rule 1 — no creature-level tag name lost.
+        let meta = CreatureMeta::from_json(&published);
+        for name in ["score", "error", "lamarck"] {
+            assert!(
+                meta.tags.iter().any(|t| t.name == name),
+                "creature tag `{name}` lost: {:?}",
+                meta.tags
+            );
+        }
+        assert_ne!(
+            meta.tags
+                .iter()
+                .find(|t| t.name == "score")
+                .map(|t| t.value.as_str()),
+            Some("0.100000"),
+            "the run must re-stamp its own score"
+        );
+
+        // Rule 2 — no per-neuron tag set lost, and the graft adds its own.
+        let output_tags = &meta.neuron_tags["output-0"];
+        assert_eq!(
+            output_tags
+                .iter()
+                .find(|t| t.name == "intelligentDesign")
+                .map(|t| t.value.as_str()),
+            Some("STEP -> ELU")
+        );
+        assert!(output_tags.iter().any(|t| t.name == "discovered"));
+        assert!(meta.neuron_tags.iter().any(
+            |(uuid, tags)| uuid != "output-0" && tags.iter().any(|t| t.name == "forests-patch")
+        ));
+
+        // Rule 3 — the stale identity of a structure that changed is gone.
+        assert!(
+            value.get("uuid").is_none(),
+            "a grafted creature must not carry the source `uuid`"
+        );
+        assert!(
+            value.get("memetic").is_none(),
+            "a grafted creature must not carry the source `memetic`: the graft \
+             inserts neurons, so id-keyed memetic entries now name other neurons"
+        );
+    }
+
     #[test]
     fn no_winner_keeps_incumbent_and_scorer_failures_stop_the_run() {
         let (_tmp, mut cfg) = fixture();
