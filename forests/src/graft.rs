@@ -1937,6 +1937,80 @@ mod tests {
         }
     }
 
+    /// GRQ #4447 — a graft onto an **already grafted** creature still lists
+    /// every constant it creates ahead of the first hidden neuron.
+    ///
+    /// `GRQ-18-backprop.json` reached the sampler population carrying 73
+    /// constants that do not: twenty-nine `forest-<id>-k0`/`-k1` pairs, each
+    /// sitting immediately before its own `-thr`/`-if`/`-relay` hidden neurons
+    /// at the tail of the list, so `creature_validate` refuses the file with
+    /// `NEURON_ORDER: forest-6578676121b8b8d7-k0) type constant after hidden
+    /// neuron`. The producer was this function, before Issue #39: it placed the
+    /// whole emitted block — constants and hidden neurons together — before the
+    /// first *output*, which is after every hidden neuron the incumbent
+    /// already had.
+    ///
+    /// ```text
+    /// let tail = creature.neurons.split_off(first_output);
+    /// creature.neurons.extend(em.neurons);  // constants land here, after hidden
+    /// creature.neurons.extend(tail);
+    /// ```
+    ///
+    /// `with_constants` splits the block at the first hidden neuron instead.
+    /// The *second* graft is what pins the fix: by then the hidden block is
+    /// non-empty because of the first graft, so a placement that only ever
+    /// appends is still wrong even on an incumbent that started out clean.
+    #[test]
+    fn a_second_graft_lists_its_constants_ahead_of_every_hidden_neuron() {
+        let first = Patch::new(0, Node::stump(0, 0.1, 0.0, 0.2), Provenance::default());
+        let second = Patch::new(0, Node::stump(1, 0.3, 0.0, 0.02), Provenance::default());
+        // `small_mlp` already carries hidden neurons, so even its first graft
+        // has somewhere wrong to put a constant. `identity_creature` has none,
+        // so its first graft is correct under *any* placement and only the
+        // second one — the already-grafted case — can catch an append.
+        let incumbents = [identity_creature(3, 1), small_mlp(3)];
+        for constants in MODES {
+            for inc in &incumbents {
+                let once = graft_patch_with(inc, &first, constants)
+                    .expect("the first graft must produce a valid creature");
+                let twice = graft_patch_with(&once.creature, &second, constants)
+                    .expect("a graft onto an already-grafted creature must stay valid");
+
+                for creature in [&once.creature, &twice.creature] {
+                    let first_hidden = creature
+                        .neurons
+                        .iter()
+                        .position(|n| n.neuron_type == "hidden")
+                        .expect("every graft adds hidden neurons");
+                    let last_constant = creature
+                        .neurons
+                        .iter()
+                        .rposition(|n| n.neuron_type == "constant")
+                        .expect("both modes create at least one constant");
+                    assert!(
+                        last_constant < first_hidden,
+                        "{constants:?}: constant `{}` at {last_constant} follows the \
+                         first hidden neuron at {first_hidden}",
+                        creature.neurons[last_constant].uuid,
+                    );
+                    creature_validate(creature, &validate_options(creature))
+                        .expect("a grafted creature must satisfy creature_validate rule 11");
+                }
+
+                // The second graft is only a regression test if it actually
+                // added constants of its own — `PerPatch` always does,
+                // `Shared` reuses the three the first graft created.
+                if constants == GraftConstants::PerPatch {
+                    assert!(
+                        constant_uuids(&twice.creature).len()
+                            > constant_uuids(&once.creature).len(),
+                        "the second per-patch graft must bring its own constants",
+                    );
+                }
+            }
+        }
+    }
+
     /// Issue #39 — a graft that would return an invalid creature fails loudly:
     /// the `ValidationFailure` is surfaced, never swallowed or downgraded.
     #[test]
