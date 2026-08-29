@@ -24,6 +24,7 @@
 //! | XGBoost control | [`xgboost`] | #13 |
 //! | oblique splits | [`oblique`] | #14 |
 //! | economics report | [`report`] | #15 |
+//! | enhancement bundle at re-entry | [`enhancements`] | Rebase#65 |
 //!
 //! Cheap search (histograms, samples, random guesses) only ever *proposes*
 //! candidates. Only a full-corpus NEAT-AI-scorer result can *accept* one.
@@ -36,6 +37,7 @@ pub mod cancel;
 pub mod candidates;
 pub mod config;
 pub mod corpus;
+pub mod enhancements;
 pub mod graft;
 pub mod histogram;
 pub mod incumbent;
@@ -61,6 +63,7 @@ pub use cancel::CancelToken;
 pub use candidates::{Candidate, CandidateConfig, generate_candidates};
 pub use config::{ForestsConfig, GraftConstants, GrowthPolicy};
 pub use corpus::{CorpusInfo, corpus_info};
+pub use enhancements::EnhancementLog;
 pub use graft::{GraftError, graft_patch, graft_patch_with};
 pub use histogram::{
     BinnedChunk, ChunkSource, HistogramSet, SearchControls, StumpCandidate, StumpKind,

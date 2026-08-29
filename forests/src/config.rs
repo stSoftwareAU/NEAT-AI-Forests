@@ -219,6 +219,15 @@ pub struct ForestsConfig {
     pub preserve_candidates: bool,
     /// Consecutive scorer failures tolerated before aborting.
     pub max_consecutive_scorer_failures: u32,
+    /// File every accepted patch as a Rebase enhancement bundle beside
+    /// `best.json` (stSoftwareAU/NEAT-AI-Rebase#65).
+    ///
+    /// Off by default: it changes how a run *publishes*, never what it
+    /// searches for or accepts. With it on, `enhancements.json` is written when
+    /// the run accepted anything, and the caller rebases it onto a freshly
+    /// fetched champion rather than publishing this run's own descendant.
+    #[serde(default)]
+    pub enhancements: bool,
     /// Shared learnings cache root (`None` = the cache is off, Issue #60).
     ///
     /// What worked and what failed is written here as one append-only file per
@@ -284,6 +293,7 @@ impl Default for ForestsConfig {
             parity_rel: 1e-4,
             preserve_candidates: false,
             max_consecutive_scorer_failures: 3,
+            enhancements: false,
             learnings_dir: None,
             learnings_host: None,
             learnings_replay: 8,

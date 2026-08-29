@@ -1,6 +1,6 @@
 [package]
 name = "neat_ai_forests"
-version = "0.1.19"
+version = "0.1.20"
 edition = "2024"
 license = "Apache-2.0"
 description = "Experimental residual decision-tree optimiser for already-fit NEAT-AI creatures."
@@ -22,6 +22,11 @@ path = "src/main.rs"
 # Keep this sibling path aligned with NEAT-AI-scorer / NEAT-AI-Lamarck. CI
 # checks out NEAT-AI-core beside this repo (see .github/actions/setup-neat-core).
 neat-core = { path = "../../NEAT-AI-core/neat-core" }
+# Producer side of population re-entry: `PatchLog` files each accepted patch as
+# a v1 enhancement so Rebase can graft it onto a freshly fetched champion
+# (stSoftwareAU/NEAT-AI-Rebase#65). Sibling path, like `neat-core`; CI checks
+# the repository out beside this one (see `.github/actions/setup-neat-ai-rebase`).
+neat-ai-rebase = { path = "../../NEAT-AI-Rebase/rebase" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
