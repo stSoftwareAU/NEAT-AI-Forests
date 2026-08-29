@@ -1,0 +1,33 @@
+name: Set up NEAT-AI-Rebase sibling
+description: >-
+  Check out stSoftwareAU/NEAT-AI-Rebase into the workspace and symlink it to the
+  sibling path Cargo expects, so the `forests/Cargo.toml`
+  `../../NEAT-AI-Rebase/rebase` path dependency resolves on the runner. The
+  symlink sits beside the NEAT-AI-core one on purpose: both manifests then reach
+  `neat-core` by the same path, so it stays one package rather than two.
+  Single source of truth for the checkout + symlink block.
+
+inputs:
+  ref:
+    description: Git ref of stSoftwareAU/NEAT-AI-Rebase to check out.
+    required: false
+    default: Develop
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout NEAT-AI-Rebase (path dependency for neat-ai-rebase)
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+      with:
+        repository: stSoftwareAU/NEAT-AI-Rebase
+        ref: ${{ inputs.ref }}
+        path: NEAT-AI-Rebase
+        persist-credentials: false
+
+    - name: Link NEAT-AI-Rebase sibling path expected by Cargo
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-Rebase" ]; then
+          ln -s "$GITHUB_WORKSPACE/NEAT-AI-Rebase" "$GITHUB_WORKSPACE/../NEAT-AI-Rebase"
+        fi

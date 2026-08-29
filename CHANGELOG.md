@@ -5,6 +5,33 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`--enhancements`: file every accepted patch as a Rebase bundle beside
+  `best.json`** (stSoftwareAU/NEAT-AI-Rebase#65). A 45-minute run publishes into
+  a fleet whose champion has moved on, so publishing its own descendant deletes
+  whatever the fleet gained meanwhile. With the switch on, the run records the
+  opening creature's checksum, authoritative score, corpus identity and widths
+  once, stamps them on every patch the full scorer accepted — in acceptance
+  order, a combination winner as its members — and writes `enhancements.json`.
+  Re-entry then grafts those patches onto a *freshly fetched* champion through
+  [NEAT-AI-Rebase](https://github.com/stSoftwareAU/NEAT-AI-Rebase) instead of
+  republishing a stale descendant.
+
+  Off by default and behind its own switch: it changes how a run publishes,
+  never what it searches for or accepts, and
+  `run::tests::with_enhancements_off_nothing_is_written_and_the_run_is_unchanged`
+  runs the loop both ways to prove it. Patches are filed as accepted — never
+  rebuilt or rounded — so the patch id stays the id the graft named its
+  `forest-<id>-…` structure with. A patch Rebase refuses is logged and poisons
+  the bundle: no file is written and the run fails at the end, because a bundle
+  missing an accepted patch claims scores its prefixes do not reproduce.
+  Nothing is written when the run accepted nothing, which is the caller's signal
+  not to invoke Rebase at all.
+
+  Forests gains a sibling path dependency on `neat-ai-rebase`, checked out in CI
+  by `.github/actions/setup-neat-ai-rebase` exactly as `neat-core` is.
+
 ### Changed
 
 - **A correction now reaches both branches of an `IF` anchor as two synapses,

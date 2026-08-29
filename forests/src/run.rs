@@ -28,6 +28,7 @@ use crate::candidates::{
 };
 use crate::config::ForestsConfig;
 use crate::corpus::{CorpusInfo, corpus_info};
+use crate::enhancements::EnhancementLog;
 use crate::histogram::{HistogramSet, search_stumps};
 use crate::incumbent::{Incumbent, load_incumbent, now_unix};
 use crate::journal::{
@@ -94,6 +95,10 @@ pub struct RunResult {
     pub final_checksum: String,
     /// Iterations that failed on the scorer.
     pub scorer_failures: u64,
+    /// The enhancement bundle written for Rebase, when `--enhancements` is on
+    /// and the run accepted something. `None` means there is nothing to rebase
+    /// and Rebase must not be invoked.
+    pub enhancements_path: Option<PathBuf>,
 }
 
 struct State {
@@ -376,6 +381,22 @@ pub fn run_forests(
     ));
     append_journal_line(&journal_path, &JournalLine::Baseline(baseline.clone()))?;
     let opening_score = baseline.score;
+    // Producer side of population re-entry (stSoftwareAU/NEAT-AI-Rebase#65).
+    // Opened on the creature the run starts from and on the score just
+    // established, because those are the facts every filed patch is stamped
+    // with — rebuilding them later would name a creature nobody else has.
+    let bundle_path = cfg.output_dir.join("enhancements.json");
+    let mut enhancements = if cfg.enhancements {
+        let log = EnhancementLog::open(&incumbent.creature, opening_score, &corpus.identity)?;
+        log::info(&format!(
+            "re-entry: filing accepted patches for Rebase (--enhancements) → {}",
+            bundle_path.display()
+        ));
+        log
+    } else {
+        log::info("re-entry: direct path; --enhancements is off, no bundle will be written");
+        EnhancementLog::off()
+    };
     let meta = CreatureMeta::from_json(&incumbent.text);
     let mut state = State {
         incumbent,
@@ -942,6 +963,23 @@ pub fn run_forests(
                     winner.patch.provenance.affected_records,
                     set.records()
                 ));
+                // File what was authoritatively accepted, in the order the
+                // winner applies it: `patch` then `combo`. A combo that grew
+                // from an already-filed single appends only its new members, so
+                // the bundle's prefix of that length reproduces exactly the
+                // creature `result.score` was measured on.
+                let accepted_patches: Vec<Patch> = winner.patches().cloned().collect();
+                match enhancements.accept(&accepted_patches, result.score) {
+                    Ok(filed) if filed > 0 => log::detail(&format!(
+                        "enhancements: filed {filed} patch(es) ({} total)",
+                        enhancements.filed()
+                    )),
+                    Ok(_) => {}
+                    // Loud here, and fatal at the end: a bundle missing an
+                    // accepted patch would claim scores its prefixes do not
+                    // reproduce, so no bundle is written at all.
+                    Err(e) => log::warn(&format!("enhancement not filed: {e}")),
+                }
                 record.winner = Some(id.clone());
                 record.improvement = Some(*improvement);
                 record.accepted = true;
@@ -1111,6 +1149,22 @@ pub fn run_forests(
             final_checksum: state.incumbent.checksum.clone(),
         }),
     )?;
+    // After the journal, so a filing failure cannot cost the run its record of
+    // what happened — and before the result, so it cannot be reported as a
+    // success the caller then rebases nothing from.
+    let enhancements_path = if enhancements.write_bundle(&bundle_path)? {
+        log::ok(&format!(
+            "enhancements: {} patch(es) filed to {}; rebase them onto a freshly fetched champion",
+            enhancements.filed(),
+            bundle_path.display()
+        ));
+        Some(bundle_path)
+    } else {
+        if enhancements.is_on() {
+            log::info("enhancements: nothing was accepted, so no bundle and nothing to rebase");
+        }
+        None
+    };
     Ok(RunResult {
         best_path,
         journal_path,
@@ -1123,6 +1177,7 @@ pub fn run_forests(
         wall_ms,
         final_checksum: state.incumbent.checksum,
         scorer_failures,
+        enhancements_path,
     })
 }
 
@@ -1148,6 +1203,9 @@ pub fn print_run_summary(r: &RunResult) {
         r.best_path.display(),
         r.journal_path.display()
     ));
+    if let Some(bundle) = &r.enhancements_path {
+        log::info(&format!("enhancements: {}", bundle.display()));
+    }
 }
 
 #[cfg(test)]
@@ -1427,6 +1485,157 @@ mod tests {
             .filter(|p| p.file_name().is_some_and(|n| n == "learnings"))
             .collect();
         assert!(stray.is_empty(), "{stray:?}");
+    }
+
+    /// The ids of every patch the run authoritatively accepted, in acceptance
+    /// order, read back out of the journal — the independent account of what
+    /// the bundle is supposed to contain.
+    fn accepted_patch_ids(journal: &std::path::Path) -> Vec<String> {
+        let mut ids: Vec<String> = Vec::new();
+        for line in read_journal(journal).unwrap() {
+            let JournalLine::Experiment(e) = line else {
+                continue;
+            };
+            let Some(winner) = e.winner.as_deref() else {
+                continue;
+            };
+            let Some(c) = e.candidates.iter().find(|c| c.id == winner) else {
+                continue;
+            };
+            for p in std::iter::once(&c.patch).chain(c.combo.iter()) {
+                // A combo that grew from an already-filed single files only
+                // its new members, so first acceptance wins.
+                if !ids.contains(&p.id()) {
+                    ids.push(p.id());
+                }
+            }
+        }
+        ids
+    }
+
+    /// stSoftwareAU/NEAT-AI-Rebase#65 — the call site: every patch the full
+    /// scorer accepted is filed, in acceptance order, stamped with the facts of
+    /// the creature the run opened on, and the bundle grafts onto a champion
+    /// this run never produced. That last half is the whole point: by the time
+    /// a 45-minute run ends the fleet's champion has moved on, and publishing
+    /// this run's own descendant would throw away everybody else's work.
+    #[test]
+    fn accepted_patches_are_filed_and_the_bundle_rebases_onto_a_champion_the_run_never_saw() {
+        let (tmp, mut cfg) = fixture();
+        cfg.enhancements = true;
+        // Boosting verifies prefixes of a bundle in one scorer call, so a
+        // winner here can be a combo — the case `accept_combo` exists for.
+        cfg.boost_rounds = 3;
+        let scorer = LocalMseScorer::new();
+        let r = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
+        assert!(r.acceptances >= 1, "the fixture must accept something");
+
+        let bundle_path = r
+            .enhancements_path
+            .clone()
+            .expect("a run that accepted a patch files a bundle");
+        assert_eq!(bundle_path, cfg.output_dir.join("enhancements.json"));
+        let bundle = neat_ai_rebase::enhancement::EnhancementBundle::parse_json(
+            &std::fs::read_to_string(&bundle_path).unwrap(),
+        )
+        .unwrap();
+
+        let expected = accepted_patch_ids(&r.journal_path);
+        assert!(!expected.is_empty());
+        let filed: Vec<String> = bundle
+            .enhancements
+            .iter()
+            .map(|e| e.meta.id.clone())
+            .collect();
+        assert_eq!(filed, expected, "acceptance order, and nothing else");
+
+        // Every enhancement names the creature the run opened on — not the
+        // descendant it reached — and the corpus both scores were measured on.
+        let opening =
+            neat_core::parse_creature_json(&std::fs::read_to_string(&cfg.creature).unwrap())
+                .unwrap();
+        let opening_checksum = neat_ai_rebase::creature::creature_checksum(&opening).unwrap();
+        let identity = corpus_info(
+            &cfg.training_data,
+            &TrainingDataConfig::new(opening.input, opening.output),
+        )
+        .unwrap()
+        .identity;
+        for e in &bundle.enhancements {
+            assert_eq!(e.meta.base_checksum, opening_checksum);
+            assert!((e.meta.base_score - r.opening_score).abs() < 1e-12);
+            assert_eq!(e.meta.corpus_identity, identity);
+            assert_eq!(e.meta.input_count, opening.input);
+            assert!(e.meta.producer.starts_with("neat-ai-forests/"));
+            assert!(e.id_is_consistent(), "a filed id must match its payload");
+        }
+
+        // A champion the fleet reached independently: same widths, no ancestry
+        // with this run's descendant, so it carries none of these patches.
+        let mut champion = opening.clone();
+        champion.neurons.last_mut().unwrap().bias = 1e-4;
+        let outcome = neat_ai_rebase::engine::rebase(&neat_ai_rebase::engine::RebaseRequest {
+            champion: &champion,
+            enhancements: &bundle.enhancements,
+            corpus_identity: &identity,
+            max_candidates: 0,
+        })
+        .unwrap();
+        for report in &outcome.reports {
+            assert_eq!(
+                report.outcome,
+                neat_ai_rebase::engine::EnhancementOutcome::Applied,
+                "{report:?}"
+            );
+        }
+        let full = outcome
+            .cohort
+            .iter()
+            .find(|c| c.label == "bundle")
+            .expect("every patch applied, so the full bundle is a candidate");
+        assert_eq!(full.applied_ids.len(), bundle.enhancements.len());
+        let _ = tmp;
+    }
+
+    /// The switch is the contract: with it off the optimiser must be exactly
+    /// what it was — same candidates, same score — and nothing is written.
+    /// Recording what was accepted must never perturb what gets accepted.
+    #[test]
+    fn with_enhancements_off_nothing_is_written_and_the_run_is_unchanged() {
+        let ids = |journal: &std::path::Path| -> Vec<String> {
+            read_journal(journal)
+                .unwrap()
+                .iter()
+                .filter_map(|l| match l {
+                    JournalLine::Experiment(e) => Some(e.candidates.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .map(|c| c.id)
+                .collect()
+        };
+        let (tmp, cfg) = fixture();
+        let scorer = LocalMseScorer::new();
+        let off = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
+        assert!(off.enhancements_path.is_none());
+        assert!(
+            !cfg.output_dir.join("enhancements.json").exists(),
+            "the switch is off: no bundle"
+        );
+
+        let mut on = cfg.clone();
+        on.output_dir = tmp.path().join("out-filing");
+        on.enhancements = true;
+        let on = run_forests(&on, &scorer, &CancelToken::new()).unwrap();
+        assert!(on.enhancements_path.is_some());
+        assert_eq!(
+            ids(&off.journal_path),
+            ids(&on.journal_path),
+            "filing changed which candidates were tried"
+        );
+        assert_eq!(off.best_score, on.best_score);
+        assert_eq!(off.acceptances, on.acceptances);
+        assert_eq!(off.final_checksum, on.final_checksum);
     }
 
     #[test]

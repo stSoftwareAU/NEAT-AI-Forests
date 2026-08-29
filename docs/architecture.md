@@ -28,6 +28,7 @@ flowchart LR
     G --> P[promote<br/>screen → full scorer]
     B --> P
     P -->|accepted| W[best.json + winners/]
+    P -->|accepted, --enhancements| E[enhancements<br/>patch → v1 bundle for Rebase]
     P --> J[journal → report]
     W -->|new incumbent| R
 
@@ -36,7 +37,7 @@ flowchart LR
     classDef judge fill:#dcfce7,stroke:#15803d,color:#052e16
     class C,T,I immutable
     class K,R,S,H,ST,TR,OB,CA,G search
-    class B,P,W judge
+    class B,P,W,E judge
 ```
 
 ## Modules
@@ -57,6 +58,7 @@ flowchart LR
 | `candidates` | analytical optimum, one-sided variants, magnitude scales, threshold jitter, random stumps; dedup + cap + graft | — |
 | `promote` | screen (scorer sample mode) → full-corpus cohort with baseline; strict threshold; same-call baseline drift veto; FP/FN bookkeeping | **scorer** |
 | `run` | the loop, outputs, journal, promotion of winners, residual recomputation | — |
+| `enhancements` | `--enhancements` only: each accepted patch filed as a v1 Rebase enhancement, stamped with the opening creature's checksum, score, corpus and widths; the bundle written beside `best.json` | NEAT-AI-Rebase |
 | `journal`, `report` | append-only JSONL; economics aggregation | — |
 | `xgboost`, `tools` | matrix export, dump → patch conversion with exact `>=` mapping, control run through `promote` | **scorer** |
 

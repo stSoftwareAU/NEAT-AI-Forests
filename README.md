@@ -165,6 +165,7 @@ experiment back on the table.
 | `--parity-abs` / `--parity-rel` | `1e-7` / `1e-4` | parity tolerances |
 | `--preserve-candidates` | off | keep per-iteration cohort directories |
 | `--max-consecutive-scorer-failures` | `3` | abort after this many failures in a row |
+| `--enhancements` | off | file every accepted patch as `enhancements.json` beside `best.json`, for [population re-entry through Rebase](#population-re-entry) |
 | `--learnings-dir` | off | shared cache of full-corpus verdicts (#60); point every host at one git checkout and the fleet replays each other's wins |
 | `--learnings-host` | hostname | the file this machine appends to, so no two hosts ever conflict |
 | `--learnings-replay` | `8` | cached candidates replayed per iteration (0 = write only) |
@@ -197,9 +198,50 @@ Forests, not by you.
 | `best.json` | best scorer-verified creature (pretty JSON — see [what a published creature keeps](#what-a-published-creature-keeps)) |
 | `experiments.jsonl` | append-only journal, one JSON object per line with a `record` discriminator |
 | `winners/winner-NNNN.json` | every accepted intermediate |
+| `enhancements.json` | `--enhancements` only, and only when the run accepted something: the accepted patches as a Rebase v1 bundle (see [population re-entry](#population-re-entry)) |
 | `workspace/incumbent.json`, `incumbent.meta.json`, `baseline.json` | immutable copy, checksum metadata, authoritative baseline record |
 | `<cache-dir>/forests-bins.cache` | quantile-bin cache (see [docs/caches.md](docs/caches.md)) |
 | `<cache-dir>/forests-residuals-<checksum>.cache` | residual sidecar per incumbent |
+
+### Population re-entry
+
+A run opens on the fleet's champion `A` and finishes up to 45 minutes later.
+By then the fleet has usually moved `A` on to `B`, and publishing this run's
+own descendant — `A` plus its patches — quietly deletes whatever `B` gained.
+`--enhancements` is the way out: the run files the **patches** it accepted
+rather than the creature it reached, and
+[NEAT-AI-Rebase](https://github.com/stSoftwareAU/NEAT-AI-Rebase) grafts them
+onto a freshly fetched champion, where the scorer decides again.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant F as Forests run
+    participant L as PatchLog
+    participant P as Population
+    participant R as Rebase
+    F->>P: fetch champion → A
+    F->>L: opening(A, baseline score, corpus identity)
+    Note over P: the fleet evolves A → B independently
+    F->>L: accept(winner patches, authoritative score) — at each acceptance
+    F->>L: write_bundle(enhancements.json) — beside best.json
+    F->>P: fetch champion again → B
+    F->>R: rebase enhancements.json onto champion B
+    R-->>F: a candidate, only when B + Δ beats B
+```
+
+The switch changes how a run *publishes*, never what it searches for or
+accepts: `run::tests::with_enhancements_off_nothing_is_written_and_the_run_is_unchanged`
+runs the loop both ways and asserts the same candidates, the same acceptances
+and the same final creature. The bundle is written once, at the end, and only
+when the run accepted something — no file means there is nothing to rebase.
+
+Everything filed is the patch **as accepted**: the bytes are not rebuilt or
+rounded, so the patch id stays the id the graft named its `forest-<id>-…`
+structure with, and a champion that already carries the patch is recognised as
+carrying it rather than grafted twice. Combination winners are filed as their
+members, in the order the winner applies them, appending only what the run has
+not already filed.
 
 ### What a published creature keeps
 
@@ -612,6 +654,7 @@ NEAT-AI-Forests/
 │   │   ├── candidates.rs      # candidate population (#8)
 │   │   ├── config.rs          # ForestsConfig + validation
 │   │   ├── corpus.rs          # corpus identity + bounded-memory streaming
+│   │   ├── enhancements.rs    # accepted patches filed for Rebase (Rebase#65)
 │   │   ├── graft.rs           # patch → IF structure on a clone (#7), validated (#39)
 │   │   ├── histogram.rs       # CPU reference stump search (#5)
 │   │   ├── incumbent.rs       # immutable incumbent + checksum (#2)

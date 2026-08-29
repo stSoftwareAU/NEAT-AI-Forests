@@ -172,6 +172,13 @@ struct Cli {
     /// Consecutive scorer failures tolerated before stopping.
     #[arg(long, default_value_t = 3)]
     max_consecutive_scorer_failures: u32,
+    /// File every accepted patch as a Rebase enhancement bundle
+    /// (`enhancements.json`, beside `best.json`), so re-entry grafts the run's
+    /// discoveries onto a freshly fetched champion instead of publishing this
+    /// run's own descendant. Off by default; it changes how a run publishes,
+    /// never what it accepts.
+    #[arg(long)]
+    enhancements: bool,
     /// Shared learnings cache root (off when absent): what worked and what
     /// failed, written per host and read back from every host, so the fleet
     /// re-applies each other's wins even after the fittest creature moved on.
@@ -403,6 +410,7 @@ fn main() -> ExitCode {
         parity_rel: cli.parity_rel,
         preserve_candidates: cli.preserve_candidates,
         max_consecutive_scorer_failures: cli.max_consecutive_scorer_failures,
+        enhancements: cli.enhancements,
         learnings_dir: cli.learnings_dir.clone(),
         learnings_host: cli.learnings_host.clone(),
         learnings_replay: cli.learnings_replay,
