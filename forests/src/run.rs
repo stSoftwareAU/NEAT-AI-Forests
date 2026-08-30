@@ -115,27 +115,29 @@ struct State {
     runner_ups: Vec<Patch>,
 }
 
-/// Lamarck-style run summary used as the GRQ commit subject.
-fn forests_tag(
+/// Commit **subject**: one score and one signed delta, nothing else (#98).
+///
+/// The delta is Rust's scientific rendering (`+1.27e-4`) — the format the whole
+/// fleet is standardising on, so the same run reads the same way whichever tool
+/// published it. Everything the old subject also carried lives in
+/// [`forests_detail`], which belongs in the commit body.
+fn forests_tag(opening: f64, score: f64) -> String {
+    format!("🌳 Forests · score: {score:.6} ({:+.2e})", score - opening)
+}
+
+/// Commit **body** detail: what the subject no longer says (#98).
+fn forests_detail(
     acceptances: u64,
     iterations: u64,
     last_strategy: &str,
     last_target: &str,
-    opening: f64,
-    score: f64,
 ) -> String {
-    let mut s = format!(
-        "🌳 Forests · {acceptances} accepts / {iterations} iters · last: {} · 🎯 {last_target} · score: {score:.6}",
-        if last_strategy.is_empty() {
-            "none"
-        } else {
-            last_strategy
-        }
-    );
-    if score > opening {
-        s.push_str(&format!(" improved by {:.2e}", score - opening));
-    }
-    s
+    let or_none = |s: &str| if s.is_empty() { "none" } else { s }.to_string();
+    format!(
+        "{acceptances} accepts / {iterations} iters · last: {} · 🎯 {}",
+        or_none(last_strategy),
+        or_none(last_target)
+    )
 }
 
 fn write_best(
@@ -148,15 +150,14 @@ fn write_best(
     let mut meta = state.meta.clone();
     meta.upsert("score", format!("{}", state.baseline.score));
     meta.upsert("error", format!("{}", state.baseline.error));
+    meta.upsert("forests", forests_tag(opening, state.baseline.score));
     meta.upsert(
-        "forests",
-        forests_tag(
+        "forests-detail",
+        forests_detail(
             acceptances,
             iterations,
             &state.last_strategy,
             &state.last_target,
-            opening,
-            state.baseline.score,
         ),
     );
     let text = meta.serialize_with(&state.incumbent.creature, true)?;
@@ -1655,9 +1656,16 @@ mod tests {
         assert!(c.neurons.iter().any(|n| n.squash.as_deref() == Some("IF")));
         assert!(best.contains("\"forests\""));
         let meta = crate::meta::CreatureMeta::from_json(&best);
+        // #98: the subject is one score and one signed scientific delta; the
+        // run detail moved to `forests-detail` for the commit body.
         assert!(meta.tags.iter().any(|t| t.name == "forests"
-            && t.value.starts_with("🌳 Forests · ")
-            && t.value.contains("improved by")));
+            && t.value.starts_with("🌳 Forests · score: ")
+            && t.value.contains(" (+")));
+        assert!(
+            meta.tags
+                .iter()
+                .any(|t| t.name == "forests-detail" && t.value.contains(" accepts / "))
+        );
         assert!(
             meta.tagged_neurons() >= 2,
             "grafted neurons must carry provenance tags"
@@ -1801,6 +1809,93 @@ mod tests {
             "a grafted creature must not carry the source `memetic`: the graft \
              inserts neurons, so id-keyed memetic entries now name other neurons"
         );
+    }
+
+    /// The commit subject is one score and one delta, in Rust's scientific
+    /// rendering with an explicit sign, and nothing else (#98).
+    #[test]
+    fn commit_subject_is_one_score_and_one_signed_scientific_delta() {
+        assert_eq!(
+            forests_tag(0.4069110716468155, 0.407038264798196),
+            "🌳 Forests · score: 0.407038 (+1.27e-4)"
+        );
+        // A run that accepted nothing still reads the same way.
+        assert_eq!(
+            forests_tag(0.25, 0.25),
+            "🌳 Forests · score: 0.250000 (+0.00e0)"
+        );
+        // A smaller final score is reported, never hidden behind prose.
+        assert_eq!(
+            forests_tag(0.25, 0.2499),
+            "🌳 Forests · score: 0.249900 (-1.00e-4)"
+        );
+        // No detail leaks back into the subject.
+        let subject = forests_tag(0.1, 0.2);
+        for noise in ["accepts", "iters", "last:", "🎯", "improved by"] {
+            assert!(
+                !subject.contains(noise),
+                "subject must stay short, found `{noise}` in `{subject}`"
+            );
+        }
+    }
+
+    /// What the subject dropped is not lost: it moves to the body detail (#98).
+    #[test]
+    fn commit_body_detail_carries_accepts_iterations_strategy_and_target() {
+        assert_eq!(
+            forests_detail(7, 9, "histogram-tree-depth3/scale", "output-0"),
+            "7 accepts / 9 iters · last: histogram-tree-depth3/scale · 🎯 output-0"
+        );
+        // Nothing accepted yet: no empty fields, no dangling separators.
+        assert_eq!(
+            forests_detail(0, 3, "", ""),
+            "0 accepts / 3 iters · last: none · 🎯 none"
+        );
+    }
+
+    /// A published creature carries both halves: the short subject on
+    /// `forests`, the detail on `forests-detail` (#98).
+    #[test]
+    fn published_creature_carries_subject_and_detail_tags() {
+        let (_tmp, cfg) = fixture();
+        let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
+        assert!(
+            r.acceptances >= 1,
+            "the run must publish a grafted creature"
+        );
+        let meta = CreatureMeta::from_json(&std::fs::read_to_string(&r.best_path).unwrap());
+        let tag = |name: &str| {
+            meta.tags
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("creature tag `{name}` missing: {:?}", meta.tags))
+                .value
+                .clone()
+        };
+        assert_eq!(
+            tag("forests"),
+            forests_tag(r.opening_score, r.best_score),
+            "the subject must describe the run that was published"
+        );
+        // `best.json` is written at each acceptance, so the detail counts the
+        // run as at the last one: every acceptance, and the iteration it
+        // happened on.
+        let detail = tag("forests-detail");
+        assert!(
+            detail.starts_with(&format!("{} accepts / ", r.acceptances)),
+            "detail must count the acceptances that were published: {detail}"
+        );
+        let iters: u64 = detail
+            .split(" / ")
+            .nth(1)
+            .and_then(|s| s.split(' ').next())
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(iters >= 1 && iters <= r.iterations, "{detail}");
+        // After an acceptance the strategy and the target are both real.
+        assert!(!detail.contains("last: none"), "{detail}");
+        assert!(detail.ends_with("· 🎯 output-0"), "{detail}");
     }
 
     #[test]

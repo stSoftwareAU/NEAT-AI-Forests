@@ -34,6 +34,20 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Changed
 
+- **The check-in subject is one score and one delta; the run detail moved to
+  the commit body (#98).** The `forests` creature tag — which the publishing
+  tool uses as the commit subject — is now
+  `🌳 Forests · score: 0.407038 (+1.27e-4)`: `{:.6}` score, `{:+.2e}` delta
+  against the score the run opened on, no `improved by` prose and no
+  zero-padded exponent. Accepts/iterations, the last accepted strategy and the
+  🎯 target move to a new `forests-detail` tag the tool puts in the body. A
+  delta is always shown, so `+0.00e0` is a run that accepted nothing and a
+  negative delta is reported rather than hidden.
+  `run::tests::commit_subject_is_one_score_and_one_signed_scientific_delta`,
+  `run::tests::commit_body_detail_carries_accepts_iterations_strategy_and_target`
+  and `run::tests::published_creature_carries_subject_and_detail_tags` pin
+  both halves.
+
 - **A correction now reaches both branches of an `IF` anchor as two synapses,
   not through an IDENTITY relay neuron (#68).** The relay existed only because a
   creature could carry one synapse per ordered `(from, to)` pair, so a second
