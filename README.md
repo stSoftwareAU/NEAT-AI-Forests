@@ -253,7 +253,7 @@ this, which is also what the fleet's check-in guard verifies before committing:
 
 | Metadata | What happens to it |
 |---|---|
-| creature-level `tags` | preserved in their original order; `score`, `error` and `forests` upserted |
+| creature-level `tags` | preserved in their original order; `score`, `error`, `forests` and `forests-detail` upserted |
 | per-neuron `tags` | preserved by neuron uuid, for every neuron the source carried |
 | neurons the graft appended | tagged `forests` / `forests-patch` with the run, iteration, patch and verified Δscore that created them |
 | creature-level `uuid` | dropped — NEAT-AI derives it from content, and the content changed |
@@ -262,6 +262,23 @@ this, which is also what the fleet's check-in guard verifies before committing:
 `run::tests::published_creature_keeps_source_provenance_and_drops_stale_identity`
 asserts all five on a creature a whole run published, not on the serialiser
 alone.
+
+### The check-in message
+
+The publishing tool reads two tags off the creature: `forests` is the commit
+**subject** and `forests-detail` is the commit **body** (#98). The subject is
+deliberately short — one score and one signed delta in Rust's scientific
+rendering, the format the rest of the fleet is standardising on — so a wall of
+check-ins stays readable:
+
+```text
+🌳 Forests · score: 0.407038 (+1.27e-4)
+
+7 accepts / 9 iters · last: histogram-tree-depth3/scale · 🎯 output-0
+```
+
+The delta is measured against the score the run opened on, so `+0.00e0` is a
+run that accepted nothing and a negative delta is reported rather than hidden.
 
 ### Journal records
 

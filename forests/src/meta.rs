@@ -4,7 +4,8 @@
 //! creature it re-attaches from the source JSON everything that is still
 //! meaningful:
 //!
-//! - creature-level `tags` (with `score`, `error` and `forests` upserted);
+//! - creature-level `tags` (with `score`, `error`, `forests` — the commit
+//!   subject — and `forests-detail` — the commit body — upserted);
 //! - **per-neuron `tags`**, keyed by neuron uuid (discovery / intelligent-design
 //!   provenance on mature neurons must not be lost);
 //! - a `forests` tag on every neuron Forests itself appended, saying which
