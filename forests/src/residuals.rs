@@ -148,8 +148,8 @@ impl std::error::Error for ResidualError {}
 
 /// Output squash types of a compiled creature (last `outputs` neurons).
 pub fn output_squashes(network: &CompiledNetwork, outputs: usize) -> Vec<SquashType> {
-    let n = network.neurons.len();
-    network.neurons[n - outputs..]
+    let n = network.neurons().len();
+    network.neurons()[n - outputs..]
         .iter()
         .map(|x| SquashType::from(x.squash_type))
         .collect()
