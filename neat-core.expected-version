@@ -20,4 +20,15 @@
 # IDENTITY relay, which every version accepts. Verified by a clean
 # `cargo build --release` and the full test suite against sibling neat-core
 # 0.10.6.
-0.10.6
+# 0.10.6 -> 0.13.0: acknowledge neat-core #633 (Issue #625, 0.12.0), which made
+# every `CompiledNetwork` field private behind borrow-only accessors so safe
+# code can no longer edit a validated network into an out-of-bounds SIMD read,
+# and 0.13.0 (#637, the security-scan milestone roll-up; nothing Forests names
+# changed). Forests read `num_inputs` / `num_neurons` / `neurons` / `synapses`
+# directly in `graft.rs` and `neurons` in `residuals.rs`; those reads now go
+# through the `()` accessors. Unhandled, the same bump took the GRQ fleet down
+# through rust_scorer (GRQ#4724); Forests was next in line because GRQ builds
+# it from the same sibling neat-core at head. Verified by
+# `cargo clippy --all-targets -- -D warnings` and the full test suite against
+# the sibling clone at 0.13.0 (59eb6e6).
+0.13.0

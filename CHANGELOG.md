@@ -5,6 +5,20 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Builds against neat-core 0.13.0 — `CompiledNetwork`'s fields went private
+  (neat-core #625 / #633; GRQ #4724).** neat-core 0.12.0 made every
+  `CompiledNetwork` field private behind borrow-only accessors (neat-core #625 /
+  #633) and 0.13.0 followed the same day. Every GRQ host builds the Rust
+  consumers from the sibling neat-core at head, so `rust_scorer` failed to
+  compile fleet-wide within minutes and, with no fallback engine, the fleet
+  stopped scoring ([GRQ
+  #4724](https://github.com/stSoftwareAU/GRQ/issues/4724)). Forests was next in
+  line: `graft.rs` read `num_inputs` / `num_neurons` / `neurons` / `synapses`
+  and `residuals.rs` read `neurons` directly. Those reads now go through the
+  `()` accessors; `neat-core.expected-version` acknowledges 0.13.0.
+
 ### Added
 
 - **`--enhancements`: file every accepted patch as a Rebase bundle beside

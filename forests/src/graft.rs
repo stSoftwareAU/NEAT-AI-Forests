@@ -867,21 +867,21 @@ pub fn validate_compiled(
     network: &CompiledNetwork,
     creature: &CreatureExport,
 ) -> Result<(), GraftError> {
-    let num_inputs = network.num_inputs;
-    let total = network.num_neurons;
-    let mut from = Vec::with_capacity(network.synapses.len());
-    let mut to = Vec::with_capacity(network.synapses.len());
-    let mut types = Vec::with_capacity(network.synapses.len());
+    let num_inputs = network.num_inputs();
+    let total = network.num_neurons();
+    let mut from = Vec::with_capacity(network.synapses().len());
+    let mut to = Vec::with_capacity(network.synapses().len());
+    let mut types = Vec::with_capacity(network.synapses().len());
     let mut is_constant = vec![0u8; total];
     let mut squash = vec![0u8; total];
     let mut biases = vec![0f64; total];
-    for (i, neuron) in network.neurons.iter().enumerate() {
+    for (i, neuron) in network.neurons().iter().enumerate() {
         let idx = num_inputs + i;
         is_constant[idx] = u8::from(neuron.is_constant);
         squash[idx] = neuron.squash_type;
         biases[idx] = f64::from(neuron.bias);
         let start = neuron.start_synapse as usize;
-        for s in &network.synapses[start..start + neuron.num_synapses as usize] {
+        for s in &network.synapses()[start..start + neuron.num_synapses as usize] {
             from.push(u32::from(s.from_index));
             to.push(idx as u32);
             types.push(s.synapse_type);
