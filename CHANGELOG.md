@@ -5,6 +5,23 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/runlib.sh` installs `~/.cargo/bin/neat_ai_forests` only on a
+  version change (Issue #106).** The fleet worker started calling this script
+  and every Forests host died because Develop had no file. The script stamps
+  `.neat_ai_forests.version`, prints the bin path on stdout, skips
+  `cargo build` when already installed, builds the `neat_ai_forests` binary
+  only, and removes `target/` after a successful install. Family-sync from
+  NEAT-AI-core still waits on core#680. Hermetic coverage:
+  `scripts/test-runlib.sh`.
+
+- **Acknowledges neat-core 0.14.0 through 0.17.0.** Forests does not name the
+  0.16.0 `PruneResult` fields or the 0.17.0 `prune_neuron` `IF` rewrite.
+  `cargo check -p neat_ai_forests` against sibling 0.17.0 is clean.
+  `neat-core.expected-version` moves to 0.17.0 so the breaking-bump gate can
+  pass and this install script can land.
+
 ### Fixed
 
 - **Builds against neat-core 0.13.0 — `CompiledNetwork`'s fields went private
