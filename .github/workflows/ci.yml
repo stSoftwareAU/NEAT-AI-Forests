@@ -144,6 +144,7 @@ jobs:
             ".github/CODEOWNERS"
             "SECURITY.md"
             "neat-core.expected-version"
+            "scripts/runlib.sh"
           )
           missing_files=()
           for file in "${required_files[@]}"; do
@@ -261,6 +262,9 @@ jobs:
             exit 0
           fi
           shellcheck --severity=warning "${scripts[@]}"
+
+      - name: Check scripts/runlib.sh already-installed contract
+        run: ./scripts/test-runlib.sh
 
   spell-check:
     name: Spell Check

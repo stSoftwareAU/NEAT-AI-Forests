@@ -89,6 +89,13 @@ cargo build --release                       # CPU build
 ./target/release/neat_ai_forests report runs/first/experiments.jsonl
 ```
 
+Fleet hosts do not run `cargo build` on every Forests stage.
+[`scripts/runlib.sh`](./scripts/runlib.sh) (Issue #106) installs
+`~/.cargo/bin/neat_ai_forests` and `.neat_ai_forests.version`, prints that
+path on stdout, and removes `target/` after a successful install. A second
+run on the same crate version prints `[neat_ai_forests] already installed
+v<x>` and runs no cargo command. It builds the `neat_ai_forests` binary only.
+
 The source `creature.json` is never written to. `best.json` starts as a
 byte-for-byte copy and is only replaced by a creature the scorer verified on
 the full corpus in the same call as its parent.

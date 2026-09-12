@@ -31,4 +31,9 @@
 # it from the same sibling neat-core at head. Verified by
 # `cargo clippy --all-targets -- -D warnings` and the full test suite against
 # the sibling clone at 0.13.0 (59eb6e6).
-0.13.0
+#
+# 0.13.0 -> 0.17.0: acknowledge 0.14.0–0.17.0 so the breaking-bump gate can
+# pass and scripts/runlib.sh can land (Issue #106). Forests does not name
+# the 0.16.0 PruneResult fields or the 0.17.0 prune_neuron IF rewrite.
+# Verified by `cargo check -p neat_ai_forests` against sibling 0.17.0.
+0.17.0
