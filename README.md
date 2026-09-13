@@ -101,9 +101,12 @@ That file is **owned by [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-c
 on that repository's `Develop` and every Rust sibling carries a byte-identical
 copy. Never edit it here — behaviour changes are made on core and re-copied
 outward. The `version-increment` job of `ci.yml` runs
-[`scripts/sync-runlib.sh`](./scripts/sync-runlib.sh) on every PR, so a stale
-copy is refreshed in the same commit as the version bump, and a fetch that
-fails reds the job rather than shipping an unchecked copy (Issue #104).
+[`scripts/sync-runlib.sh`](./scripts/sync-runlib.sh), so a stale copy is
+refreshed in the same commit as the version bump, and a read that fails, comes
+back empty or comes back as something that is not a bash script reds the job
+rather than shipping an unchecked copy (Issue #104). That job cannot push to a
+fork, so it is skipped on fork PRs exactly as the version bump is; a fork's
+copy is refreshed when the maintainer's own branch runs it.
 
 ```mermaid
 flowchart LR

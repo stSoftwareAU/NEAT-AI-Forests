@@ -215,13 +215,14 @@ jobs:
 
       - name: Commit and push the bump
         env:
+          BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
           PUSH_TOKEN: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           if git diff --quiet -- forests/Cargo.toml Cargo.lock scripts/runlib.sh; then
-            echo "Version is already ahead of ${GITHUB_BASE_REF} and scripts/runlib.sh" \
+            echo "Version is already ahead of ${BASE_REF} and scripts/runlib.sh" \
               "matches NEAT-AI-core — nothing to commit"
             exit 0
           fi

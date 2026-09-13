@@ -10,33 +10,25 @@
 # This script is the refresh. CI runs it inside the `version-increment` job, so
 # a PR that carries a stale copy has it corrected in the same bump commit.
 #
-# Fails loud, never silently stale: a fetch that errors, answers empty, or
-# answers with something that is not the script exits non-zero and leaves the
-# local copy untouched.
-#
-# Environment (tests only; CI and humans set none of these):
-#   RUNLIB_SYNC_SOURCE_REPO   owner/repo holding the canonical file
-#   RUNLIB_SYNC_SOURCE_REF    ref to read it from
-#   RUNLIB_SYNC_FETCH_HOOK    command printing the canonical file on stdout,
-#                             argv: <repo> <ref> <path>; replaces the `gh` read
+# Fails loud, never silently stale: a read that errors, comes back empty, or
+# comes back as something that is not a valid bash script exits non-zero and
+# leaves the local copy untouched. `gh` is the only reader — there is no hook
+# to substitute another command, so what CI runs is what the tests drive, with
+# a `gh` shim ahead of it on PATH.
 #
 # Cross-platform: macOS bash 3.2, Ubuntu, AWS Linux.
 set -euo pipefail
 
-SOURCE_REPO="${RUNLIB_SYNC_SOURCE_REPO:-stSoftwareAU/NEAT-AI-core}"
-SOURCE_REF="${RUNLIB_SYNC_SOURCE_REF:-Develop}"
+SOURCE_REPO="stSoftwareAU/NEAT-AI-core"
+SOURCE_REF="Develop"
 SOURCE_PATH="scripts/runlib.sh"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCAL_COPY="${REPO_ROOT}/${SOURCE_PATH}"
 
-# Print the canonical file on stdout. `gh api` with the raw media type returns
-# the file itself and a non-zero status on any HTTP error.
+# Print the canonical file on stdout. The raw media type returns the file
+# itself, and `gh api` exits non-zero on any HTTP error.
 _fetch_canonical() {
-  if [[ -n "${RUNLIB_SYNC_FETCH_HOOK:-}" ]]; then
-    "${RUNLIB_SYNC_FETCH_HOOK}" "${SOURCE_REPO}" "${SOURCE_REF}" "${SOURCE_PATH}"
-    return
-  fi
   if ! command -v gh >/dev/null 2>&1; then
     echo "ERROR: gh is not available — it is what reads ${SOURCE_REPO}" >&2
     return 1
@@ -60,9 +52,22 @@ main() {
     echo "ERROR: ${SOURCE_REPO} ${SOURCE_REF}:${SOURCE_PATH} came back empty" >&2
     return 1
   fi
-  # An error page or a JSON body is a successful HTTP read of the wrong thing.
-  if [[ "$(head -n 1 "${fetched}")" != "#!/usr/bin/env bash" ]]; then
-    echo "ERROR: ${SOURCE_REPO} ${SOURCE_REF}:${SOURCE_PATH} is not a bash script" >&2
+  # An error page or a JSON body is a successful read of the wrong thing. The
+  # test is "a bash shebang", not one exact line: the interpreter is upstream's
+  # to choose, and pinning the literal would red every Forests PR the day core
+  # changed it.
+  case "$(head -n 1 "${fetched}")" in
+    '#!'*bash*) : ;;
+    *)
+      echo "ERROR: ${SOURCE_REPO} ${SOURCE_REF}:${SOURCE_PATH} is not a bash script" >&2
+      return 1
+      ;;
+  esac
+  # A truncated body keeps its shebang, so the shebang alone proves nothing:
+  # parse it before it can be committed and shipped to a fleet host.
+  if ! bash -n "${fetched}" 2>/dev/null; then
+    echo "ERROR: ${SOURCE_REPO} ${SOURCE_REF}:${SOURCE_PATH} does not parse —" \
+      "the read was truncated or corrupted" >&2
     return 1
   fi
 
@@ -71,8 +76,9 @@ main() {
     return 0
   fi
 
-  # `cat >` rather than `cp`: it rewrites the tracked file in place and keeps
-  # its mode, so a refresh never shows up as a permission change.
+  # `cat >` rather than `cp`: it rewrites the tracked file in place instead of
+  # replacing it. The `chmod` then restores the one mode bit that matters —
+  # every sibling runs this file directly.
   cat "${fetched}" >"${LOCAL_COPY}"
   chmod +x "${LOCAL_COPY}"
   echo "${SOURCE_PATH} refreshed from ${SOURCE_REPO} ${SOURCE_REF}"

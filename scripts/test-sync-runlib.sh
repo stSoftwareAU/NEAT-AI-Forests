@@ -1,41 +1,37 @@
 #!/usr/bin/env bash
 # Hermetic tests for scripts/sync-runlib.sh (Issue #104).
 #
-# The real script runs against a throwaway copy of the repository layout, with
-# the network read replaced by RUNLIB_SYNC_FETCH_HOOK. No `gh` call is made.
+# The real script runs against a throwaway copy of the repository layout with a
+# `gh` shim ahead of the real one on PATH, so the production read — the `gh api`
+# argv the script builds — is what the tests drive. No network call is made.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=test-lib.sh
+. "${SCRIPT_DIR}/test-lib.sh"
+
 SYNC="${SCRIPT_DIR}/sync-runlib.sh"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "${WORK_DIR}"' EXIT
-
-PASSED=0
-FAILED=0
+REAL_PATH="${PATH}"
 
 if [[ ! -x "${SYNC}" ]]; then
   echo "FAIL: sync script not found or not executable: ${SYNC}" >&2
   exit 2
 fi
 
-assert_eq() {
-  local desc="$1" expected="$2" actual="$3"
-  if [[ "${expected}" == "${actual}" ]]; then
-    echo "  PASS: ${desc}"
-    PASSED=$((PASSED + 1))
-  else
-    echo "  FAIL: ${desc}"
-    echo "    expected: '${expected}'"
-    echo "    actual:   '${actual}'"
-    FAILED=$((FAILED + 1))
-  fi
-}
+# The one endpoint the script is allowed to read.
+EXPECTED_ENDPOINT="repos/stSoftwareAU/NEAT-AI-core/contents/scripts/runlib.sh?ref=Develop"
 
 CANONICAL="${WORK_DIR}/canonical-runlib.sh"
 cat >"${CANONICAL}" <<'EOF'
 #!/usr/bin/env bash
 # canonical copy, owned by NEAT-AI-core
-echo canonical
+canonical_install() {
+  echo canonical
+}
+canonical_install
 EOF
 
 STALE_BODY='#!/usr/bin/env bash
@@ -54,42 +50,40 @@ make_sandbox() {
   printf '%s' "${sandbox}"
 }
 
-# Hook printing the canonical file.
-HOOK_OK="${WORK_DIR}/hook-ok.sh"
-cat >"${HOOK_OK}" <<EOF
+# A `gh` shim that asserts the argv the script builds, then runs $2 as its body.
+# $2 sees the shim's own arguments and writes the answer on stdout.
+make_gh_shim() {
+  local body="$2" dir="${WORK_DIR}/shim-${1}"
+  mkdir -p "${dir}"
+  cat >"${dir}/gh" <<EOF
 #!/usr/bin/env bash
-cat "${CANONICAL}"
+set -euo pipefail
+if [[ "\${1:-}" != "api" || "\${2:-}" != "${EXPECTED_ENDPOINT}" ]]; then
+  echo "UNEXPECTED gh: \$*" >&2
+  exit 90
+fi
+case "\$*" in
+  *"application/vnd.github.raw"*) : ;;
+  *)
+    echo "gh called without the raw media type: \$*" >&2
+    exit 91
+    ;;
+esac
+${body}
 EOF
-chmod +x "${HOOK_OK}"
+  chmod +x "${dir}/gh"
+  printf '%s' "${dir}"
+}
 
-# Hook failing the way an unreachable or renamed source does.
-HOOK_FAIL="${WORK_DIR}/hook-fail.sh"
-cat >"${HOOK_FAIL}" <<'EOF'
-#!/usr/bin/env bash
-echo "gh: HTTP 404" >&2
-exit 1
-EOF
-chmod +x "${HOOK_FAIL}"
-
-# Hook answering successfully with nothing at all.
-HOOK_EMPTY="${WORK_DIR}/hook-empty.sh"
-cat >"${HOOK_EMPTY}" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-chmod +x "${HOOK_EMPTY}"
-
-# Hook answering with a body that is not the script.
-HOOK_JSON="${WORK_DIR}/hook-json.sh"
-cat >"${HOOK_JSON}" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' '{"message":"Not Found"}'
-EOF
-chmod +x "${HOOK_JSON}"
+SHIM_OK="$(make_gh_shim ok "cat \"${CANONICAL}\"")"
+SHIM_FAIL="$(make_gh_shim fail 'echo "gh: HTTP 404" >&2; exit 1')"
+SHIM_EMPTY="$(make_gh_shim empty 'exit 0')"
+SHIM_JSON="$(make_gh_shim json "printf '%s\\n' '{\"message\":\"Not Found\"}'")"
+SHIM_TRUNCATED="$(make_gh_shim truncated "head -n 4 \"${CANONICAL}\"")"
 
 echo "=== a stale copy is refreshed byte-for-byte ==="
 SANDBOX="$(make_sandbox "${STALE_BODY}")"
-OUT="$(RUNLIB_SYNC_FETCH_HOOK="${HOOK_OK}" bash "${SANDBOX}/scripts/sync-runlib.sh")" &&
+OUT="$(PATH="${SHIM_OK}:${REAL_PATH}" bash "${SANDBOX}/scripts/sync-runlib.sh")" &&
   RC=0 || RC=$?
 assert_eq "refresh exits 0" "0" "${RC}"
 assert_eq "refresh says what it did" "0" \
@@ -104,7 +98,7 @@ echo "=== a matching copy is left alone ==="
 SANDBOX="$(make_sandbox "unused")"
 cp "${CANONICAL}" "${SANDBOX}/scripts/runlib.sh"
 BEFORE="$(cat "${SANDBOX}/scripts/runlib.sh")"
-OUT="$(RUNLIB_SYNC_FETCH_HOOK="${HOOK_OK}" bash "${SANDBOX}/scripts/sync-runlib.sh")" &&
+OUT="$(PATH="${SHIM_OK}:${REAL_PATH}" bash "${SANDBOX}/scripts/sync-runlib.sh")" &&
   RC=0 || RC=$?
 assert_eq "no-op exits 0" "0" "${RC}"
 assert_eq "no-op reports the match" "0" \
@@ -113,20 +107,20 @@ assert_eq "no-op leaves the file unchanged" "${BEFORE}" \
   "$(cat "${SANDBOX}/scripts/runlib.sh")"
 
 echo ""
-echo "=== a failed fetch fails the step and keeps the local copy ==="
+echo "=== a failed read fails the step and keeps the local copy ==="
 SANDBOX="$(make_sandbox "${STALE_BODY}")"
-OUT="$(RUNLIB_SYNC_FETCH_HOOK="${HOOK_FAIL}" bash "${SANDBOX}/scripts/sync-runlib.sh" \
-  2>"${WORK_DIR}/fetch.err")" && RC=0 || RC=$?
-assert_eq "failed fetch exits non-zero" "1" "${RC}"
-assert_eq "failed fetch names the source" "0" \
+PATH="${SHIM_FAIL}:${REAL_PATH}" bash "${SANDBOX}/scripts/sync-runlib.sh" \
+  >/dev/null 2>"${WORK_DIR}/fetch.err" && RC=0 || RC=$?
+assert_eq "failed read exits non-zero" "1" "${RC}"
+assert_eq "failed read names the source" "0" \
   "$(grep -q 'cannot read scripts/runlib.sh' "${WORK_DIR}/fetch.err"; echo $?)"
-assert_eq "failed fetch does not touch the local copy" "${STALE_BODY}" \
+assert_eq "failed read does not touch the local copy" "${STALE_BODY}" \
   "$(cat "${SANDBOX}/scripts/runlib.sh")"
 
 echo ""
 echo "=== an empty answer is a failure, not an empty install script ==="
 SANDBOX="$(make_sandbox "${STALE_BODY}")"
-RUNLIB_SYNC_FETCH_HOOK="${HOOK_EMPTY}" bash "${SANDBOX}/scripts/sync-runlib.sh" \
+PATH="${SHIM_EMPTY}:${REAL_PATH}" bash "${SANDBOX}/scripts/sync-runlib.sh" \
   >/dev/null 2>"${WORK_DIR}/empty.err" && RC=0 || RC=$?
 assert_eq "empty answer exits non-zero" "1" "${RC}"
 assert_eq "empty answer says so" "0" \
@@ -137,7 +131,7 @@ assert_eq "empty answer does not touch the local copy" "${STALE_BODY}" \
 echo ""
 echo "=== a non-script answer is a failure ==="
 SANDBOX="$(make_sandbox "${STALE_BODY}")"
-RUNLIB_SYNC_FETCH_HOOK="${HOOK_JSON}" bash "${SANDBOX}/scripts/sync-runlib.sh" \
+PATH="${SHIM_JSON}:${REAL_PATH}" bash "${SANDBOX}/scripts/sync-runlib.sh" \
   >/dev/null 2>"${WORK_DIR}/json.err" && RC=0 || RC=$?
 assert_eq "non-script answer exits non-zero" "1" "${RC}"
 assert_eq "non-script answer says so" "0" \
@@ -146,5 +140,40 @@ assert_eq "non-script answer does not touch the local copy" "${STALE_BODY}" \
   "$(cat "${SANDBOX}/scripts/runlib.sh")"
 
 echo ""
-echo "=== summary: ${PASSED} passed, ${FAILED} failed ==="
-[[ "${FAILED}" -eq 0 ]]
+echo "=== an upstream shebang change is still a bash script ==="
+ALT_SHEBANG="${WORK_DIR}/alt-shebang-runlib.sh"
+{
+  echo '#!/bin/bash'
+  tail -n +2 "${CANONICAL}"
+} >"${ALT_SHEBANG}"
+SHIM_ALT="$(make_gh_shim alt "cat \"${ALT_SHEBANG}\"")"
+SANDBOX="$(make_sandbox "${STALE_BODY}")"
+PATH="${SHIM_ALT}:${REAL_PATH}" bash "${SANDBOX}/scripts/sync-runlib.sh" \
+  >/dev/null 2>"${WORK_DIR}/alt.err" && RC=0 || RC=$?
+assert_eq "an alternative bash shebang is accepted" "0" "${RC}"
+assert_eq "the alternative-shebang copy lands byte-for-byte" "0" \
+  "$(cmp -s "${ALT_SHEBANG}" "${SANDBOX}/scripts/runlib.sh"; echo $?)"
+
+echo ""
+echo "=== a truncated answer keeps its shebang and is still refused ==="
+SANDBOX="$(make_sandbox "${STALE_BODY}")"
+PATH="${SHIM_TRUNCATED}:${REAL_PATH}" bash "${SANDBOX}/scripts/sync-runlib.sh" \
+  >/dev/null 2>"${WORK_DIR}/truncated.err" && RC=0 || RC=$?
+assert_eq "truncated answer exits non-zero" "1" "${RC}"
+assert_eq "truncated answer says it does not parse" "0" \
+  "$(grep -q 'does not parse' "${WORK_DIR}/truncated.err"; echo $?)"
+assert_eq "truncated answer does not touch the local copy" "${STALE_BODY}" \
+  "$(cat "${SANDBOX}/scripts/runlib.sh")"
+
+echo ""
+echo "=== a host without gh fails loud rather than silently skipping ==="
+SANDBOX="$(make_sandbox "${STALE_BODY}")"
+PATH="/usr/bin:/bin" bash "${SANDBOX}/scripts/sync-runlib.sh" \
+  >/dev/null 2>"${WORK_DIR}/nogh.err" && RC=0 || RC=$?
+assert_eq "a missing gh exits non-zero" "1" "${RC}"
+assert_eq "a missing gh names gh" "0" \
+  "$(grep -q 'gh is not available' "${WORK_DIR}/nogh.err"; echo $?)"
+assert_eq "a missing gh does not touch the local copy" "${STALE_BODY}" \
+  "$(cat "${SANDBOX}/scripts/runlib.sh")"
+
+report_summary

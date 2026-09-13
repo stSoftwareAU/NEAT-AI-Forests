@@ -18,32 +18,20 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=test-lib.sh
+. "${SCRIPT_DIR}/test-lib.sh"
+
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 RUNLIB="${SCRIPT_DIR}/runlib.sh"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "${WORK_DIR}"' EXIT
 REAL_PATH="${PATH}"
 
-PASSED=0
-FAILED=0
-
 if [[ ! -x "${RUNLIB}" ]]; then
   echo "FAIL: runlib not found or not executable: ${RUNLIB}" >&2
   exit 2
 fi
-
-assert_eq() {
-  local desc="$1" expected="$2" actual="$3"
-  if [[ "${expected}" == "${actual}" ]]; then
-    echo "  PASS: ${desc}"
-    PASSED=$((PASSED + 1))
-  else
-    echo "  FAIL: ${desc}"
-    echo "    expected: '${expected}'"
-    echo "    actual:   '${actual}'"
-    FAILED=$((FAILED + 1))
-  fi
-}
 
 CRATE="neat_ai_forests"
 
@@ -197,6 +185,4 @@ assert_eq "a failed build leaves the stamp alone" "0.0.1" \
 assert_eq "a failed build stages nothing under CARGO_HOME/bin" "0" \
   "$(find "${SANDBOX}/.cargo/bin" -name "*.runlib.*" | wc -l | tr -d ' ')"
 
-echo ""
-echo "=== summary: ${PASSED} passed, ${FAILED} failed ==="
-[[ "${FAILED}" -eq 0 ]]
+report_summary
