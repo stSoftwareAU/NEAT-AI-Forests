@@ -167,8 +167,18 @@ assert_eq "truncated answer does not touch the local copy" "${STALE_BODY}" \
 
 echo ""
 echo "=== a host without gh fails loud rather than silently skipping ==="
+# A curated PATH rather than a system one: `gh` sits in /usr/bin on a GitHub
+# runner and in /usr/local/bin elsewhere, so "a host without gh" has to be
+# built out of exactly the tools the script needs, not guessed at.
+NO_GH_PATH="${WORK_DIR}/no-gh-bin"
+mkdir -p "${NO_GH_PATH}"
+for tool in bash mktemp head cat cmp chmod rm dirname; do
+  ln -sf "$(command -v "${tool}")" "${NO_GH_PATH}/${tool}"
+done
+assert_eq "the curated PATH really has no gh" "1" \
+  "$(PATH="${NO_GH_PATH}" command -v gh >/dev/null 2>&1; echo $?)"
 SANDBOX="$(make_sandbox "${STALE_BODY}")"
-PATH="/usr/bin:/bin" bash "${SANDBOX}/scripts/sync-runlib.sh" \
+PATH="${NO_GH_PATH}" bash "${SANDBOX}/scripts/sync-runlib.sh" \
   >/dev/null 2>"${WORK_DIR}/nogh.err" && RC=0 || RC=$?
 assert_eq "a missing gh exits non-zero" "1" "${RC}"
 assert_eq "a missing gh names gh" "0" \
