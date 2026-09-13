@@ -146,8 +146,8 @@ follow-up commit on this branch.
   scripts, each failure path asserted by a real invocation; cross-platform bash
   (`set -euo pipefail`, no bash-4 constructs, shellcheck clean); tests call real
   code with no source-text grepping; workflow hygiene (SHA-pinned actions with
-  version comments, least-privilege `permissions`, `persist-credentials: false`
-  with the push token supplied per step, `set -euo pipefail` in every new
+  version comments, least-privilege `permissions`, credential persistence
+  disabled on every checkout with the push token supplied per step, `set -euo pipefail` in every new
   multi-line `run:`, no `github.*` interpolated into a `run:` body); no hidden
   or secret paths staged; README and CHANGELOG updated alongside the code.
 
