@@ -35,6 +35,9 @@ echo "shellcheck: all scripts passed"
 echo "Checking scripts/runlib.sh already-installed contract (Issue #106)..."
 ./scripts/test-runlib.sh
 
+echo "Checking the scripts/runlib.sh refresh contract (Issue #104)..."
+./scripts/test-sync-runlib.sh
+
 if [ -f "./../NEAT-AI-core/Cargo.toml" ]; then
   echo "Gating on unhandled breaking neat-core bump..."
   ./scripts/check-neat-core-version.sh

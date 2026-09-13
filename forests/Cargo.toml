@@ -1,6 +1,6 @@
 [package]
 name = "neat_ai_forests"
-version = "0.1.25"
+version = "0.1.26"
 edition = "2024"
 license = "Apache-2.0"
 description = "Experimental residual decision-tree optimiser for already-fit NEAT-AI creatures."
@@ -14,9 +14,10 @@ workspace = true
 name = "neat_ai_forests"
 path = "src/lib.rs"
 
-[[bin]]
-name = "neat_ai_forests"
-path = "src/main.rs"
+# No explicit `[[bin]]` table: cargo's own default — `src/main.rs`, named after
+# the package — is exactly what this crate wants, and the canonical
+# `scripts/runlib.sh` skip path declines to read any manifest carrying one,
+# falling back to `cargo metadata` on every fleet run (NEAT-AI-core#680).
 
 [dependencies]
 # Keep this sibling path aligned with NEAT-AI-scorer / NEAT-AI-Lamarck. CI
