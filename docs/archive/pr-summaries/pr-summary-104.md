@@ -30,7 +30,7 @@ output and the gate.
 - `./scripts/test-runlib.sh` — 18 assertions, all passing. A recording `cargo`
   shim that refuses every invocation is what makes "runs no cargo command" an
   assertion rather than an inference.
-- `./scripts/test-sync-runlib.sh` — 24 assertions, all passing. A `gh` shim
+- `./scripts/test-sync-runlib.sh` — 25 assertions, all passing. A `gh` shim
   ahead of the real one on `PATH` drives the production read, asserting the
   exact `gh api` endpoint and the raw media type the script sends.
 - `./quality.sh` — full gate green (shell syntax, shellcheck, both script
@@ -43,6 +43,10 @@ output and the gate.
 - `./scripts/sync-runlib.sh` was run for real against core `Develop` and
   reported `scripts/runlib.sh already matches stSoftwareAU/NEAT-AI-core
   Develop`.
+- The new step ran for real on this PR: `Auto-increment Version` passed with
+  the refresh ahead of the bump and pushed
+  `chore: auto-increment crate version to 0.1.26`, and `CI Required Checks`
+  is green.
 
 The refresh, as the `version-increment` job now runs it:
 
@@ -169,6 +173,9 @@ follow-up commit on this branch.
   error body, a truncated body that keeps its shebang, and an alternative
   `#!/bin/bash` shebang. A `PATH` with no `gh` covers the missing-tool path.
   Every failure case asserts a non-zero exit **and** an untouched local copy.
+  The missing-`gh` case builds its `PATH` out of the tools the script needs and
+  asserts that `PATH` really has no `gh` — an earlier `PATH=/usr/bin:/bin`
+  found the runner's own `gh` and went red in CI.
 - New `scripts/test-lib.sh` — the counters, `assert_eq` and the summary shared
   by both harnesses.
 - Both harnesses are wired into `quality.sh` and the `shell-checks` job of
