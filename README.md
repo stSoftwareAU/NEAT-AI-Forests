@@ -90,11 +90,31 @@ cargo build --release                       # CPU build
 ```
 
 Fleet hosts do not run `cargo build` on every Forests stage.
-[`scripts/runlib.sh`](./scripts/runlib.sh) (Issue #106) installs
-`~/.cargo/bin/neat_ai_forests` and `.neat_ai_forests.version`, prints that
-path on stdout, and removes `target/` after a successful install. A second
-run on the same crate version prints `[neat_ai_forests] already installed
-v<x>` and runs no cargo command. It builds the `neat_ai_forests` binary only.
+[`scripts/runlib.sh`](./scripts/runlib.sh) installs the CLI to
+`~/.cargo/bin/neat_ai_forests`, stamps `.neat_ai_forests.version` beside it,
+prints that path on stdout, and removes `target/` after a successful install.
+A second run on the same crate version prints `[neat_ai_forests] already
+installed v<x>` and runs no cargo command at all.
+
+That file is **owned by [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)**
+([core#680](https://github.com/stSoftwareAU/NEAT-AI-core/issues/680)): it lives
+on that repository's `Develop` and every Rust sibling carries a byte-identical
+copy. Never edit it here — behaviour changes are made on core and re-copied
+outward. The `version-increment` job of `ci.yml` runs
+[`scripts/sync-runlib.sh`](./scripts/sync-runlib.sh) on every PR, so a stale
+copy is refreshed in the same commit as the version bump, and a fetch that
+fails reds the job rather than shipping an unchecked copy (Issue #104).
+
+```mermaid
+flowchart LR
+    A["PR opened or pushed"] --> B["version-increment:<br/>sync-runlib.sh reads<br/>NEAT-AI-core Develop"]
+    B -- "fetch fails" --> C["job red — ci-required<br/>blocks the merge"]
+    B -- "differs" --> D["overwrite scripts/runlib.sh"]
+    B -- "identical" --> E["leave it alone"]
+    D --> F["auto-version.sh bumps<br/>forests/Cargo.toml"]
+    E --> F
+    F --> G["one commit, one push:<br/>bump + refreshed runlib.sh"]
+```
 
 The source `creature.json` is never written to. `best.json` starts as a
 byte-for-byte copy and is only replaced by a creature the scorer verified on
