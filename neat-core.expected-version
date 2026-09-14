@@ -36,4 +36,22 @@
 # pass and scripts/runlib.sh can land (Issue #106). Forests does not name
 # the 0.16.0 PruneResult fields or the 0.17.0 prune_neuron IF rewrite.
 # Verified by `cargo check -p neat_ai_forests` against sibling 0.17.0.
-0.17.0
+#
+# 0.17.0 -> 0.20.0: acknowledge 0.18.0–0.20.0 so the breaking-bump gate can
+# pass against sibling neat-core at head. No forests code change is required:
+#   * 0.18.0 (Ockham #196) is a documented-behaviour bump in
+#     prune_neuron / prune_synapse — a target left with no inward edge takes
+#     the bias fold. Forests never calls neat-core's prune API: its
+#     `plan_prune` / `LearningsStore::prune` act on its own learnings JSONL.
+#   * 0.19.0 (Issue #682) adds `CreatureError::UnknownTargetUuid` and makes
+#     `compile_creature` refuse a synapse whose toUUID names no listed neuron.
+#     Forests never matches exhaustively on `CreatureError` (it maps through
+#     `.to_string()`), and its grafts always list every synapse target —
+#     `creature_validate` runs before `compile_creature` on the graft path.
+#   * 0.20.0 (Issue #680) canonicalises scripts/runlib.sh — a sibling-build
+#     script change, not a neat-core public-API change. Forests' own
+#     scripts/runlib.sh is tracked separately (Issue #104).
+# Verified by `cargo check --workspace --all-targets`,
+# `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and
+# the full `cargo test --workspace --all-features` suite against sibling 0.20.0.
+0.20.0
