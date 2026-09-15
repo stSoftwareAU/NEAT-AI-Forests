@@ -7,13 +7,27 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Added
 
+- **`scripts/runlib.sh` is now NEAT-AI-core's file, refreshed by CI
+  (Issue #104).** The local script written for #106 is replaced by a
+  byte-identical copy of `stSoftwareAU/NEAT-AI-core` `Develop`
+  `scripts/runlib.sh` (core#680), so every Rust sibling runs the same
+  build → install → clean helper. `scripts/sync-runlib.sh` re-reads that file
+  in the `version-increment` job of `ci.yml` and folds any refresh into the
+  same commit as the version bump; a fetch that fails, answers empty, or
+  answers with anything that is not the script exits non-zero and leaves the
+  local copy untouched. `forests/Cargo.toml` drops its redundant `[[bin]]`
+  table — cargo's default (`src/main.rs`, named after the package) is
+  identical, and the canonical skip path declines to read a manifest carrying
+  one, which would have cost a `cargo metadata` call on every fleet run.
+  Hermetic coverage: `scripts/test-runlib.sh`, `scripts/test-sync-runlib.sh`.
+
 - **`scripts/runlib.sh` installs `~/.cargo/bin/neat_ai_forests` only on a
   version change (Issue #106).** The fleet worker started calling this script
   and every Forests host died because Develop had no file. The script stamps
   `.neat_ai_forests.version`, prints the bin path on stdout, skips
   `cargo build` when already installed, builds the `neat_ai_forests` binary
-  only, and removes `target/` after a successful install. Family-sync from
-  NEAT-AI-core still waits on core#680. Hermetic coverage:
+  only, and removes `target/` after a successful install. Superseded within
+  this release by the family-sync entry above. Hermetic coverage:
   `scripts/test-runlib.sh`.
 
 - **Acknowledges neat-core 0.14.0 through 0.17.0.** Forests does not name the
