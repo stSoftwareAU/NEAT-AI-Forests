@@ -37,8 +37,24 @@
 # the 0.16.0 PruneResult fields or the 0.17.0 prune_neuron IF rewrite.
 # Verified by `cargo check -p neat_ai_forests` against sibling 0.17.0.
 #
-# 0.17.0 -> 0.20.0: acknowledge 0.18.0–0.20.0 so the breaking-bump gate can
-# pass against sibling neat-core at head. No forests code change is required:
+# 0.17.0 -> 0.20.0 (Develop side, Issue #104): acknowledge 0.18.0-0.20.0 so
+# the breaking-bump gate can pass and the canonical scripts/runlib.sh can
+# land. The only library-visible break in that span is neat-core #682
+# (0.19.0): `CreatureError` gains an `UnknownTargetUuid(String)` variant and
+# `compile_creature` now refuses a synapse whose toUUID names no listed
+# neuron. Forests never names `CreatureError` - `graft.rs` maps the error
+# through `e.to_string()`, so the new variant needs no match arm - and its
+# grafted `IF` subtrees only ever target neurons the creature lists. 0.18.0 is
+# neat-core #684 (pruning corner cases across the JSON/WASM boundary) and
+# 0.20.0 is neat-core #689 (the canonical runlib.sh itself); Forests names
+# neither `PruneResult` nor `prune_neuron`. Verified by the full test suite -
+# `cargo test --workspace --all-features`, including the real-scorer
+# end-to-end graft and the TypeScript parity fixtures - passing against a
+# sibling clone at 0.20.0.
+#
+# 0.17.0 -> 0.20.0 (PR #109 side): independently acknowledges the same
+# 0.18.0-0.20.0 span against sibling neat-core at head. No forests code
+# change is required:
 #   * 0.18.0 (Ockham #196) is a documented-behaviour bump in
 #     prune_neuron / prune_synapse — a target left with no inward edge takes
 #     the bias fold. Forests never calls neat-core's prune API: its

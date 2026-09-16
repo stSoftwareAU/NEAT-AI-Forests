@@ -145,6 +145,7 @@ jobs:
             "SECURITY.md"
             "neat-core.expected-version"
             "scripts/runlib.sh"
+            "scripts/sync-runlib.sh"
           )
           missing_files=()
           for file in "${required_files[@]}"; do
@@ -190,6 +191,15 @@ jobs:
           # build script could read it; it is supplied per step instead.
           persist-credentials: false
 
+      - name: Refresh scripts/runlib.sh from NEAT-AI-core Develop
+        # scripts/runlib.sh is NEAT-AI-core's file (core#680); this repository
+        # only carries a byte-identical copy. Refreshing it here folds a stale
+        # copy into the same commit the bump below pushes. A fetch that fails
+        # fails the job rather than shipping a copy nobody checked (Issue #104).
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/sync-runlib.sh
+
       - name: Bump the crate version when this PR has not already
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -205,20 +215,34 @@ jobs:
 
       - name: Commit and push the bump
         env:
+          BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
           PUSH_TOKEN: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if git diff --quiet -- forests/Cargo.toml Cargo.lock; then
-            echo "Version is already ahead of ${GITHUB_BASE_REF} — nothing to commit"
+          if git diff --quiet -- forests/Cargo.toml Cargo.lock scripts/runlib.sh; then
+            echo "Version is already ahead of ${BASE_REF} and scripts/runlib.sh" \
+              "matches NEAT-AI-core — nothing to commit"
             exit 0
           fi
-          version="$(./scripts/auto-version.sh --print forests/Cargo.toml)"
+          # One commit carries both, and names only the parts that changed.
+          message=""
+          if ! git diff --quiet -- forests/Cargo.toml Cargo.lock; then
+            version="$(./scripts/auto-version.sh --print forests/Cargo.toml)"
+            message="chore: auto-increment crate version to ${version}"
+          fi
+          if ! git diff --quiet -- scripts/runlib.sh; then
+            if [ -n "${message}" ]; then
+              message="${message}, refresh scripts/runlib.sh from NEAT-AI-core"
+            else
+              message="chore: refresh scripts/runlib.sh from NEAT-AI-core"
+            fi
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add forests/Cargo.toml Cargo.lock
-          git commit -m "chore: auto-increment crate version to ${version}"
+          git add forests/Cargo.toml Cargo.lock scripts/runlib.sh
+          git commit -m "${message}"
           git push "https://x-access-token:${PUSH_TOKEN}@github.com/${REPOSITORY}.git" \
             "HEAD:${HEAD_REF}"
 
@@ -265,6 +289,9 @@ jobs:
 
       - name: Check scripts/runlib.sh already-installed contract
         run: ./scripts/test-runlib.sh
+
+      - name: Check the scripts/runlib.sh refresh contract
+        run: ./scripts/test-sync-runlib.sh
 
   spell-check:
     name: Spell Check
