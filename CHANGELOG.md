@@ -7,6 +7,32 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Added
 
+- **`neat-core` and `neat-ai-rebase` are pinned to release tags, refreshed by
+  CI (Issue #105).** Both sibling path dependencies in `forests/Cargo.toml` are
+  now git dependencies on a `v*` release tag (`neat-core` v0.22.5,
+  `neat-ai-rebase` v0.1.2), so the workspace builds with neither sibling
+  checkout present. `scripts/family-pins.sh` — a byte-identical copy of
+  NEAT-AI-core `Develop` (core#681) — moves both pins to the newest release and
+  re-locks `Cargo.lock` in the `version-increment` job, in the same commit as
+  the version bump. Because cargo refuses two versions of one git package, a
+  NEAT-AI-Rebase release whose own `neat-core` pin lags behind core's newest
+  release reds the build until Rebase's pin PR lands. `scripts/sync-runlib.sh`
+  becomes `scripts/sync-core-helpers.sh` and now refreshes both copied helpers;
+  `scripts/check-neat-core-version.sh` reads the pinned release out of
+  `Cargo.lock` instead of a sibling manifest and refuses a `neat-core` that is
+  not on a release tag; `.github/actions/setup-neat-core` and
+  `.github/actions/setup-neat-ai-rebase` are retired along with their uses in
+  `ci.yml`, `cargo-quality.yml`, `cargo-upgrade.yml`, `sbom.yml` and
+  `security.yml`. Hermetic coverage:
+  `scripts/test-sync-core-helpers.sh`, `scripts/test-check-neat-core-version.sh`.
+
+- **Acknowledges neat-core 0.21.0 through 0.22.5.** Nothing Forests names
+  changed across the span — the pruning splice work (core#688), the per-variant
+  range/safe-zone data list (core#673), the cargo-deny wrappers (core#676,
+  core#677) and the script work (core#680, core#681, core#699–#701).
+  `neat-core.expected-version` moves to 0.22.5, verified by clippy and the full
+  `cargo test --workspace --all-features` suite against the pinned v0.22.5.
+
 - **`scripts/runlib.sh` is now NEAT-AI-core's file, refreshed by CI
   (Issue #104).** The local script written for #106 is replaced by a
   byte-identical copy of `stSoftwareAU/NEAT-AI-core` `Develop`

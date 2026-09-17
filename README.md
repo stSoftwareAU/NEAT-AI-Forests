@@ -67,16 +67,18 @@ One shared-family prerequisite is still open upstream:
 
 ## Quick start
 
-Forests is a Rust workspace that depends on the sibling
-[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) checkout and
-invokes the [NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer)
-binary (`rust_scorer`) as the judge:
+Forests is a Rust workspace that pins
+[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) and
+[NEAT-AI-Rebase](https://github.com/stSoftwareAU/NEAT-AI-Rebase) to release
+tags — cargo fetches both, so neither needs a sibling checkout (Issue #105) —
+and invokes the
+[NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer) binary
+(`rust_scorer`) as the judge:
 
 ```text
 parent/
-├── NEAT-AI-core/      # path dependency: ../../NEAT-AI-core/neat-core
 ├── NEAT-AI-scorer/    # build it: cargo build --release  →  target/release/rust_scorer
-└── NEAT-AI-Forests/
+└── NEAT-AI-Forests/   # neat-core and neat-ai-rebase come from their release tags
 ```
 
 ```bash
@@ -96,28 +98,57 @@ prints that path on stdout, and removes `target/` after a successful install.
 A second run on the same crate version prints `[neat_ai_forests] already
 installed v<x>` and runs no cargo command at all.
 
-That file is **owned by [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)**
-([core#680](https://github.com/stSoftwareAU/NEAT-AI-core/issues/680)): it lives
-on that repository's `Develop` and every Rust sibling carries a byte-identical
-copy. Never edit it here — behaviour changes are made on core and re-copied
-outward. The `version-increment` job of `ci.yml` runs
-[`scripts/sync-runlib.sh`](./scripts/sync-runlib.sh), so a stale copy is
-refreshed in the same commit as the version bump, and a read that fails, comes
-back empty or comes back as something that is not a bash script reds the job
-rather than shipping an unchecked copy (Issue #104). That job cannot push to a
-fork, so it is skipped on fork PRs exactly as the version bump is; a fork's
-copy is refreshed when the maintainer's own branch runs it.
+### Copied NEAT-AI-core helpers, and the family pins
+
+Two scripts here are copies, not originals, and both are **owned by
+[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)**: they live on
+that repository's `Develop` and every Rust sibling carries a byte-identical
+copy. Never edit either here — behaviour changes are made on core and re-copied
+outward.
+
+| Copy | Owner issue | What it does |
+| --- | --- | --- |
+| [`scripts/runlib.sh`](./scripts/runlib.sh) | [core#680](https://github.com/stSoftwareAU/NEAT-AI-core/issues/680) | build → install → clean, described above |
+| [`scripts/family-pins.sh`](./scripts/family-pins.sh) | [core#681](https://github.com/stSoftwareAU/NEAT-AI-core/issues/681) | move the family git-tag pins to the latest release and re-lock |
+
+The `version-increment` job of `ci.yml` runs
+[`scripts/sync-core-helpers.sh`](./scripts/sync-core-helpers.sh) to refresh both
+copies, then `scripts/family-pins.sh` to move the pins, then
+`scripts/auto-version.sh` — one commit carries the refresh, the moved pins and
+the bump, so a moved pin can never reach the PR at an unchanged crate version.
+A read that fails, comes back empty or comes back as something that is not a
+bash script reds the job rather than shipping an unchecked copy (Issue #104),
+and a pin that cannot be resolved reds it too (Issue #105). That job cannot push
+to a fork, so it is skipped on fork PRs exactly as the version bump is; a fork's
+copies and pins are refreshed when the maintainer's own branch runs it.
 
 ```mermaid
 flowchart LR
-    A["PR opened or pushed"] --> B["version-increment:<br/>sync-runlib.sh reads<br/>NEAT-AI-core Develop"]
+    A["PR opened or pushed"] --> B["version-increment:<br/>sync-core-helpers.sh reads<br/>NEAT-AI-core Develop"]
     B -- "fetch fails" --> C["job red — ci-required<br/>blocks the merge"]
-    B -- "differs" --> D["overwrite scripts/runlib.sh"]
-    B -- "identical" --> E["leave it alone"]
-    D --> F["auto-version.sh bumps<br/>forests/Cargo.toml"]
-    E --> F
-    F --> G["one commit, one push:<br/>bump + refreshed runlib.sh"]
+    B -- "differs / identical" --> D["runlib.sh and<br/>family-pins.sh current"]
+    D --> E["family-pins.sh moves the<br/>neat-core and neat-ai-rebase<br/>tags, re-locks Cargo.lock"]
+    E -- "pin unresolvable" --> C
+    E --> F["auto-version.sh bumps<br/>forests/Cargo.toml"]
+    F --> G["one commit, one push:<br/>helpers + pins + bump"]
 ```
+
+#### Why both pins must agree on `neat-core`
+
+`neat-ai-rebase` carries its own `neat-core` release pin, and cargo refuses two
+versions of one git package. `family-pins.sh` moves every family pin to the
+latest release, which normally keeps the two aligned; when NEAT-AI-Rebase's pin
+at its newest release still lags behind core's newest release, the build fails
+loud and **Forests stays blocked until Rebase's own pin PR lands and it cuts a
+new release**. That is deliberate: one `neat-core` for the whole graph, or a
+red build saying why.
+
+A breaking core release is a separate, equally deliberate stop:
+[`scripts/check-neat-core-version.sh`](./scripts/check-neat-core-version.sh)
+reads the pinned version out of `Cargo.lock` and reds the `validation` job when
+it exceeds the baseline recorded in `neat-core.expected-version` — pre-1.0 a
+higher minor, or any higher major. Clear it by handling the break and bumping
+that baseline in the same PR.
 
 The source `creature.json` is never written to. `best.json` starts as a
 byte-for-byte copy and is only replaced by a creature the scorer verified on
