@@ -3,8 +3,9 @@ name: Cargo Dependency Updates
 # Weekly dependency refresh (Issue #16), mirroring GRQ's `cargo-upgrade.yml`:
 # `cargo upgrade` (compatible bumps) + `cargo update`, raised as a PR so the
 # normal CI gate (clippy -D warnings, tests, cargo-deny) judges it. Every
-# action is SHA-pinned; the sibling NEAT-AI-core checkout is required for the
-# lockfile to resolve (path dependency).
+# action is SHA-pinned. The family dependencies are git dependencies pinned to
+# release tags, so no sibling checkout is needed for the lockfile to resolve;
+# their pins move through `scripts/family-pins.sh` in CI, not here (Issue #105).
 
 on:
   schedule:
@@ -31,12 +32,6 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
         with:
           persist-credentials: false
-
-      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
-        uses: ./.github/actions/setup-neat-core
-
-      - name: Set up NEAT-AI-Rebase sibling (path dependency for neat-ai-rebase)
-        uses: ./.github/actions/setup-neat-ai-rebase
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18

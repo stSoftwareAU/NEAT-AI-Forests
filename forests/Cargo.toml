@@ -20,14 +20,21 @@ path = "src/lib.rs"
 # falling back to `cargo metadata` on every fleet run (NEAT-AI-core#680).
 
 [dependencies]
-# Keep this sibling path aligned with NEAT-AI-scorer / NEAT-AI-Lamarck. CI
-# checks out NEAT-AI-core beside this repo (see .github/actions/setup-neat-core).
-neat-core = { path = "../../NEAT-AI-core/neat-core" }
+# Both family dependencies are pinned to a *release tag*, not a sibling
+# checkout (Issue #105): the workspace builds anywhere, and a pin moves only
+# through this repository's own PR — `scripts/family-pins.sh`, run by the
+# `version-increment` job, rewrites the tags below to each repository's newest
+# release and re-locks `Cargo.lock` in the same commit as the version bump.
+#
+# The two pins must agree on `neat-core`: cargo refuses two versions of one git
+# package, so if NEAT-AI-Rebase's own `neat-core` pin at the tag below lags
+# behind the core tag here, the build fails loud and Forests stays on the older
+# pair until Rebase's own pin PR lands and it cuts a new release.
+neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v0.22.5" }
 # Producer side of population re-entry: `PatchLog` files each accepted patch as
 # a v1 enhancement so Rebase can graft it onto a freshly fetched champion
-# (stSoftwareAU/NEAT-AI-Rebase#65). Sibling path, like `neat-core`; CI checks
-# the repository out beside this one (see `.github/actions/setup-neat-ai-rebase`).
-neat-ai-rebase = { path = "../../NEAT-AI-Rebase/rebase" }
+# (stSoftwareAU/NEAT-AI-Rebase#65).
+neat-ai-rebase = { git = "https://github.com/stSoftwareAU/NEAT-AI-Rebase", tag = "v0.1.2" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,10 +1,12 @@
 # Last-handled neat-core version.
 #
-# Forests consumes neat-core via an unpinned `path` dependency that tracks head.
-# CI (`scripts/check-neat-core-version.sh`) fails when the sibling neat-core
-# presents a breaking bump above this baseline — pre-1.0 a higher minor, or any
-# higher major — forcing a deliberate upgrade. Clear the gate by updating
-# `forests` for the breaking change and bumping this version to match neat-core.
+# Forests pins neat-core to a release tag in `forests/Cargo.toml`, and
+# `scripts/family-pins.sh` moves that pin to core's newest release on every PR.
+# CI (`scripts/check-neat-core-version.sh`) reads the pinned version out of
+# `Cargo.lock` and fails when it carries a breaking bump above this baseline —
+# pre-1.0 a higher minor, or any higher major — forcing a deliberate upgrade.
+# Clear the gate by updating `forests` for the breaking change and bumping this
+# version to match the pinned neat-core release.
 #
 # 0.9.11 -> 0.10.0: acknowledge neat-core #569 (GRQ#4257), which retyped the
 # public `MemeticExport::weights` field from
@@ -70,4 +72,23 @@
 # Verified by `cargo check --workspace --all-targets`,
 # `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and
 # the full `cargo test --workspace --all-features` suite against sibling 0.20.0.
-0.20.0
+#
+# 0.20.0 -> 0.22.5 (Issue #105): the first baseline bump made against a *pinned
+# release* rather than a sibling clone at head. `forests/Cargo.toml` now pins
+# `neat-core` to the release tag below, and `scripts/family-pins.sh` moves that
+# pin to core's newest release on every PR, so this gate reads the pinned
+# version out of `Cargo.lock` (see `scripts/check-neat-core-version.sh`).
+# Nothing Forests names changed across 0.21.0-0.22.5: the span is the pruning
+# work (core #688 splices out the IDENTITY pass-throughs the IF rewrite leaves
+# behind, and refuses the splice where it would not be exact), the
+# per-variant range/safe-zone data list (core #673), the cargo-deny wrappers
+# for unmaintained transitive edges (core #676, #677), and the runlib.sh /
+# family-pins.sh script work (core #680, #681, #699-#701). Forests never calls
+# neat-core's prune API - its own `plan_prune` / `LearningsStore::prune` act on
+# its learnings JSONL - and names no range or safe-zone type. Verified against
+# the pinned v0.22.5 with no sibling checkout present:
+# `cargo check --workspace --all-targets --all-features`,
+# `cargo clippy --workspace --all-targets --all-features -- -D warnings` and
+# the full `cargo test --workspace --all-features` suite (163 tests, including
+# the real-scorer end-to-end graft and the TypeScript parity fixtures).
+0.22.5
