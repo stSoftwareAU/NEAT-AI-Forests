@@ -208,6 +208,13 @@ jobs:
       # The only way the family pins move: through this repository's own PR. An
       # unresolvable remote or an unrewritable pin exits non-zero rather than
       # leaving a pin quietly stale (Issue #105).
+      #
+      # This step runs the file the step above just fetched from NEAT-AI-core
+      # `Develop` — the same trust boundary every fleet host already crosses by
+      # executing its copy of `runlib.sh`, and the same one NEAT-AI-Rebase's own
+      # version-increment job crosses. Nothing here widens it: the checkout does
+      # not persist credentials, the push token is supplied only to the commit
+      # step below, and the job's write scope is this PR branch.
       - name: Move the family pins to the latest releases
         run: ./scripts/family-pins.sh
 
@@ -244,19 +251,31 @@ jobs:
               "nothing to commit"
             exit 0
           fi
-          # One commit carries all three, and names only the parts that changed.
-          message=""
-          if ! git diff --quiet -- forests/Cargo.toml Cargo.lock; then
+          # One commit carries all three, and names only the parts that
+          # changed. Each part is decided by the lines it actually touched: a
+          # moved pin also dirties forests/Cargo.toml, so asking "did this file
+          # change?" would title a pure pin move as a version bump.
+          parts=()
+          if git diff -U0 -- forests/Cargo.toml | grep -q '^+version = '; then
             version="$(./scripts/auto-version.sh --print forests/Cargo.toml)"
-            message="chore: auto-increment crate version to ${version}"
+            parts+=("auto-increment crate version to ${version}")
+          fi
+          if git diff -U0 -- forests/Cargo.toml | grep -q '^+.*tag = "v'; then
+            parts+=("move the family pins to the latest releases")
           fi
           if ! git diff --quiet -- scripts/runlib.sh scripts/family-pins.sh; then
-            if [ -n "${message}" ]; then
-              message="${message}, refresh the NEAT-AI-core helpers"
-            else
-              message="chore: refresh the NEAT-AI-core helpers"
-            fi
+            parts+=("refresh the NEAT-AI-core helpers")
           fi
+          if [ ${#parts[@]} -eq 0 ]; then
+            # Cargo.lock alone moved — a re-lock with no manifest change.
+            parts+=("re-lock Cargo.lock")
+          fi
+          message="chore:"
+          separator=" "
+          for part in "${parts[@]}"; do
+            message="${message}${separator}${part}"
+            separator=", "
+          done
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -- "${SYNCED_PATHS[@]}"

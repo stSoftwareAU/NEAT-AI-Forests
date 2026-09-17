@@ -26,10 +26,12 @@ path = "src/lib.rs"
 # `version-increment` job, rewrites the tags below to each repository's newest
 # release and re-locks `Cargo.lock` in the same commit as the version bump.
 #
-# The two pins must agree on `neat-core`: cargo refuses two versions of one git
-# package, so if NEAT-AI-Rebase's own `neat-core` pin at the tag below lags
-# behind the core tag here, the build fails loud and Forests stays on the older
-# pair until Rebase's own pin PR lands and it cuts a new release.
+# The two pins must agree on `neat-core`. Cargo happily locks two git sources
+# at different tags — the build then dies in rustc as a type mismatch — so
+# `scripts/check-neat-core-version.sh` reds the `validation` job the moment
+# `Cargo.lock` carries more than one `neat-core`. When NEAT-AI-Rebase's own
+# `neat-core` pin at the tag below lags behind the core tag here, Forests stays
+# on the older pair until Rebase's own pin PR lands and it cuts a new release.
 neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v0.22.5" }
 # Producer side of population re-entry: `PatchLog` files each accepted patch as
 # a v1 enhancement so Rebase can graft it onto a freshly fetched champion

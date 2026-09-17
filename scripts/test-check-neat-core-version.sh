@@ -143,6 +143,32 @@ EOF
 assert_eq "a branch pin exits 2" "2" "$(run_gate "${BASELINE}" "${BRANCH_PIN}")"
 
 echo ""
+echo "=== two neat-core versions in one lockfile fail loud ==="
+# The divergence the release pins exist to prevent: Forests' own pin and the
+# one neat-ai-rebase carries resolving to different releases. Cargo locks both
+# happily — the build only dies later, in rustc — so this gate is what catches
+# it while the message still names the two versions.
+DIVERGENT="$(mktemp "${WORK_DIR}/Cargo.lock.XXXXXX")"
+cat >"${DIVERGENT}" <<'EOF'
+version = 4
+
+[[package]]
+name = "neat-core"
+version = "0.20.0"
+source = "git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=v0.20.0#aaaaaaaa"
+
+[[package]]
+name = "neat-core"
+version = "0.20.1"
+source = "git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=v0.20.1#bbbbbbbb"
+EOF
+assert_eq "a divergent lockfile exits 1" "1" "$(run_gate "${BASELINE}" "${DIVERGENT}")"
+assert_eq "a divergent lockfile names both versions" "0" \
+  "$(grep -q '0.20.0' "${WORK_DIR}/out" && grep -q '0.20.1' "${WORK_DIR}/out"; echo $?)"
+assert_eq "a divergent lockfile says what is wrong" "0" \
+  "$(grep -q 'more than one neat-core' "${WORK_DIR}/out"; echo $?)"
+
+echo ""
 echo "=== a malformed pinned version is a parse error, never a pass ==="
 assert_eq "malformed version exits 2" "2" \
   "$(run_gate "${BASELINE}" "$(make_lockfile 0.20 v0.20)")"

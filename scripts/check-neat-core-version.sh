@@ -15,6 +15,10 @@
 #     package, which must carry a `git+…/NEAT-AI-core?tag=v<semver>` source. No
 #     sibling checkout is consulted, so the gate runs anywhere the repository
 #     is cloned (Issue #105).
+#   * There must be exactly one of them. `neat-ai-rebase` carries its own
+#     neat-core release pin, and cargo locks two git sources at different tags
+#     without complaint — the build only dies later in rustc, as a type
+#     mismatch. This gate names both versions instead.
 #   * The "breaking component" is the major for >= 1.0 releases and the minor
 #     for pre-1.0 (0.x) releases, per SemVer. The gate FAILS when neat-core's
 #     breaking component is greater than the recorded baseline; it PASSES on
@@ -36,7 +40,8 @@
 #
 # Exit codes:
 #   0  versions are compatible (match, patch drift, or core behind baseline)
-#   1  breaking neat-core bump above the recorded baseline — gate fails
+#   1  the pin contract is broken — a breaking neat-core bump above the
+#      recorded baseline, or more than one neat-core in the lockfile
 #   2  usage / parse error (missing file, malformed or missing pin)
 set -euo pipefail
 
@@ -51,7 +56,8 @@ Options:
                          (default: Cargo.lock at the repo root).
   -h, --help             Show this message.
 
-Exits 0 when compatible, 1 on an unhandled breaking bump, 2 on a usage error.
+Exits 0 when compatible, 1 on an unhandled breaking bump or a lockfile carrying
+more than one neat-core, 2 on a usage error.
 EOF
 }
 
@@ -110,20 +116,19 @@ read_baseline_version() {
   ' "$BASELINE"
 }
 
-# Print `<version> <source>` for the resolved `neat-core` package in the
-# lockfile, or nothing when the lockfile has no such package. A package with no
-# `source` key (a path or workspace member) prints its version and an empty
-# source, so the caller can tell "not pinned" from "not there".
-read_core_pin() {
+# Print one `<version> <source>` line per resolved `neat-core` package in the
+# lockfile, or nothing when the lockfile has no such package. Every match is
+# printed, not just the first: two of them is the divergence the release pins
+# exist to prevent, and reading only the first would measure the baseline
+# against whichever entry happened to come first. A package with no `source`
+# key (a path or workspace member) prints its version and an empty source, so
+# the caller can tell "not pinned" from "not there".
+read_core_pins() {
   awk '
     # The source key follows the version key, so a block is only answered once
     # it has ended: an early print would report the pin with no source at all.
     function flush() {
-      if (name == "neat-core") {
-        print version " " source
-        found = 1
-        exit
-      }
+      if (name == "neat-core") print version " " source
       name = ""; version = ""; source = ""
     }
     /^\[/ { flush(); next }
@@ -138,7 +143,7 @@ read_core_pin() {
       else if (key == "version") version = value
       else source = value
     }
-    END { if (!found) flush() }
+    END { flush() }
   ' "$LOCKFILE"
 }
 
@@ -162,14 +167,31 @@ if [[ -z "$baseline_raw" ]]; then
   exit 2
 fi
 
-core_pin="$(read_core_pin)"
-if [[ -z "$core_pin" ]]; then
+core_pins="$(read_core_pins)"
+if [[ -z "$core_pins" ]]; then
   echo "FAIL: no neat-core package in $LOCKFILE" >&2
   echo "      forests/Cargo.toml must declare neat-core as a git dependency" \
     "pinned to a release tag." >&2
   exit 2
 fi
-read -r core_raw core_source <<<"$core_pin"
+
+# One neat-core for the whole graph. Forests' own pin and the one
+# `neat-ai-rebase` carries at its pinned tag must name the same release: cargo
+# locks two git sources at different tags perfectly happily, and the build only
+# dies afterwards in rustc, where the message is a type mismatch rather than a
+# version conflict. Catch it here, where the two versions can be named.
+if [[ "$(printf '%s\n' "$core_pins" | wc -l | tr -d ' ')" -gt 1 ]]; then
+  echo "FAIL: more than one neat-core in $LOCKFILE:" >&2
+  printf '%s\n' "$core_pins" | while read -r dup_version dup_source; do
+    echo "        $dup_version  ${dup_source:-<no source>}" >&2
+  done
+  echo "      neat-ai-rebase pins its own neat-core release; it must equal the" >&2
+  echo "      one forests/Cargo.toml pins. Forests stays on the older pair" >&2
+  echo "      until NEAT-AI-Rebase's pin PR lands and it cuts a new release." >&2
+  exit 1
+fi
+
+read -r core_raw core_source <<<"$core_pins"
 
 # The pin itself is part of the contract: a neat-core resolved from anywhere
 # other than a NEAT-AI-core release tag means the release pin was dropped, and

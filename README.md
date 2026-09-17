@@ -104,12 +104,21 @@ Two scripts here are copies, not originals, and both are **owned by
 [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)**: they live on
 that repository's `Develop` and every Rust sibling carries a byte-identical
 copy. Never edit either here — behaviour changes are made on core and re-copied
-outward.
+outward, and their contract tests live beside the originals (core's
+`tests/scripts/runlib.bats` and `tests/scripts/family_pins.bats`).
 
-| Copy | Owner issue | What it does |
-| --- | --- | --- |
-| [`scripts/runlib.sh`](./scripts/runlib.sh) | [core#680](https://github.com/stSoftwareAU/NEAT-AI-core/issues/680) | build → install → clean, described above |
-| [`scripts/family-pins.sh`](./scripts/family-pins.sh) | [core#681](https://github.com/stSoftwareAU/NEAT-AI-core/issues/681) | move the family git-tag pins to the latest release and re-lock |
+#### Canonical runlib.sh
+
+[`scripts/runlib.sh`](./scripts/runlib.sh)
+([core#680](https://github.com/stSoftwareAU/NEAT-AI-core/issues/680)) — the
+build → install → clean helper described above.
+
+#### Canonical family-pins.sh
+
+[`scripts/family-pins.sh`](./scripts/family-pins.sh)
+([core#681](https://github.com/stSoftwareAU/NEAT-AI-core/issues/681)) — moves
+every `stSoftwareAU/NEAT-AI-*` git-tag pin in the workspace manifests to that
+repository's newest release and re-locks `Cargo.lock`.
 
 The `version-increment` job of `ci.yml` runs
 [`scripts/sync-core-helpers.sh`](./scripts/sync-core-helpers.sh) to refresh both
@@ -135,13 +144,22 @@ flowchart LR
 
 #### Why both pins must agree on `neat-core`
 
-`neat-ai-rebase` carries its own `neat-core` release pin, and cargo refuses two
-versions of one git package. `family-pins.sh` moves every family pin to the
-latest release, which normally keeps the two aligned; when NEAT-AI-Rebase's pin
-at its newest release still lags behind core's newest release, the build fails
-loud and **Forests stays blocked until Rebase's own pin PR lands and it cuts a
-new release**. That is deliberate: one `neat-core` for the whole graph, or a
-red build saying why.
+`neat-ai-rebase` carries its own `neat-core` release pin, and the whole graph
+has to agree on one `neat-core`. Cargo does **not** refuse the divergence: it
+locks two git sources at different tags happily, and the build then dies in
+rustc with a type mismatch naming two `neat_core` crates. So
+[`scripts/check-neat-core-version.sh`](./scripts/check-neat-core-version.sh)
+catches it first — it reds the `validation` job as soon as `Cargo.lock` carries
+more than one `neat-core`, naming both versions.
+
+`family-pins.sh` moves every family pin to the latest release, which normally
+keeps the two aligned; when NEAT-AI-Rebase's pin at its newest release still
+lags behind core's newest release, **Forests stays blocked until Rebase's own
+pin PR lands and it cuts a new release**. Recovery from a lockfile that has
+already diverged is manual: `family-pins.sh` cannot re-lock it, because a
+per-package `cargo update` for `neat-core` is ambiguous with two of them
+present. Move the pins back into agreement in `forests/Cargo.toml` and
+regenerate the lock.
 
 A breaking core release is a separate, equally deliberate stop:
 [`scripts/check-neat-core-version.sh`](./scripts/check-neat-core-version.sh)

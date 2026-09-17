@@ -33,8 +33,10 @@ both pins to the latest release on every PR with `scripts/family-pins.sh`.
 ./quality.sh < /dev/null
 ```
 
-mirrors CI: shell syntax + shellcheck, the copied-helper and release-pin
-script tests, the neat-core version gate, codespell,
+mirrors CI: shell syntax + shellcheck, the hermetic tests for
+`scripts/runlib.sh`, `scripts/sync-core-helpers.sh` and
+`scripts/check-neat-core-version.sh` (`scripts/family-pins.sh` is NEAT-AI-core's
+file and is tested there), the neat-core pin gate, codespell,
 markdownlint, actionlint, cargo-deny, `cargo fmt --check`, clippy with
 `-D warnings -D clippy::filter_next -D clippy::collapsible_if`,
 `cargo test --all-features`, rustdoc with `-D warnings`.
