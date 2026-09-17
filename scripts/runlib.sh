@@ -7,7 +7,7 @@
 # outward, never edited downstream. See README.md → "Canonical runlib.sh".
 #
 # Run it from the repository root of the sibling, or source it and call
-# `runlib_install`. It:
+# `runlib_install`. With no argument it:
 #
 #   * resolves the single workspace member — the root crate, or the one
 #     `[workspace] members` entry — and fails loud on zero or more than one;
@@ -32,11 +32,51 @@
 #   * prints the installed bin path — or the lib path when there is no bin —
 #     on stdout, and nothing else on stdout.
 #
-# The toolchain is a precondition, not something this script installs: with
-# `cargo`, `rustc` or `jq` missing it exits non-zero naming what to install
-# (rustup.rs for the toolchain). `rustup` itself is never invoked here.
-# MSRV comes from `rust-version` in the crate manifest when present; a
-# `rust-toolchain.toml` is honoured by rustup itself.
+# `--toolchain-only` (Issue #701) is the other entry point — sourced, that is
+# `runlib_ensure_toolchain`. It runs the same chain (the rustup bootstrap
+# below, the unrunnable-rustc repair, the resolved dependency graph and the
+# toolchain gate), builds nothing and installs nothing, and prints the override
+# toolchain the gate selected on stdout — a bare name such as `1.93.1`, or an
+# empty line when the active toolchain already satisfies the requirement — and
+# nothing else on stdout, for a caller that runs cargo itself and exports it as
+# `RUSTUP_TOOLCHAIN`. The already-installed skip is never consulted: a caller
+# running its own cargo needs a good toolchain whatever the stamp says. Every
+# failure exits non-zero with install mode's stderr messages, and every other
+# argument exits 2 with a one-line usage on stderr, having run no cargo at all.
+#
+# With no `rustc` on PATH the toolchain is bootstrapped here (Issue #699):
+# rustup is installed from the pinned `rustup-init` for the host target, whose
+# SHA-256 must match the digest inlined below before the downloaded file is
+# executed. It is never `curl https://sh.rustup.rs | sh` — that runs whatever
+# the distribution point served, and what it installs then compiles every
+# `build.rs` in the dependency graph. Every verification failure — an unknown
+# host target, no pinned digest, no SHA-256 tool, a failed download, a digest
+# mismatch — exits non-zero naming the cause, having executed nothing. With
+# `rustc` already present nothing is downloaded. `jq` stays a plain
+# precondition: a missing one exits non-zero naming it.
+#
+# To bump rustup, change `_RUNLIB_RUSTUP_VERSION` and every digest in
+# `_runlib_pinned_rustup_digest` together — they are one pin, and a version
+# moved without its digests can only fail closed.
+#
+# The toolchain gate (Issue #700) runs on the build path only. The required
+# version is the highest `rust-version` across the crate's resolved dependency
+# graph — `cargo metadata --filter-platform <host>` — including the crate's
+# own, because a dependency can demand a newer rustc than any family crate
+# declares. A rustc at or above it passes with no `rustup` call at all, and is
+# never downgraded. Below it, and with `rustup` on PATH: an unpinned crate gets
+# `rustup update stable`, and a crate pinned to a *channel* — `stable`,
+# `nightly`, or a two-part `1.93` rustup resolves to the newest 1.93.x — gets
+# `rustup update <channel>`, because a moving pin is moved rather than swapped
+# for an exact version. An *exact* `rust-toolchain.toml` pin below the
+# requirement gets `rustup toolchain install <required>` plus a
+# `RUSTUP_TOOLCHAIN` override handed to that one `cargo build` and never
+# exported — the pin file is a repository commit and is left untouched, with
+# one stderr line naming the bump. Below it *without* rustup — or still below
+# after the update — exits non-zero naming the required version and
+# https://rustup.rs; a distro toolchain is never replaced. Every value handed
+# to rustup is validated as a plain toolchain name first: a
+# `rust-toolchain.toml` channel and `cargo metadata` are repository input.
 #
 # Run it as a subprocess — `path="$(./scripts/runlib.sh)"`. It can also be
 # sourced, but note that sourcing applies `set -euo pipefail` to the calling
@@ -247,10 +287,27 @@ _runlib_expected_shape() {
   esac
 
   # An explicit `[[bin]]` table, or `autobins`, can rename or suppress the
-  # binary cargo would otherwise name after the package.
-  if grep -qE '^[[:space:]]*\[\[bin\]\]' "$manifest" ||
-    grep -qE '^[[:space:]]*autobins[[:space:]]*=' "$manifest"; then
+  # binary cargo would otherwise name after the package. One table that names
+  # the crate is still unambiguous, though — it is the shape every sibling
+  # shipping a CLI writes — so read it rather than paying a `cargo metadata`
+  # call on every skip. Several tables, a table naming something else (cargo
+  # may still autodiscover a second bin beside it), or an `autobins` key are
+  # not readable from one line each, and fall through to `cargo metadata`.
+  local bin_tables declared_bin
+  bin_tables="$(grep -cE '^[[:space:]]*\[\[bin\]\]' "$manifest" || true)"
+  if grep -qE '^[[:space:]]*autobins[[:space:]]*=' "$manifest"; then
     return 1
+  fi
+  if [[ "$bin_tables" -gt 1 ]]; then
+    return 1
+  fi
+  if [[ "$bin_tables" -eq 1 ]]; then
+    # `[bin]` is the section argument for a `[[bin]]` header: the reader
+    # compares the header line with the brackets it already carries.
+    declared_bin="$(_runlib_toml_value "$manifest" '[bin]' name)"
+    [[ "$declared_bin" == "$crate_underscored" ]] || return 1
+    _RUNLIB_EXPECTS_BIN=1
+    return 0
   fi
   if [[ -f "$manifest_dir/src/main.rs" ||
     -f "$manifest_dir/src/bin/${crate_underscored}.rs" ]]; then
@@ -324,41 +381,385 @@ _runlib_try_skip() {
   return 0
 }
 
-# The toolchain is a precondition. No network install happens here.
+# The pinned rustup installer (Issue #699). Bump the version and every digest
+# below together — `_runlib_pinned_rustup_digest` is the whole pin, and a
+# version moved on its own can only fail closed on the mismatch.
+_RUNLIB_RUSTUP_VERSION="1.29.0"
+_RUNLIB_RUSTUP_BASE_URL="https://static.rust-lang.org/rustup/archive"
+
+# The published SHA-256 of `rustup-init` $_RUNLIB_RUSTUP_VERSION for target $1,
+# as served at <base>/<version>/<target>/rustup-init.sha256. Prints nothing and
+# returns non-zero for a target with no pinned digest — a refusal to install,
+# never a licence to skip the check.
+_runlib_pinned_rustup_digest() {
+  case "$1" in
+    x86_64-unknown-linux-gnu)
+      printf '%s' '4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10' ;;
+    aarch64-unknown-linux-gnu)
+      printf '%s' '9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792' ;;
+    x86_64-unknown-linux-musl)
+      printf '%s' '9cd3fda5fd293890e36ab271af6a786ee22084b5f6c2b83fd8323cec6f0992c1' ;;
+    aarch64-unknown-linux-musl)
+      printf '%s' '88761caacddb92cd79b0b1f939f3990ba1997d701a38b3e8dd6746a562f2a759' ;;
+    x86_64-apple-darwin)
+      printf '%s' '33cf85df9142bc6d29cbc62fa5ca1d4c29622cddb55213a4c1a43c457fb9b2d7' ;;
+    aarch64-apple-darwin)
+      printf '%s' 'aeb4105778ca1bd3c6b0e75768f581c656633cd51368fa61289b6a71696ac7e1' ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
+# The rustup target triple for this host. Returns non-zero — silently — for an
+# operating system or architecture with no pinned installer; the caller names
+# what it saw.
+_runlib_host_target() {
+  local os arch libc ldd_version
+  case "$(uname -s)" in
+    Linux) os="unknown-linux" ;;
+    Darwin) os="apple-darwin" ;;
+    *) return 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64 | amd64) arch="x86_64" ;;
+    arm64 | aarch64) arch="aarch64" ;;
+    *) return 1 ;;
+  esac
+  if [[ "$os" != "unknown-linux" ]]; then
+    printf '%s-%s' "$arch" "$os"
+    return 0
+  fi
+  # `ldd --version` exits non-zero on musl, so its output is captured first:
+  # piping it straight into grep under `pipefail` reports the failure rather
+  # than the match, and a musl host would silently take the gnu installer.
+  libc="gnu"
+  ldd_version=""
+  if command -v ldd >/dev/null 2>&1; then
+    ldd_version="$(ldd --version 2>&1 || true)"
+  fi
+  if printf '%s' "$ldd_version" | grep -qi musl; then
+    libc="musl"
+  fi
+  printf '%s-%s-%s' "$arch" "$os" "$libc"
+  return 0
+}
+
+# The SHA-256 command this host provides, as a bare word. Returns non-zero —
+# silently — when it has neither; both callers below refuse outright rather
+# than guess, because no verification means no install.
+_runlib_sha256_tool() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf 'sha256sum'
+  elif command -v shasum >/dev/null 2>&1; then
+    printf 'shasum'
+  else
+    return 1
+  fi
+  return 0
+}
+
+# The SHA-256 of file $1 as lower-case hex. With no digest tool it dies rather
+# than returning something the comparison could mistake for a digest. It dies
+# from inside the caller's command substitution: that exits the substitution's
+# subshell non-zero, which under `set -e` aborts the script — so the caller's
+# assignment must not be a `local` declaration, which would swallow the status.
+_runlib_sha256_of() {
+  local file="$1" tool
+  tool="$(_runlib_sha256_tool)" ||
+    _runlib_die "no SHA-256 tool (sha256sum or shasum) on PATH — refusing to run an unverified rustup-init; install the Rust toolchain from https://rustup.rs and re-run"
+  case "$tool" in
+    sha256sum) sha256sum "$file" | awk 'NR == 1 { print $1 }' ;;
+    shasum) shasum -a 256 "$file" | awk 'NR == 1 { print $1 }' ;;
+  esac
+  return 0
+}
+
+# Install rustup, and with it a minimal `stable`, from the pinned installer.
+# The download lands in a temporary directory the cleanup trap reaps, and is
+# executed only once its digest matches the pin above.
+_runlib_bootstrap_rustup() {
+  local target url tmp_dir installer expected actual
+
+  if ! target="$(_runlib_host_target)"; then
+    _runlib_die "no pinned rustup-init for $(uname -s)/$(uname -m) — install the Rust toolchain from https://rustup.rs and re-run"
+  fi
+  if ! expected="$(_runlib_pinned_rustup_digest "$target")"; then
+    _runlib_die "no pinned rustup-init digest for the host target $target — install the Rust toolchain from https://rustup.rs and re-run"
+  fi
+  # Checked before anything is fetched: an installer that cannot be verified
+  # is one this script will not run, so downloading it first would only make
+  # the refusal look like a network problem.
+  _runlib_sha256_tool >/dev/null ||
+    _runlib_die "no SHA-256 tool (sha256sum or shasum) on PATH — refusing to download an unverifiable rustup-init; install the Rust toolchain from https://rustup.rs and re-run"
+  # `curl` is checked for the same reason: without it the download below dies
+  # naming the URL, which blames the network for a missing tool.
+  command -v curl >/dev/null 2>&1 ||
+    _runlib_die "curl not found — it is what fetches the pinned rustup-init; install curl, or install the Rust toolchain from https://rustup.rs, and re-run"
+  url="$_RUNLIB_RUSTUP_BASE_URL/$_RUNLIB_RUSTUP_VERSION/$target/rustup-init"
+
+  # Named rather than left to `set -e`: a bare abort here reports a failure
+  # with no cause at all.
+  tmp_dir="$(mktemp -d)" ||
+    _runlib_die "could not create a temporary directory to download rustup-init into"
+  _runlib_track_temp "$tmp_dir"
+  trap _runlib_cleanup_temps EXIT INT TERM
+  installer="$tmp_dir/rustup-init"
+
+  printf 'runlib: installing rustup %s for %s\n' "$_RUNLIB_RUSTUP_VERSION" "$target" >&2
+  curl --proto "=https" --tlsv1.2 -sSfL --retry 3 --retry-delay 2 \
+    --connect-timeout 30 -o "$installer" "$url" >&2 ||
+    _runlib_die "could not download the pinned rustup-init from $url — install the Rust toolchain from https://rustup.rs and re-run"
+
+  actual="$(_runlib_sha256_of "$installer")"
+  [[ "$actual" == "$expected" ]] ||
+    _runlib_die "rustup-init digest mismatch for $url — expected $expected, got ${actual:-nothing}; refusing to execute the downloaded file"
+
+  chmod +x "$installer" ||
+    _runlib_die "could not make the verified $installer executable"
+  "$installer" -y --no-modify-path --profile minimal >&2 ||
+    _runlib_die "rustup-init failed — install the Rust toolchain from https://rustup.rs and re-run"
+
+  _runlib_cleanup_temps
+  # rustup was told not to touch the shell rc files, so the new toolchain
+  # reaches this run through PATH here and nowhere else.
+  PATH="$(_runlib_cargo_home)/bin:$PATH"
+  export PATH
+  return 0
+}
+
+# The toolchain. A missing `rustc` is bootstrapped from the digest-verified
+# pinned rustup-init above; `jq` is a plain precondition this script does not
+# install.
 _runlib_require_toolchain() {
   PATH="$(_runlib_cargo_home)/bin:$PATH"
   export PATH
+  # `rustc`, not `rustup`: a distro-packaged toolchain is a perfectly good
+  # toolchain, and demanding rustup rejected it. rustup is asked for a
+  # toolchain only where one is missing or too old (the gate below), so its
+  # absence is never a precondition failure here — and this is also what makes
+  # the bootstrap conditional on there being no compiler at all.
+  if ! command -v rustc >/dev/null 2>&1; then
+    _runlib_bootstrap_rustup
+  fi
   command -v cargo >/dev/null 2>&1 ||
     _runlib_die "cargo not found — install the Rust toolchain from https://rustup.rs and re-run"
-  # `rustc`, not `rustup`: this script never invokes rustup — rustup's own
-  # shims do — but it does read `rustc --version` for the MSRV gate. Demanding
-  # rustup rejected a perfectly good distro-packaged toolchain.
   command -v rustc >/dev/null 2>&1 ||
     _runlib_die "rustc not found — install the Rust toolchain from https://rustup.rs and re-run"
   command -v jq >/dev/null 2>&1 ||
     _runlib_die "jq not found — install jq (it parses \`cargo metadata\`) and re-run"
 }
 
-# MSRV gate. `rust-version` in the crate manifest is the single source of
-# truth; a `rust-toolchain.toml` is rustup's business, not this script's.
-_runlib_check_msrv() {
-  local manifest="$1" root_manifest="$2" msrv rust_version reported
-  msrv="$(_runlib_crate_field "$manifest" "$root_manifest" rust-version)"
-  [[ -n "$msrv" ]] || return 0
-  # Captured in its own `if`, and stderr kept: under `set -euo pipefail` a
-  # `x="$(rustc … 2>/dev/null | sed …)"` assignment aborts the whole script on
-  # a failing rustc, which made the guard below unreachable dead code for the
-  # very case it was written for — a rustup shim with no default toolchain
-  # then produced an empty stdout and a bare status with no diagnostic at all.
+# The toolchain name handed to rustup for this run, empty when none was
+# needed. Read it after sourcing the script to learn which toolchain the gate
+# below selected.
+_RUNLIB_TOOLCHAIN_OVERRIDE=""
+
+# Everything handed to rustup is repository input — a `rust-toolchain.toml`
+# channel, a `rust-version` out of `cargo metadata` — never a shell word.
+# Refuse anything outside the plain toolchain-name shape before rustup runs.
+_runlib_assert_toolchain_name() {
+  local value="$1" what="$2"
+  [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] ||
+    _runlib_die "refusing to hand $what '$value' to rustup — that is not a toolchain name"
+  return 0
+}
+
+# The `channel` of `[toolchain]` in the repository root's `rust-toolchain.toml`.
+# Prints nothing when the crate is unpinned.
+_runlib_pinned_channel() {
+  _runlib_toml_value "$1/rust-toolchain.toml" toolchain channel
+  return 0
+}
+
+# True when $1 is an *exact* version toolchain — `1.93.1` — as opposed to one
+# of rustup's moving channels: `stable`, `beta`, `nightly`,
+# `nightly-2025-06-01`, or a two-part `1.93`, which rustup resolves to the
+# newest 1.93.x.
+#
+# The distinction decides the remedy. Only an exact pin can be compared with
+# the requirement — `_runlib_version_ge` reads every non-numeric component as
+# 0, so comparing `stable` would call a perfectly current channel pin "below
+# the requirement" and swap it for an exact version nobody asked for. A moving
+# channel is moved instead.
+_runlib_is_exact_version() {
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+# Sets _RUNLIB_ACTIVE_RUST_VERSION from `rustc --version`, dying loud when the
+# active rustc cannot be run or its version cannot be read. $1 is appended to
+# both messages, so the caller says what the version was needed for.
+#
+# stderr is kept and the call sits in its own `if`: under `set -euo pipefail` a
+# `x="$(rustc … 2>/dev/null | sed …)"` assignment aborts the whole script on a
+# failing rustc, which made the guard below unreachable dead code for the very
+# case it was written for — a rustup shim with no default toolchain then
+# produced an empty stdout and a bare status with no diagnostic at all.
+_runlib_read_rust_version() {
+  local context="$1" reported version
   if ! reported="$(rustc --version 2>&1)"; then
-    _runlib_die "cannot read the rustc version (rustc said: ${reported:-nothing}); this crate needs Rust >= $msrv"
+    _runlib_die "cannot read the rustc version (rustc said: ${reported:-nothing})${context}"
   fi
-  rust_version="$(printf '%s\n' "$reported" |
+  version="$(printf '%s\n' "$reported" |
     sed -n 's/^rustc \([0-9][0-9]*\.[0-9][0-9]*\(\.[0-9][0-9]*\)\{0,1\}\).*/\1/p')"
-  [[ -n "$rust_version" ]] ||
-    _runlib_die "cannot read the rustc version from '${reported}'; this crate needs Rust >= $msrv"
-  _runlib_version_ge "$rust_version" "$msrv" ||
-    _runlib_die "rustc $rust_version is below the crate MSRV $msrv — run: rustup update stable"
+  [[ -n "$version" ]] ||
+    _runlib_die "cannot read the rustc version from '${reported}'${context}"
+  _RUNLIB_ACTIVE_RUST_VERSION="$version"
+  return 0
+}
+
+# A rustc that cannot run at all, repaired before any cargo call: `rustc` and
+# `cargo` on PATH are usually rustup proxies, and a proxy whose pinned
+# toolchain is not installed cannot run `cargo metadata` either — so this has
+# to come before the metadata calls, not with the gate below.
+#
+# Without rustup there is nothing to repair with, and the fail-loud that the
+# unreadable version has always earned stands.
+_runlib_ensure_toolchain() {
+  local repo_root="$1" pin reported
+  if reported="$(rustc --version 2>&1)"; then
+    return 0
+  fi
+  command -v rustup >/dev/null 2>&1 ||
+    _runlib_die "cannot read the rustc version (rustc said: ${reported:-nothing}) and rustup is not on PATH — install the Rust toolchain from https://rustup.rs and re-run"
+  pin="$(_runlib_pinned_channel "$repo_root")"
+  if [[ -n "$pin" ]]; then
+    _runlib_assert_toolchain_name "$pin" "the rust-toolchain.toml channel"
+    printf 'runlib: rustc is not runnable — installing the pinned toolchain %s\n' "$pin" >&2
+    rustup toolchain install "$pin" >&2 ||
+      _runlib_die "could not install the pinned Rust toolchain $pin with rustup — install it from https://rustup.rs and re-run"
+  else
+    printf 'runlib: rustc is not runnable — selecting the stable toolchain with rustup\n' >&2
+    rustup default stable >&2 ||
+      _runlib_die "could not select the stable Rust toolchain with rustup — install the Rust toolchain from https://rustup.rs and re-run"
+  fi
+  reported="$(rustc --version 2>&1)" ||
+    _runlib_die "cannot read the rustc version (rustc said: ${reported:-nothing}) after asking rustup for a toolchain — install the Rust toolchain from https://rustup.rs and re-run"
+  return 0
+}
+
+# The highest `rust-version` in the crate's resolved dependency graph for this
+# host, including the crate's own. Prints nothing when nothing declares one.
+#
+# The crate's own `rust-version` is not the requirement: a dependency can
+# demand a newer rustc than anything in the family declares, and that is
+# exactly what stopped a Discovery build — `serial_test@4.0.1 requires rustc
+# 1.93.1` with no family crate declaring `rust-version` at all. This resolves
+# the graph, so it runs on the build path only, never on the skip.
+_runlib_required_rust_version() {
+  local manifest="$1" root_manifest="$2" verbose host graph declared candidate best=""
+  local -a metadata_args
+  # The host filter keeps the maximum to the platform actually being built — a
+  # Windows-only dependency's `rust-version` is not this host's problem. A
+  # rustc that cannot name its own host is not one this script will guess for:
+  # dropping the filter silently would let a foreign dependency inflate the
+  # requirement and trigger an install nobody needed, with nothing on stderr
+  # to say why.
+  verbose="$(rustc -vV 2>&1)" ||
+    _runlib_die "cannot read the rustc host target (rustc -vV said: ${verbose:-nothing}) — the dependency graph cannot be filtered for this platform"
+  host="$(printf '%s\n' "$verbose" | sed -n 's/^host: //p')"
+  [[ -n "$host" ]] ||
+    _runlib_die "rustc -vV named no host target — the dependency graph cannot be filtered for this platform"
+  metadata_args=(metadata --format-version 1 --filter-platform "$host")
+  if ! graph="$(cargo "${metadata_args[@]}")"; then
+    _runlib_die "cargo metadata could not resolve the dependency graph — the highest required Rust version cannot be read"
+  fi
+  declared="$(printf '%s' "$graph" |
+    jq -r '.packages[]? | select(.rust_version != null) | .rust_version')" ||
+    _runlib_die "could not read the dependency graph's rust-version values from cargo metadata"
+
+  # `1.85` and `1.85.0` are the same requirement: `_runlib_version_ge` reads a
+  # missing component as 0, so the comparison is numeric either way.
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    if [[ -z "$best" ]] || _runlib_version_ge "$candidate" "$best"; then
+      best="$candidate"
+    fi
+  done <<EOF
+$declared
+$(_runlib_crate_field "$manifest" "$root_manifest" rust-version)
+EOF
+
+  printf '%s' "$best"
+  return 0
+}
+
+# Move a channel toolchain forward and re-check it: `stable` when the crate is
+# unpinned, the pinned channel itself when `rust-toolchain.toml` names one. A
+# channel that is still short of the requirement afterwards fails loud — this
+# script does not switch a host's default toolchain to get past it.
+_runlib_update_channel() {
+  local channel="$1" required="$2"
+  _runlib_assert_toolchain_name "$channel" "the toolchain channel"
+  printf 'runlib: rustc %s is below the required Rust %s — running: rustup update %s\n' \
+    "$_RUNLIB_ACTIVE_RUST_VERSION" "$required" "$channel" >&2
+  rustup update "$channel" >&2 ||
+    _runlib_die "rustup update $channel failed and this build needs Rust $required — install it from https://rustup.rs and re-run"
+  _runlib_read_rust_version "; this build needs Rust >= $required"
+  _runlib_version_ge "$_RUNLIB_ACTIVE_RUST_VERSION" "$required" ||
+    _runlib_die "rustc $_RUNLIB_ACTIVE_RUST_VERSION is still below the Rust $required this dependency graph requires after rustup update $channel — install Rust $required from https://rustup.rs and re-run"
+  return 0
+}
+
+# The toolchain gate. The requirement is the highest `rust-version` across the
+# dependency graph; the active rustc either meets it, or rustup is asked to
+# make it so, and only then does this fail loud.
+#
+# It never downgrades: a rustc at or above the requirement passes with no
+# rustup call at all. A pin below the requirement is honoured as a *file* —
+# `rust-toolchain.toml` is a repository commit, so it is left untouched and
+# this run alone is redirected with a `RUSTUP_TOOLCHAIN` override, named on
+# stderr so the bump is obvious.
+_runlib_check_msrv() {
+  local manifest="$1" root_manifest="$2" repo_root="$3" required pin
+  _RUNLIB_TOOLCHAIN_OVERRIDE=""
+  # Read before the graph is resolved: a rustc whose version cannot be read is
+  # a fault to name here, not one to carry into a `cargo metadata` call.
+  _runlib_read_rust_version "; the toolchain gate cannot check it against the dependency graph"
+  required="$(_runlib_required_rust_version "$manifest" "$root_manifest")"
+  [[ -n "$required" ]] || return 0
+
+  if _runlib_version_ge "$_RUNLIB_ACTIVE_RUST_VERSION" "$required"; then
+    return 0
+  fi
+
+  # A distro-packaged toolchain is never replaced: with no rustup there is
+  # nothing this script may safely install over it.
+  command -v rustup >/dev/null 2>&1 ||
+    _runlib_die "rustc $_RUNLIB_ACTIVE_RUST_VERSION is below the Rust $required this dependency graph requires, and rustup is not on PATH — install Rust $required from https://rustup.rs and re-run"
+
+  pin="$(_runlib_pinned_channel "$repo_root")"
+  # Unpinned, or pinned to a *channel* rather than a version: the remedy is to
+  # move that channel forward, never to swap a deliberate channel pin for an
+  # exact version.
+  if [[ -z "$pin" ]]; then
+    _runlib_update_channel stable "$required"
+    return 0
+  fi
+  if ! _runlib_is_exact_version "$pin"; then
+    _runlib_update_channel "$pin" "$required"
+    return 0
+  fi
+
+  # An exact version pin is what rustup's own proxies will honour, so a pin that
+  # already satisfies the requirement needs nothing from this script — but the
+  # rustc this run measured does not satisfy it, so say which one is building.
+  if _runlib_version_ge "$pin" "$required"; then
+    printf 'runlib: rustc %s is below the required Rust %s, but rust-toolchain.toml pins %s, which satisfies it — the pinned toolchain is what this run uses\n' \
+      "$_RUNLIB_ACTIVE_RUST_VERSION" "$required" "$pin" >&2
+    return 0
+  fi
+
+  _runlib_assert_toolchain_name "$required" "the required Rust version"
+  rustup toolchain install "$required" >&2 ||
+    _runlib_die "could not install Rust $required with rustup, and this dependency graph requires it — install it from https://rustup.rs and re-run"
+  # Recorded, not exported: the override belongs to the `cargo build` below
+  # and nothing else. A sourced caller's shell must not come away pinned to a
+  # toolchain it never asked for.
+  _RUNLIB_TOOLCHAIN_OVERRIDE="$required"
+  # Worded for both entry points: `--toolchain-only` builds nothing, so a line
+  # claiming a build would be false in exactly the mode that only reports.
+  printf 'runlib: rust-toolchain.toml pins %s, below the Rust %s this dependency graph requires — using %s for this run; bump the pin in rust-toolchain.toml\n' \
+    "$pin" "$required" "$required" >&2
   return 0
 }
 
@@ -431,7 +832,14 @@ _runlib_cleanup_temps() {
   local path
   for path in ${_RUNLIB_TEMPS[@]+"${_RUNLIB_TEMPS[@]}"}; do
     [[ -n "$path" ]] || continue
-    rm -f "$path"
+    # The staged artefacts are files; the rustup bootstrap tracks the `mktemp
+    # -d` it downloaded the installer into, and `rm -f` would leave that — and
+    # the unverified installer inside it — behind.
+    if [[ -d "$path" ]]; then
+      rm -rf "$path"
+    else
+      rm -f "$path"
+    fi
   done
   _RUNLIB_TEMPS=()
 }
@@ -475,6 +883,57 @@ _runlib_abort_staged() {
   _runlib_die "$message"
 }
 
+# The `cargo metadata --no-deps` reply for the single workspace member, failing
+# loud on zero members or on more than one. Both entry points resolve the
+# member through this, so the toolchain-only mode reads the crate's own
+# `rust-version` from exactly the manifest a build would have used.
+#
+# It dies from inside the caller's command substitution, so the caller's
+# assignment must not be a `local` declaration — that would swallow the status.
+_runlib_member_metadata() {
+  local repo_root="$1" metadata package_count names
+  metadata="$(cargo metadata --no-deps --format-version 1)"
+  package_count="$(printf '%s' "$metadata" | jq '.packages | length')"
+  if [[ "$package_count" -eq 0 ]]; then
+    _runlib_die "cargo metadata reports no workspace member in $repo_root"
+  fi
+  if [[ "$package_count" -gt 1 ]]; then
+    names="$(printf '%s' "$metadata" | jq -r '[.packages[].name] | join(", ")')"
+    _runlib_die "expected exactly one workspace member, found $package_count: $names"
+  fi
+  printf '%s' "$metadata"
+  return 0
+}
+
+# The toolchain-only entry point (Issue #701). It runs the same chain install
+# mode runs — the rustup bootstrap, the unrunnable-rustc repair, the resolved
+# dependency graph and the toolchain gate — builds nothing, installs nothing,
+# and prints the selected override toolchain name on stdout: a bare `1.93.1`,
+# or an empty line when the active toolchain already satisfies the requirement.
+# That is the whole of its stdout, because a caller exports it as
+# `RUSTUP_TOOLCHAIN` for a cargo command it runs itself.
+#
+# The already-installed skip is deliberately never consulted: it answers "is
+# the artefact current?", and a caller running its own cargo needs a good
+# toolchain whatever the answer is.
+runlib_ensure_toolchain() {
+  local repo_root="$PWD"
+  local root_manifest="$repo_root/Cargo.toml"
+  [[ -f "$root_manifest" ]] ||
+    _runlib_die "no Cargo.toml in $repo_root — run runlib.sh from the repository root"
+
+  _runlib_require_toolchain
+  _runlib_ensure_toolchain "$repo_root"
+
+  local metadata manifest
+  metadata="$(_runlib_member_metadata "$repo_root")"
+  manifest="$(printf '%s' "$metadata" | jq -r '.packages[0].manifest_path')"
+  _runlib_check_msrv "$manifest" "$root_manifest" "$repo_root"
+
+  printf '%s\n' "$_RUNLIB_TOOLCHAIN_OVERRIDE"
+  return 0
+}
+
 runlib_install() {
   local repo_root="$PWD"
   local root_manifest="$repo_root/Cargo.toml"
@@ -486,18 +945,10 @@ runlib_install() {
   fi
 
   _runlib_require_toolchain
+  _runlib_ensure_toolchain "$repo_root"
 
-  local metadata package_count
-  metadata="$(cargo metadata --no-deps --format-version 1)"
-  package_count="$(printf '%s' "$metadata" | jq '.packages | length')"
-  if [[ "$package_count" -eq 0 ]]; then
-    _runlib_die "cargo metadata reports no workspace member in $repo_root"
-  fi
-  if [[ "$package_count" -gt 1 ]]; then
-    local names
-    names="$(printf '%s' "$metadata" | jq -r '[.packages[].name] | join(", ")')"
-    _runlib_die "expected exactly one workspace member, found $package_count: $names"
-  fi
+  local metadata
+  metadata="$(_runlib_member_metadata "$repo_root")"
 
   local crate version manifest target_dir crate_underscored bin_name lib_name
   crate="$(printf '%s' "$metadata" | jq -r '.packages[0].name')"
@@ -520,8 +971,6 @@ runlib_install() {
     _runlib_die "crate '$crate' has no bin target named '$crate_underscored' and no cdylib target — nothing to install"
   fi
 
-  _runlib_check_msrv "$manifest" "$root_manifest"
-
   # Cargo has now named the shape authoritatively, so the up-to-date check runs
   # again over it. The fast path above declines every repository layout it
   # cannot read unambiguously (a globbed `members` entry, say); without this
@@ -533,6 +982,12 @@ runlib_install() {
     return 0
   fi
 
+  # A rebuild is due, so the toolchain has to be good enough for one. The gate
+  # resolves the whole dependency graph, which is why it sits here rather than
+  # beside the `--no-deps` call above: an install that is already current
+  # costs no graph resolve at all.
+  _runlib_check_msrv "$manifest" "$root_manifest" "$repo_root"
+
   local -a build_args
   build_args=(build --release --package "$crate")
   if [[ -n "$lib_name" ]]; then
@@ -541,8 +996,14 @@ runlib_install() {
   if [[ -n "$bin_name" ]]; then
     build_args+=(--bin "$bin_name")
   fi
-  # RUSTFLAGS is the caller's: this script neither sets nor edits it.
-  cargo "${build_args[@]}" >&2
+  # RUSTFLAGS is the caller's: this script neither sets nor edits it. The
+  # toolchain override, when the gate set one, reaches this one command and
+  # goes no further.
+  if [[ -n "$_RUNLIB_TOOLCHAIN_OVERRIDE" ]]; then
+    RUSTUP_TOOLCHAIN="$_RUNLIB_TOOLCHAIN_OVERRIDE" cargo "${build_args[@]}" >&2
+  else
+    cargo "${build_args[@]}" >&2
+  fi
 
   local bin_dir lib_dir release_dir bin_file lib_file
   local staged_bin="" staged_lib="" installed_bin="" installed_lib=""
@@ -644,6 +1105,26 @@ runlib_install() {
   return 0
 }
 
+# One line on stderr, and exit 2. A copy that ignored its arguments would run a
+# full build for a caller that asked only for the gate, so an argument this
+# script does not know is refused before any cargo command runs.
+_runlib_usage() {
+  printf 'usage: runlib.sh [--toolchain-only]\n' >&2
+  exit 2
+}
+
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  runlib_install
+  case "${1-}" in
+    "")
+      [[ $# -eq 0 ]] || _runlib_usage
+      runlib_install
+      ;;
+    --toolchain-only)
+      [[ $# -eq 1 ]] || _runlib_usage
+      runlib_ensure_toolchain
+      ;;
+    *)
+      _runlib_usage
+      ;;
+  esac
 fi
