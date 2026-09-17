@@ -48,12 +48,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
-        uses: ./.github/actions/setup-neat-core
-
-      - name: Set up NEAT-AI-Rebase sibling (path dependency for neat-ai-rebase)
-        uses: ./.github/actions/setup-neat-ai-rebase
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
         with:
@@ -119,12 +113,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
-        uses: ./.github/actions/setup-neat-core
-
-      - name: Set up NEAT-AI-Rebase sibling (path dependency for neat-ai-rebase)
-        uses: ./.github/actions/setup-neat-ai-rebase
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
 
@@ -145,7 +133,8 @@ jobs:
             "SECURITY.md"
             "neat-core.expected-version"
             "scripts/runlib.sh"
-            "scripts/sync-runlib.sh"
+            "scripts/family-pins.sh"
+            "scripts/sync-core-helpers.sh"
           )
           missing_files=()
           for file in "${required_files[@]}"; do
@@ -170,6 +159,16 @@ jobs:
     # PR that lands code at an unchanged version ships nothing. Bump it here
     # when the author has not (Issue #45).
     #
+    # Three things happen here, in one job and one commit (Issue #105):
+    #   1. Both copied NEAT-AI-core helpers — `scripts/runlib.sh` and
+    #      `scripts/family-pins.sh` — are refreshed from core `Develop`.
+    #   2. `scripts/family-pins.sh` moves the `neat-core` and `neat-ai-rebase`
+    #      release-tag pins in `forests/Cargo.toml` to each repository's newest
+    #      release and re-locks `Cargo.lock`.
+    #   3. The crate version is bumped. A moved pin changes what the binary is
+    #      built from, so it must not land at an unchanged version — carrying
+    #      all three in one commit is what guarantees that.
+    #
     # Fork PRs are skipped: this workflow cannot push to a fork's branch, and a
     # skipped job counts as OK in `ci-required`. The bump then rides the
     # maintainer's own follow-up branch.
@@ -191,14 +190,33 @@ jobs:
           # build script could read it; it is supplied per step instead.
           persist-credentials: false
 
-      - name: Refresh scripts/runlib.sh from NEAT-AI-core Develop
-        # scripts/runlib.sh is NEAT-AI-core's file (core#680); this repository
-        # only carries a byte-identical copy. Refreshing it here folds a stale
-        # copy into the same commit the bump below pushes. A fetch that fails
-        # fails the job rather than shipping a copy nobody checked (Issue #104).
+      # `scripts/family-pins.sh` runs `cargo update`, so the toolchain is needed
+      # here too. Same pin as the other jobs in this workflow.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
+
+      - name: Refresh the copied NEAT-AI-core helpers
+        # scripts/runlib.sh (core#680) and scripts/family-pins.sh (core#681) are
+        # NEAT-AI-core's files; this repository only carries byte-identical
+        # copies. Refreshing them here folds a stale copy into the same commit
+        # the bump below pushes. A fetch that fails fails the job rather than
+        # shipping a copy nobody checked (Issues #104, #105).
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./scripts/sync-runlib.sh
+        run: ./scripts/sync-core-helpers.sh
+
+      # The only way the family pins move: through this repository's own PR. An
+      # unresolvable remote or an unrewritable pin exits non-zero rather than
+      # leaving a pin quietly stale (Issue #105).
+      #
+      # This step runs the file the step above just fetched from NEAT-AI-core
+      # `Develop` — the same trust boundary every fleet host already crosses by
+      # executing its copy of `runlib.sh`, and the same one NEAT-AI-Rebase's own
+      # version-increment job crosses. Nothing here widens it: the checkout does
+      # not persist credentials, the push token is supplied only to the commit
+      # step below, and the job's write scope is this PR branch.
+      - name: Move the family pins to the latest releases
+        run: ./scripts/family-pins.sh
 
       - name: Bump the crate version when this PR has not already
         env:
@@ -213,7 +231,7 @@ jobs:
           base="$(./scripts/auto-version.sh --print "${RUNNER_TEMP}/base-Cargo.toml")"
           ./scripts/auto-version.sh forests/Cargo.toml "$base" Cargo.lock
 
-      - name: Commit and push the bump
+      - name: Commit and push the sync, the pins and the bump
         env:
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
@@ -221,27 +239,46 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if git diff --quiet -- forests/Cargo.toml Cargo.lock scripts/runlib.sh; then
-            echo "Version is already ahead of ${BASE_REF} and scripts/runlib.sh" \
-              "matches NEAT-AI-core — nothing to commit"
+          SYNCED_PATHS=(
+            forests/Cargo.toml
+            Cargo.lock
+            scripts/runlib.sh
+            scripts/family-pins.sh
+          )
+          if git diff --quiet -- "${SYNCED_PATHS[@]}"; then
+            echo "Version is already ahead of ${BASE_REF}, the family pins are on" \
+              "the latest releases and the copied helpers match NEAT-AI-core —" \
+              "nothing to commit"
             exit 0
           fi
-          # One commit carries both, and names only the parts that changed.
-          message=""
-          if ! git diff --quiet -- forests/Cargo.toml Cargo.lock; then
+          # One commit carries all three, and names only the parts that
+          # changed. Each part is decided by the lines it actually touched: a
+          # moved pin also dirties forests/Cargo.toml, so asking "did this file
+          # change?" would title a pure pin move as a version bump.
+          parts=()
+          if git diff -U0 -- forests/Cargo.toml | grep -q '^+version = '; then
             version="$(./scripts/auto-version.sh --print forests/Cargo.toml)"
-            message="chore: auto-increment crate version to ${version}"
+            parts+=("auto-increment crate version to ${version}")
           fi
-          if ! git diff --quiet -- scripts/runlib.sh; then
-            if [ -n "${message}" ]; then
-              message="${message}, refresh scripts/runlib.sh from NEAT-AI-core"
-            else
-              message="chore: refresh scripts/runlib.sh from NEAT-AI-core"
-            fi
+          if git diff -U0 -- forests/Cargo.toml | grep -q '^+.*tag = "v'; then
+            parts+=("move the family pins to the latest releases")
           fi
+          if ! git diff --quiet -- scripts/runlib.sh scripts/family-pins.sh; then
+            parts+=("refresh the NEAT-AI-core helpers")
+          fi
+          if [ ${#parts[@]} -eq 0 ]; then
+            # Cargo.lock alone moved — a re-lock with no manifest change.
+            parts+=("re-lock Cargo.lock")
+          fi
+          message="chore:"
+          separator=" "
+          for part in "${parts[@]}"; do
+            message="${message}${separator}${part}"
+            separator=", "
+          done
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add forests/Cargo.toml Cargo.lock scripts/runlib.sh
+          git add -- "${SYNCED_PATHS[@]}"
           git commit -m "${message}"
           git push "https://x-access-token:${PUSH_TOKEN}@github.com/${REPOSITORY}.git" \
             "HEAD:${HEAD_REF}"
@@ -290,8 +327,11 @@ jobs:
       - name: Check scripts/runlib.sh already-installed contract
         run: ./scripts/test-runlib.sh
 
-      - name: Check the scripts/runlib.sh refresh contract
-        run: ./scripts/test-sync-runlib.sh
+      - name: Check the NEAT-AI-core helper refresh contract
+        run: ./scripts/test-sync-core-helpers.sh
+
+      - name: Check the neat-core release-pin gate
+        run: ./scripts/test-check-neat-core-version.sh
 
   spell-check:
     name: Spell Check

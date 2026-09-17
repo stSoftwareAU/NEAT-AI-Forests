@@ -34,15 +34,8 @@ jobs:
           # the GITHUB_TOKEN need not be written to .git/config (Issue #388).
           persist-credentials: false
 
-      # NEAT-AI-core checkout + sibling symlink (Issue #18) via the shared
-      # composite action (Issue #401); the composite sets persist-credentials:
-      # false, so this read-only job keeps the token off disk (Issue #388).
-      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
-        uses: ./.github/actions/setup-neat-core
-
-      - name: Set up NEAT-AI-Rebase sibling (path dependency for neat-ai-rebase)
-        uses: ./.github/actions/setup-neat-ai-rebase
-
+      # No sibling checkout: the family dependencies are git dependencies
+      # pinned to release tags, so cargo fetches them itself (Issue #105).
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
 

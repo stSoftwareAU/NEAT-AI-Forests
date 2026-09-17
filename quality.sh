@@ -35,15 +35,16 @@ echo "shellcheck: all scripts passed"
 echo "Checking scripts/runlib.sh already-installed contract (Issue #106)..."
 ./scripts/test-runlib.sh
 
-echo "Checking the scripts/runlib.sh refresh contract (Issue #104)..."
-./scripts/test-sync-runlib.sh
+echo "Checking the NEAT-AI-core helper refresh contract (Issues #104, #105)..."
+./scripts/test-sync-core-helpers.sh
 
-if [ -f "./../NEAT-AI-core/Cargo.toml" ]; then
-  echo "Gating on unhandled breaking neat-core bump..."
-  ./scripts/check-neat-core-version.sh
-else
-  echo "sibling ../NEAT-AI-core not found — skipping neat-core version gate (CI runs this for real)"
-fi
+echo "Checking the neat-core release-pin gate (Issue #105)..."
+./scripts/test-check-neat-core-version.sh
+
+# No sibling checkout to look for any more: the pin the gate reads lives in this
+# repository's own Cargo.lock (Issue #105), so the gate always runs.
+echo "Gating on unhandled breaking neat-core bump..."
+./scripts/check-neat-core-version.sh
 
 echo "Running codespell preflight..."
 if ! ./scripts/spell-check.sh; then

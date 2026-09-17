@@ -4,15 +4,16 @@
 
 ```text
 parent/
-├── NEAT-AI-core/      # sibling clone; forests/Cargo.toml depends on ../../NEAT-AI-core/neat-core
 ├── NEAT-AI-scorer/    # build it for integration tests: cargo build --release
-└── NEAT-AI-Forests/
+└── NEAT-AI-Forests/   # neat-core and neat-ai-rebase come from their release tags
 ```
 
-CI checks NEAT-AI-core out beside the workspace via
-`.github/actions/setup-neat-core`. `neat-core.expected-version` records the
-last handled neat-core version; `scripts/check-neat-core-version.sh` fails on
-an unhandled breaking bump.
+`forests/Cargo.toml` pins `neat-core` and `neat-ai-rebase` to release tags, so
+the workspace builds with no sibling checkout of either (Issue #105). CI moves
+both pins to the latest release on every PR with `scripts/family-pins.sh`.
+`neat-core.expected-version` records the last handled neat-core version;
+`scripts/check-neat-core-version.sh` reads the pinned version out of
+`Cargo.lock` and fails on an unhandled breaking bump.
 
 ## Prerequisites
 
@@ -32,7 +33,10 @@ an unhandled breaking bump.
 ./quality.sh < /dev/null
 ```
 
-mirrors CI: shell syntax + shellcheck, neat-core version gate, codespell,
+mirrors CI: shell syntax + shellcheck, the hermetic tests for
+`scripts/runlib.sh`, `scripts/sync-core-helpers.sh` and
+`scripts/check-neat-core-version.sh` (`scripts/family-pins.sh` is NEAT-AI-core's
+file and is tested there), the neat-core pin gate, codespell,
 markdownlint, actionlint, cargo-deny, `cargo fmt --check`, clippy with
 `-D warnings -D clippy::filter_next -D clippy::collapsible_if`,
 `cargo test --all-features`, rustdoc with `-D warnings`.

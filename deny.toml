@@ -37,4 +37,9 @@ ignore = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# neat-core and neat-ai-rebase are consumed as git-tag pins on their own
+# releases (Issue #105); every other source must still come from crates.io.
+allow-git = [
+    "https://github.com/stSoftwareAU/NEAT-AI-core",
+    "https://github.com/stSoftwareAU/NEAT-AI-Rebase",
+]
