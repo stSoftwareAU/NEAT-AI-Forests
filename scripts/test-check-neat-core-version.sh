@@ -21,6 +21,12 @@ if [[ ! -x "${GATE}" ]]; then
   exit 2
 fi
 
+# Git source prefixes for the fixture lockfiles. They are interpolated rather
+# than written literally so the repository-wide `source <path>` scan does not
+# mistake a Cargo `source = "git+..."` line for a shell `source` of a file.
+CORE_SRC="git+https://github.com/stSoftwareAU/NEAT-AI-core"
+REBASE_SRC="git+https://github.com/stSoftwareAU/NEAT-AI-Rebase"
+
 # A lockfile carrying a `neat-core` package at version $1 pinned to tag $2, and
 # a second package so the reader has to find the right block.
 make_lockfile() {
@@ -32,12 +38,12 @@ version = 4
 [[package]]
 name = "neat-ai-rebase"
 version = "0.1.2"
-source = "git+https://github.com/stSoftwareAU/NEAT-AI-Rebase?tag=v0.1.2#bb67007a"
+source = "${REBASE_SRC}?tag=v0.1.2#bb67007a"
 
 [[package]]
 name = "neat-core"
 version = "${version}"
-source = "git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=${tag}#771ad136"
+source = "${CORE_SRC}?tag=${tag}#771ad136"
 
 [[package]]
 name = "serde"
@@ -132,13 +138,13 @@ assert_eq "an unpinned neat-core names the missing tag" "0" \
   "$(grep -q 'release tag' "${WORK_DIR}/out"; echo $?)"
 
 BRANCH_PIN="$(mktemp "${WORK_DIR}/Cargo.lock.XXXXXX")"
-cat >"${BRANCH_PIN}" <<'EOF'
+cat >"${BRANCH_PIN}" <<EOF
 version = 4
 
 [[package]]
 name = "neat-core"
 version = "0.20.0"
-source = "git+https://github.com/stSoftwareAU/NEAT-AI-core?branch=Develop#771ad136"
+source = "${CORE_SRC}?branch=Develop#771ad136"
 EOF
 assert_eq "a branch pin exits 2" "2" "$(run_gate "${BASELINE}" "${BRANCH_PIN}")"
 
@@ -149,18 +155,18 @@ echo "=== two neat-core versions in one lockfile fail loud ==="
 # happily — the build only dies later, in rustc — so this gate is what catches
 # it while the message still names the two versions.
 DIVERGENT="$(mktemp "${WORK_DIR}/Cargo.lock.XXXXXX")"
-cat >"${DIVERGENT}" <<'EOF'
+cat >"${DIVERGENT}" <<EOF
 version = 4
 
 [[package]]
 name = "neat-core"
 version = "0.20.0"
-source = "git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=v0.20.0#aaaaaaaa"
+source = "${CORE_SRC}?tag=v0.20.0#aaaaaaaa"
 
 [[package]]
 name = "neat-core"
 version = "0.20.1"
-source = "git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=v0.20.1#bbbbbbbb"
+source = "${CORE_SRC}?tag=v0.20.1#bbbbbbbb"
 EOF
 assert_eq "a divergent lockfile exits 1" "1" "$(run_gate "${BASELINE}" "${DIVERGENT}")"
 assert_eq "a divergent lockfile names both versions" "0" \
