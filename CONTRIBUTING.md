@@ -11,9 +11,11 @@ parent/
 `forests/Cargo.toml` pins `neat-core` and `neat-ai-rebase` to release tags, so
 the workspace builds with no sibling checkout of either (Issue #105). CI moves
 both pins to the latest release on every PR with `scripts/family-pins.sh`.
-`neat-core.expected-version` records the last handled neat-core version;
-`scripts/check-neat-core-version.sh` reads the pinned version out of
-`Cargo.lock` and fails on an unhandled breaking bump.
+`scripts/hold-core-pin.sh` then holds the `neat-core` pin at the release
+`neat-ai-rebase` still carries, so a core release ahead of Rebase's own pin
+cannot lock two `neat-core` copies. `neat-core.expected-version` records the
+last handled neat-core version; `scripts/check-neat-core-version.sh` reads the
+pinned version out of `Cargo.lock` and fails on an unhandled breaking bump.
 
 ## Prerequisites
 
@@ -35,7 +37,8 @@ both pins to the latest release on every PR with `scripts/family-pins.sh`.
 
 mirrors CI: shell syntax + shellcheck, the hermetic tests for
 `scripts/runlib.sh`, `scripts/sync-core-helpers.sh` and
-`scripts/check-neat-core-version.sh` (`scripts/family-pins.sh` is NEAT-AI-core's
+`scripts/check-neat-core-version.sh` and `scripts/hold-core-pin.sh`
+(`scripts/family-pins.sh` is NEAT-AI-core's
 file and is tested there), the neat-core pin gate, codespell,
 markdownlint, actionlint, cargo-deny, `cargo fmt --check`, clippy with
 `-D warnings -D clippy::filter_next -D clippy::collapsible_if`,

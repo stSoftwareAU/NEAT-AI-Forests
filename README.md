@@ -138,7 +138,9 @@ flowchart LR
     B -- "differs / identical" --> D["runlib.sh and<br/>family-pins.sh current"]
     D --> E["family-pins.sh moves the<br/>neat-core and neat-ai-rebase<br/>tags, re-locks Cargo.lock"]
     E -- "pin unresolvable" --> C
-    E --> F["auto-version.sh bumps<br/>forests/Cargo.toml"]
+    E --> H["hold-core-pin.sh holds<br/>neat-core at the release<br/>neat-ai-rebase carries"]
+    H -- "divergence it cannot hold" --> C
+    H --> F["auto-version.sh bumps<br/>forests/Cargo.toml"]
     F --> G["one commit, one push:<br/>helpers + pins + bump"]
 ```
 
@@ -152,14 +154,23 @@ rustc with a type mismatch naming two `neat_core` crates. So
 catches it first — it reds the `validation` job as soon as `Cargo.lock` carries
 more than one `neat-core`, naming both versions.
 
-`family-pins.sh` moves every family pin to the latest release, which normally
-keeps the two aligned; when NEAT-AI-Rebase's pin at its newest release still
-lags behind core's newest release, **Forests stays blocked until Rebase's own
-pin PR lands and it cuts a new release**. Recovery from a lockfile that has
-already diverged is manual: `family-pins.sh` cannot re-lock it, because a
-per-package `cargo update` for `neat-core` is ambiguous with two of them
-present. Move the pins back into agreement in `forests/Cargo.toml` and
-regenerate the lock.
+`family-pins.sh` moves every family pin to the latest release on its own,
+knowing nothing about the `neat-core` release a second family dependency
+carries — so when NEAT-AI-Rebase's pin at its newest release lags behind core's
+newest release, the move lands two `neat-core` copies in the lock. Reverting the
+pin by hand does not hold: the next push re-runs `family-pins.sh` and moves it
+forward again.
+
+[`scripts/hold-core-pin.sh`](./scripts/hold-core-pin.sh) closes that loop. The
+`version-increment` job runs it immediately after `family-pins.sh`: when the
+lock carries more than one `neat-core` it rewrites the `forests/Cargo.toml` tag
+back to the oldest of them — the one Rebase carries — and re-locks by naming
+each superseded version explicitly, which is what a bare per-package
+`cargo update` cannot do with two present. **Forests then stays on the older
+pair until Rebase's own pin PR lands and it cuts a new release**, at which point
+one `neat-core` locks and the hold is a no-op. A divergence it cannot hold —
+Rebase ahead of Forests, a re-lock that does not converge — exits non-zero
+rather than pushing a lockfile that will red `validation`.
 
 A breaking core release is a separate, equally deliberate stop:
 [`scripts/check-neat-core-version.sh`](./scripts/check-neat-core-version.sh)

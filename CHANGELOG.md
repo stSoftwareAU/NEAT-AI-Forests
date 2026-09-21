@@ -7,6 +7,19 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Changed
 
+- **CI holds the `neat-core` pin at the release `neat-ai-rebase` carries
+  (PR #111).** `scripts/family-pins.sh` moves each family pin on its own and
+  cannot see that `neat-ai-rebase` carries a `neat-core` pin too, so a core
+  release ahead of Rebase's pin locked two `neat-core` copies and red the
+  `validation` gate on every push — reverting the pin by hand did not hold,
+  because the next run moved it forward again. The new
+  `scripts/hold-core-pin.sh` runs straight after `family-pins.sh` in the
+  `version-increment` job: it rewrites the `forests/Cargo.toml` tag back to the
+  oldest locked `neat-core` and re-locks by naming each superseded version, and
+  exits non-zero on a divergence it cannot hold. Forests is held on
+  `neat-core` v0.22.5 until NEAT-AI-Rebase cuts a release on v0.22.7. Hermetic
+  coverage: `scripts/test-hold-core-pin.sh`.
+
 - **`neat-core` and `neat-ai-rebase` are pinned to release tags, refreshed by
   CI (Issue #105).** Both sibling path dependencies in `forests/Cargo.toml` are
   now git dependencies on a `v*` release tag (`neat-core` v0.22.5,

@@ -31,8 +31,10 @@ path = "src/lib.rs"
 # `scripts/check-neat-core-version.sh` reds the `validation` job the moment
 # `Cargo.lock` carries more than one `neat-core`. When NEAT-AI-Rebase's own
 # `neat-core` pin at the tag below lags behind the core tag here, Forests stays
-# on the older pair until Rebase's own pin PR lands and it cuts a new release.
-neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v0.22.7" }
+# on the older pair until Rebase's own pin PR lands and it cuts a new release:
+# `scripts/hold-core-pin.sh` runs straight after `family-pins.sh` and holds the
+# tag below at the release Rebase carries, so the move never reaches the PR.
+neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v0.22.5" }
 # Producer side of population re-entry: `PatchLog` files each accepted patch as
 # a v1 enhancement so Rebase can graft it onto a freshly fetched champion
 # (stSoftwareAU/NEAT-AI-Rebase#65).
