@@ -134,6 +134,7 @@ jobs:
             "neat-core.expected-version"
             "scripts/runlib.sh"
             "scripts/family-pins.sh"
+            "scripts/hold-core-pin.sh"
             "scripts/sync-core-helpers.sh"
           )
           missing_files=()
@@ -217,6 +218,16 @@ jobs:
       # step below, and the job's write scope is this PR branch.
       - name: Move the family pins to the latest releases
         run: ./scripts/family-pins.sh
+
+      # `family-pins.sh` moves each pin on its own and cannot see that
+      # `neat-ai-rebase` carries a `neat-core` pin of its own, so a core
+      # release ahead of Rebase's pin locks two `neat-core` copies and reds
+      # `validation`. This holds the core pin at the release Rebase carries
+      # until Rebase cuts a release on the newer core; a divergence it cannot
+      # hold exits non-zero rather than pushing a lockfile that will red
+      # (PR #111).
+      - name: Hold the neat-core pin at the release neat-ai-rebase carries
+        run: ./scripts/hold-core-pin.sh
 
       - name: Bump the crate version when this PR has not already
         env:
