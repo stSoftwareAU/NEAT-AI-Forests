@@ -11,7 +11,7 @@ use rand::Rng;
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
 
-use crate::histogram::{SearchControls, StumpKind};
+use crate::histogram::SearchControls;
 use crate::patch::{Condition, Node, Term};
 use crate::strategies::RawSample;
 
@@ -79,11 +79,7 @@ fn best_threshold(
         let (cl, cr) = (clamp(sl, nl), clamp(sr, nr));
         let (gl, gr) = (2.0 * cl * sl - nl * cl * cl, 2.0 * cr * sr - nr * cr * cr);
         for kind in &controls.kinds {
-            let (l, r, g, a) = match kind {
-                StumpKind::LeftOnly => (cl, 0.0, gl, nl),
-                StumpKind::RightOnly => (0.0, cr, gr, nr),
-                StumpKind::TwoLeaf => (cl, cr, gl + gr, nl + nr),
-            };
+            let (l, r, g, a) = kind.combine((cl, gl, nl), (cr, gr, nr));
             if g > 0.0 && best.as_ref().is_none_or(|b| g > b.3) {
                 best = Some((t, l as f32, r as f32, g, a));
             }
