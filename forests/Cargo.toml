@@ -1,6 +1,6 @@
 [package]
 name = "neat_ai_forests"
-version = "0.1.29"
+version = "0.1.30"
 edition = "2024"
 license = "Apache-2.0"
 description = "Experimental residual decision-tree optimiser for already-fit NEAT-AI creatures."
@@ -34,11 +34,11 @@ path = "src/lib.rs"
 # on the older pair until Rebase's own pin PR lands and it cuts a new release:
 # `scripts/hold-core-pin.sh` runs straight after `family-pins.sh` and holds the
 # tag below at the release Rebase carries, so the move never reaches the PR.
-neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v0.22.5" }
+neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v0.22.11" }
 # Producer side of population re-entry: `PatchLog` files each accepted patch as
 # a v1 enhancement so Rebase can graft it onto a freshly fetched champion
 # (stSoftwareAU/NEAT-AI-Rebase#65).
-neat-ai-rebase = { git = "https://github.com/stSoftwareAU/NEAT-AI-Rebase", tag = "v0.1.2" }
+neat-ai-rebase = { git = "https://github.com/stSoftwareAU/NEAT-AI-Rebase", tag = "v0.1.4" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
