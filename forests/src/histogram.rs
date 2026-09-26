@@ -322,6 +322,33 @@ impl StumpKind {
             Self::TwoLeaf => "two-leaf",
         }
     }
+
+    /// Which leaves this kind corrects, `(left, right)` — the single place the
+    /// variants' shape is spelled out (Issue #115).
+    pub fn sides(self) -> (bool, bool) {
+        match self {
+            Self::LeftOnly => (true, false),
+            Self::RightOnly => (false, true),
+            Self::TwoLeaf => (true, true),
+        }
+    }
+
+    /// Combine per-side fits `(correction, gain, records)` into this kind's
+    /// `(left, right, gain, affected)`: an uncorrected side is a zero leaf and
+    /// contributes no gain or records.
+    pub fn combine(self, left: (f64, f64, f64), right: (f64, f64, f64)) -> (f64, f64, f64, f64) {
+        let (use_left, use_right) = self.sides();
+        let pick = |on: bool, side: (f64, f64, f64)| if on { side } else { (0.0, 0.0, 0.0) };
+        let (cl, gl, nl) = pick(use_left, left);
+        let (cr, gr, nr) = pick(use_right, right);
+        (cl, cr, gl + gr, nl + nr)
+    }
+
+    /// Whether every side this kind corrects holds at least `min` records.
+    pub fn meets_min_records(self, left_records: f64, right_records: f64, min: f64) -> bool {
+        let (use_left, use_right) = self.sides();
+        (!use_left || left_records >= min) && (!use_right || right_records >= min)
+    }
 }
 
 impl std::fmt::Display for StumpKind {
@@ -412,17 +439,8 @@ fn evaluate_split(
     }
     let (cl, gl) = clamp_correction(sl, nl, controls.max_correction);
     let (cr, gr) = clamp_correction(sr, nr, controls.max_correction);
-    let (left, right, gain, affected) = match kind {
-        StumpKind::LeftOnly => (cl, 0.0, gl, nl),
-        StumpKind::RightOnly => (0.0, cr, gr, nr),
-        StumpKind::TwoLeaf => (cl, cr, gl + gr, nl + nr),
-    };
-    let min = controls.min_leaf_records;
-    let ok = match kind {
-        StumpKind::LeftOnly => nl >= min,
-        StumpKind::RightOnly => nr >= min,
-        StumpKind::TwoLeaf => nl >= min && nr >= min,
-    };
+    let (left, right, gain, affected) = kind.combine((cl, gl, nl), (cr, gr, nr));
+    let ok = kind.meets_min_records(nl, nr, controls.min_leaf_records);
     if !ok || !gain.is_finite() || gain < controls.min_gain || gain <= 0.0 {
         return None;
     }
@@ -553,6 +571,40 @@ pub fn brute_force_best_stump(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #115 — one place combines per-side fits for every kind: the
+    /// uncorrected side is a zero leaf and adds no gain or records.
+    #[test]
+    fn combine_zeroes_the_uncorrected_side() {
+        let left = (0.25, 3.0, 10.0);
+        let right = (-0.5, 4.0, 6.0);
+        assert_eq!(
+            StumpKind::LeftOnly.combine(left, right),
+            (0.25, 0.0, 3.0, 10.0)
+        );
+        assert_eq!(
+            StumpKind::RightOnly.combine(left, right),
+            (0.0, -0.5, 4.0, 6.0)
+        );
+        assert_eq!(
+            StumpKind::TwoLeaf.combine(left, right),
+            (0.25, -0.5, 7.0, 16.0)
+        );
+    }
+
+    /// Issue #115 — only a corrected side is held to the minimum leaf size.
+    #[test]
+    fn min_records_checks_only_corrected_sides() {
+        // Left is big enough, right is not.
+        assert!(StumpKind::LeftOnly.meets_min_records(5.0, 1.0, 5.0));
+        assert!(!StumpKind::RightOnly.meets_min_records(5.0, 1.0, 5.0));
+        assert!(!StumpKind::TwoLeaf.meets_min_records(5.0, 1.0, 5.0));
+        // Boundary: exactly `min` on both sides passes every kind.
+        for kind in StumpKind::ALL {
+            assert!(kind.meets_min_records(5.0, 5.0, 5.0), "{kind}");
+            assert!(!kind.meets_min_records(0.0, 0.0, 5.0), "{kind}");
+        }
+    }
 
     /// Issue #69 — the sibling trick: a split partitions its parent's rows
     /// exactly, so the second child is the parent minus the first and need not
