@@ -18,6 +18,10 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
   on-disk I/O (`store.rs`), each carrying its own tests. `learnings/mod.rs`
   re-exports every public item, so `neat_ai_forests::learnings::*` is
   unchanged; the move changes no behaviour.
+- **Semgrep container pinned by tag and digest (#118).** `semgrep.yml` now pins
+  `semgrep/semgrep:1.86.0@sha256:a9ea2d56…`, not the bare digest, so Renovate and
+  Dependabot can key version bumps. The digest was re-verified against the
+  `1.86.0` tag; the scanner image is unchanged.
 
 - **CI holds the `neat-core` pin at the release `neat-ai-rebase` carries
   (PR #111).** `scripts/family-pins.sh` moves each family pin on its own and
