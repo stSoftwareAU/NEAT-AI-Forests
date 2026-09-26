@@ -7,6 +7,13 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Changed
 
+- **`learnings` is split by concern (#117).** `forests/src/learnings.rs` is now
+  `forests/src/learnings/` with one module each for the domain model
+  (`model.rs`), replay policy (`replay.rs`), retention planning (`prune.rs`) and
+  on-disk I/O (`store.rs`), each carrying its own tests. `learnings/mod.rs`
+  re-exports every public item, so `neat_ai_forests::learnings::*` is
+  unchanged; the move changes no behaviour.
+
 - **CI holds the `neat-core` pin at the release `neat-ai-rebase` carries
   (PR #111).** `scripts/family-pins.sh` moves each family pin on its own and
   cannot see that `neat-ai-rebase` carries a `neat-core` pin too, so a core

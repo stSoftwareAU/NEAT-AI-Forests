@@ -766,7 +766,12 @@ NEAT-AI-Forests/
 │   │   ├── histogram.rs       # CPU reference stump search (#5)
 │   │   ├── incumbent.rs       # immutable incumbent + checksum (#2)
 │   │   ├── journal.rs         # experiments.jsonl records (#10)
-│   │   ├── learnings.rs       # fleet-shared cache of what worked / failed (#60)
+│   │   ├── learnings/         # fleet-shared cache of what worked / failed (#60)
+│   │   │   ├── mod.rs         # re-exports the public API
+│   │   │   ├── model.rs       # Learning records + filing verdicts
+│   │   │   ├── replay.rs      # what to replay, known failures
+│   │   │   ├── prune.rs       # retention planning (#61)
+│   │   │   └── store.rs       # per-host JSON Lines I/O
 │   │   ├── log.rs             # stderr logging
 │   │   ├── meta.rs            # creature tag preservation
 │   │   ├── oblique.rs         # multi-feature linear splits (#14)
