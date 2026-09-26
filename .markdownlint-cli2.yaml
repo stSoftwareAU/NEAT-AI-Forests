@@ -4,3 +4,4 @@ globs:
 
 ignores:
   - "target/**"
+  - "graft/**"
