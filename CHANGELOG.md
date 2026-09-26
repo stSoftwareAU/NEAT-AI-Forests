@@ -7,6 +7,11 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Changed
 
+- **`security.yml` installs a prebuilt `cargo-audit` (#119).** The
+  `rustsec/audit-check` step compiled `cargo-audit` from source on every run.
+  A `taiki-e/install-action` step now puts the prebuilt binary on `PATH` first,
+  and the action's `findOrInstall` finds it there and skips the compile. The
+  action and its check-run annotations are unchanged.
 - **`LearningsStore::new` takes typed `CorpusId` and `HostName` (Issue
   #116).** Both were bare strings, so passing them in the wrong order compiled
   and quietly filed learnings under the wrong corpus and host. The new

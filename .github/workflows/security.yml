@@ -39,6 +39,14 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
 
+      # Prebuilt cargo-audit, as `cargo-audit.yml` does (Issue #208). The action
+      # below resolves it via `findOrInstall` (`io.which` on PATH first), so
+      # this skips its multi-minute `cargo install` compile (Issue #119).
+      - name: Install cargo-audit (prebuilt binary)
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
+        with:
+          tool: cargo-audit
+
       # Official RustSec GitHub Action — wraps cargo-audit and annotates the PR /
       # check run with any RUSTSEC advisories found in Cargo.lock.
       - name: Cargo Security Audit (rustsec/audit-check)
@@ -47,7 +55,9 @@ jobs:
         # node20, and no v2.1 / v3 tag has shipped yet, so we SHA-pin to the
         # master commit. Issue #136 cleared the prior Node 20 exception.
         uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432  # v2 (master HEAD, Node 24, post upstream #48)
-        # This action compiles cargo-audit from source with `cargo install`.
+        # With the prebuilt binary on PATH the action no longer compiles
+        # cargo-audit; it only falls back to `cargo install` if that lookup
+        # fails. RUSTUP_TOOLCHAIN stays for that fallback and for the audit run.
         # `rust-toolchain.toml` pins the repo to a concrete rustc for
         # reproducible builds of *our* code, but that pin must not gate the
         # build of a third-party *tool*: a transitive cargo-audit dep can raise
