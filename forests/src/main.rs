@@ -320,8 +320,8 @@ fn main() -> ExitCode {
         for corpus in &corpora {
             let store = neat_ai_forests::learnings::LearningsStore::new(
                 dir.clone(),
-                corpus.clone(),
-                host.clone(),
+                neat_ai_forests::learnings::CorpusId::new(corpus.clone()),
+                neat_ai_forests::learnings::HostName::new(host.clone()),
             );
             match store.prune(&policy, *dry_run) {
                 Ok(outcome) => total.add(&outcome),

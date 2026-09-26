@@ -285,10 +285,12 @@ pub fn run_forests(
     let learnings_store = cfg.learnings_dir.as_ref().map(|dir| {
         crate::learnings::LearningsStore::new(
             dir.clone(),
-            corpus.identity.clone(),
-            cfg.learnings_host
-                .clone()
-                .unwrap_or_else(crate::learnings::default_host),
+            crate::learnings::CorpusId::new(corpus.identity.clone()),
+            crate::learnings::HostName::new(
+                cfg.learnings_host
+                    .clone()
+                    .unwrap_or_else(crate::learnings::default_host),
+            ),
         )
     });
     let mut known: Vec<crate::learnings::Learning> = match &learnings_store {
@@ -1315,8 +1317,11 @@ mod tests {
         let first = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
         assert!(first.acceptances >= 1);
 
-        let store =
-            crate::learnings::LearningsStore::new(&shared, String::new(), "host-a".to_string());
+        let store = crate::learnings::LearningsStore::new(
+            &shared,
+            crate::learnings::CorpusId::new(String::new()),
+            crate::learnings::HostName::new("host-a"),
+        );
         let corpus_dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&shared)
             .unwrap()
             .filter_map(Result::ok)
