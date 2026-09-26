@@ -7,6 +7,11 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Changed
 
+- **`LearningsStore::new` takes typed `CorpusId` and `HostName` (Issue
+  #116).** Both were bare strings, so passing them in the wrong order compiled
+  and quietly filed learnings under the wrong corpus and host. The new
+  `learnings::CorpusId` and `learnings::HostName` newtypes turn a transposed
+  call into a compile error, and a `compile_fail` doctest keeps it that way.
 - **`learnings` is split by concern (#117).** `forests/src/learnings.rs` is now
   `forests/src/learnings/` with one module each for the domain model
   (`model.rs`), replay policy (`replay.rs`), retention planning (`prune.rs`) and

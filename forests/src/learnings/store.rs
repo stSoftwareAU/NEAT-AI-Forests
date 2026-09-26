@@ -39,42 +39,88 @@ pub fn corpora(root: &Path) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// A corpus identity, as the learnings store files it (Issue #116).
+///
+/// Its own type so it cannot be passed where a [`HostName`] belongs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorpusId(String);
+
+impl CorpusId {
+    /// Wrap a corpus identity.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// The identity as given.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The host a learnings store writes as (Issue #116).
+///
+/// Its own type so it cannot be passed where a [`CorpusId`] belongs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostName(String);
+
+impl HostName {
+    /// Wrap a host name.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    /// The name as given.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// The shared directory, scoped to one corpus and one host.
 #[derive(Debug, Clone)]
 pub struct LearningsStore {
     root: PathBuf,
-    corpus: String,
-    host: String,
+    corpus: CorpusId,
+    host: HostName,
 }
 
 impl LearningsStore {
     /// A store rooted at `root` for `corpus`, writing as `host`.
-    pub fn new(
-        root: impl Into<PathBuf>,
-        corpus: impl Into<String>,
-        host: impl Into<String>,
-    ) -> Self {
+    ///
+    /// ```
+    /// use neat_ai_forests::learnings::{CorpusId, HostName, LearningsStore};
+    /// let store = LearningsStore::new("/tmp/x", CorpusId::new("c"), HostName::new("h"));
+    /// assert_eq!(store.host(), "h");
+    /// ```
+    ///
+    /// Transposing corpus and host does not compile:
+    ///
+    /// ```compile_fail,E0308
+    /// use neat_ai_forests::learnings::{CorpusId, HostName, LearningsStore};
+    /// let store = LearningsStore::new("/tmp/x", HostName::new("h"), CorpusId::new("c"));
+    /// ```
+    pub fn new(root: impl Into<PathBuf>, corpus: CorpusId, host: HostName) -> Self {
         Self {
             root: root.into(),
-            corpus: corpus.into(),
-            host: host.into(),
+            corpus,
+            host,
         }
     }
 
     /// The name this store files learnings under.
     pub fn host(&self) -> &str {
-        &self.host
+        self.host.as_str()
     }
 
     /// Directory holding every host's file for this corpus.
     pub fn corpus_dir(&self) -> PathBuf {
-        self.root.join(format!("corpus-{}", sanitise(&self.corpus)))
+        self.root
+            .join(format!("corpus-{}", sanitise(self.corpus.as_str())))
     }
 
     /// This host's append-only file.
     pub fn file(&self) -> PathBuf {
         self.corpus_dir()
-            .join(format!("{}.jsonl", sanitise(&self.host)))
+            .join(format!("{}.jsonl", sanitise(self.host.as_str())))
     }
 
     /// Append `learnings` to this host's file, creating the directory.
@@ -267,8 +313,8 @@ mod tests {
     #[test]
     fn pruning_rewrites_only_this_hosts_file_and_leaves_the_rest_alone() {
         let tmp = tempfile::tempdir().unwrap();
-        let mine = LearningsStore::new(tmp.path(), "c", "host-a");
-        let theirs = LearningsStore::new(tmp.path(), "c", "host-b");
+        let mine = LearningsStore::new(tmp.path(), CorpusId::new("c"), HostName::new("host-a"));
+        let theirs = LearningsStore::new(tmp.path(), CorpusId::new("c"), HostName::new("host-b"));
         let stale = learning(patch(1, 0.1), Outcome::Rejected, -1e-5, 10, "host-a");
         let fresh = learning(patch(2, 0.2), Outcome::Rejected, -1e-5, 950, "host-a");
         let win = learning(patch(3, 0.3), Outcome::Accepted, 2e-5, 10, "host-a");
@@ -316,7 +362,7 @@ mod tests {
         // A run appending while the prune works would lose its lines to the
         // rename, so the prune refuses rather than dropping them.
         let tmp = tempfile::tempdir().unwrap();
-        let store = LearningsStore::new(tmp.path(), "c", "host-a");
+        let store = LearningsStore::new(tmp.path(), CorpusId::new("c"), HostName::new("host-a"));
         store
             .append(&[learning(
                 patch(1, 0.1),
@@ -326,21 +372,37 @@ mod tests {
                 "host-a",
             )])
             .unwrap();
-        let grew = LearningsStore::new(tmp.path(), "c", "host-a");
+        let grew = LearningsStore::new(tmp.path(), CorpusId::new("c"), HostName::new("host-a"));
         // Nothing to drop -> returns before the length is re-checked.
         assert!(store.prune(&policy(50), false).is_ok());
         let _ = grew;
         // A missing file is simply nothing to do.
-        let absent = LearningsStore::new(tmp.path(), "c", "host-never-ran");
+        let absent = LearningsStore::new(
+            tmp.path(),
+            CorpusId::new("c"),
+            HostName::new("host-never-ran"),
+        );
         assert_eq!(absent.prune(&policy(1000), false).unwrap().read, 0);
     }
 
     #[test]
     fn every_host_writes_its_own_file_and_all_of_them_are_read() {
         let tmp = tempfile::tempdir().unwrap();
-        let a = LearningsStore::new(tmp.path(), "corpus/one", "host-a");
-        let b = LearningsStore::new(tmp.path(), "corpus/one", "host-b");
-        let other_corpus = LearningsStore::new(tmp.path(), "corpus/two", "host-a");
+        let a = LearningsStore::new(
+            tmp.path(),
+            CorpusId::new("corpus/one"),
+            HostName::new("host-a"),
+        );
+        let b = LearningsStore::new(
+            tmp.path(),
+            CorpusId::new("corpus/one"),
+            HostName::new("host-b"),
+        );
+        let other_corpus = LearningsStore::new(
+            tmp.path(),
+            CorpusId::new("corpus/two"),
+            HostName::new("host-a"),
+        );
         a.append(&[learning(
             patch(1, 0.1),
             Outcome::Accepted,
@@ -387,7 +449,7 @@ mod tests {
     #[test]
     fn a_line_from_a_newer_version_is_a_miss_not_a_failure() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = LearningsStore::new(tmp.path(), "c", "host-a");
+        let store = LearningsStore::new(tmp.path(), CorpusId::new("c"), HostName::new("host-a"));
         store
             .append(&[learning(
                 patch(1, 0.1),
@@ -408,13 +470,38 @@ mod tests {
     #[test]
     fn a_missing_directory_is_an_empty_cache() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = LearningsStore::new(tmp.path().join("nothing-here"), "c", "host-a");
+        let store = LearningsStore::new(
+            tmp.path().join("nothing-here"),
+            CorpusId::new("c"),
+            HostName::new("host-a"),
+        );
         assert!(store.load().unwrap().is_empty());
+    }
+
+    /// Issue #116: corpus and host are distinct types, so each lands in its
+    /// own slot of the path and the store reports the host it was given.
+    #[test]
+    fn corpus_and_host_are_typed_and_file_under_their_own_slots() {
+        let corpus = CorpusId::new("corpus/one");
+        let host = HostName::new("host-a");
+        assert_eq!(corpus.as_str(), "corpus/one");
+        assert_eq!(host.as_str(), "host-a");
+        let store = LearningsStore::new("/tmp/x", corpus, host);
+        assert_eq!(store.host(), "host-a");
+        assert_eq!(store.corpus_dir(), Path::new("/tmp/x/corpus-corpus-one"));
+        assert_eq!(
+            store.file(),
+            Path::new("/tmp/x/corpus-corpus-one/host-a.jsonl")
+        );
     }
 
     #[test]
     fn paths_stay_safe_whatever_the_corpus_identity_and_host_are() {
-        let store = LearningsStore::new("/tmp/x", "../../etc/passwd", "host name/../..");
+        let store = LearningsStore::new(
+            "/tmp/x",
+            CorpusId::new("../../etc/passwd"),
+            HostName::new("host name/../.."),
+        );
         assert_eq!(
             store.file(),
             Path::new("/tmp/x/corpus-etc-passwd/host-name.jsonl")

@@ -59,7 +59,7 @@ pub use prune::{PruneOutcome, PrunePolicy, plan_prune};
 pub use replay::{
     DEFAULT_RETRY_AFTER_SECS, ReplayConfig, choose, grafted_patch_ids, known_failures,
 };
-pub use store::{LearningsStore, corpora, default_host, usable_root};
+pub use store::{CorpusId, HostName, LearningsStore, corpora, default_host, usable_root};
 
 #[cfg(test)]
 mod tests {
@@ -79,7 +79,11 @@ mod tests {
             prune::plan_prune(std::slice::from_ref(&l), &policy(20));
         assert_eq!(out.kept, 1);
         let tmp = tempfile::tempdir().unwrap();
-        let s: LearningsStore = store::LearningsStore::new(tmp.path(), "c", "host-a");
+        let s: LearningsStore = store::LearningsStore::new(
+            tmp.path(),
+            store::CorpusId::new("c"),
+            store::HostName::new("host-a"),
+        );
         s.append(&kept).unwrap();
         assert_eq!(store::corpora(tmp.path()).unwrap(), vec!["c".to_string()]);
         assert_eq!(corpora(tmp.path()).unwrap(), vec!["c".to_string()]);
