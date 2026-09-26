@@ -346,11 +346,7 @@ pub fn random_stumps(
         if mag == 0.0 {
             continue;
         }
-        let kind = match rng.random_range(0..3) {
-            0 => StumpKind::LeftOnly,
-            1 => StumpKind::RightOnly,
-            _ => StumpKind::TwoLeaf,
-        };
+        let kind = StumpKind::ALL[rng.random_range(0..StumpKind::ALL.len())];
         let (l, r) = match kind {
             StumpKind::LeftOnly => (mag, 0.0),
             StumpKind::RightOnly => (0.0, mag),
