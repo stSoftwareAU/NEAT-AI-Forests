@@ -7,6 +7,12 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Changed
 
+- **`LearningsStore::new` takes typed `CorpusId` and `HostName` (Issue
+  #116).** Both were bare strings, so passing them in the wrong order compiled
+  and quietly filed learnings under the wrong corpus and host. The new
+  `learnings::CorpusId` and `learnings::HostName` newtypes turn a transposed
+  call into a compile error, and a `compile_fail` doctest keeps it that way.
+
 - **CI holds the `neat-core` pin at the release `neat-ai-rebase` carries
   (PR #111).** `scripts/family-pins.sh` moves each family pin on its own and
   cannot see that `neat-ai-rebase` carries a `neat-core` pin too, so a core
