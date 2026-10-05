@@ -241,8 +241,8 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "neat-ai-rebase"
-version = "0.1.6"
-source = "git+https://github.com/stSoftwareAU/NEAT-AI-Rebase?tag=v0.1.6#1de4ef4bc20ec3ac9959e3942c7a2d2503780ef0"
+version = "0.1.7"
+source = "git+https://github.com/stSoftwareAU/NEAT-AI-Rebase?tag=v0.1.7#85d79bc1f541d069c39a8a17f822d3c28378fcfb"
 dependencies = [
  "clap",
  "neat-core",
@@ -253,8 +253,8 @@ dependencies = [
 
 [[package]]
 name = "neat-core"
-version = "0.22.11"
-source = "git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=v0.22.11#88de51285c135ad27d8ccb55489e39fbb196b4bf"
+version = "0.22.15"
+source = "git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=v0.22.15#840cb99c406733303f6b445a0a5b7d54bad71d97"
 dependencies = [
  "serde",
  "serde_json",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "neat_ai_forests"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "clap",
  "neat-ai-rebase",
