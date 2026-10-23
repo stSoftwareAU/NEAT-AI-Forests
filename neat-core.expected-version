@@ -91,4 +91,14 @@
 # `cargo clippy --workspace --all-targets --all-features -- -D warnings` and
 # the full `cargo test --workspace --all-features` suite (163 tests, including
 # the real-scorer end-to-end graft and the TypeScript parity fixtures).
-0.22.5
+# 0.22.5 -> 0.23.2 (PR #132): the breaking 0.23 boundary is the Rust 1.99
+# minimum (core #749/#750). Forests already declares rust-version = "1.99"
+# and pins that toolchain. Comparing the previous pinned v0.22.16 with
+# v0.23.2 changes manifests, lockfiles, build helpers and documentation, not
+# neat-core's Rust library API. No Forests runtime adaptation is needed.
+# Verified against the released v0.23.2 pin, with the matching Rebase v0.1.9:
+# cargo test --workspace --all-features --locked; all tests and doctests pass.
+# Existing real-scorer tests retain their external-binary prerequisite; this
+# check does not claim a live scorer/GPU performance result. The version gate
+# and its refusal of the next unhandled breaking release remain unchanged.
+0.23.2
