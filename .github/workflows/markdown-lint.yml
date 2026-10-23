@@ -42,7 +42,7 @@ concurrency:
 
 jobs:
   markdownlint:
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Markdown Lint
     runs-on: ubuntu-latest
     timeout-minutes: 10

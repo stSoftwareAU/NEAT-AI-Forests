@@ -34,7 +34,7 @@ env:
 
 jobs:
   quality:
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Quality Checks
     needs: [validation]
     runs-on: ubuntu-latest
@@ -99,12 +99,12 @@ jobs:
       checks: write
       pull-requests: write
     uses: ./.github/workflows/security.yml
-    if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
     with:
       include-dependency-review: false
 
   validation:
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Project Validation
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -175,7 +175,7 @@ jobs:
     # Fork PRs are skipped: this workflow cannot push to a fork's branch, and a
     # skipped job counts as OK in `ci-required`. The bump then rides the
     # maintainer's own follow-up branch.
-    if: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -295,7 +295,7 @@ jobs:
             "HEAD:${HEAD_REF}"
 
   shell-checks:
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Shell Script Quality
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -346,7 +346,7 @@ jobs:
         run: ./scripts/test-check-neat-core-version.sh
 
   spell-check:
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Spell Check
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -367,7 +367,7 @@ jobs:
     name: CI Required Checks
     needs:
       [validation, quality, security, shell-checks, spell-check, version-increment]
-    if: ${{ (always()) && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
