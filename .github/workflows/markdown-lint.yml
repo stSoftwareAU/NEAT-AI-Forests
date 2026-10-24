@@ -25,6 +25,9 @@ on:
   # a check that already passed. (This reverses the Issue #207 push→Develop
   # policy; deploy/publish workflows still fire on push, a checker does not.)
   pull_request:
+    # Draft PRs are work in progress (owner, 2026-10-23): CI runs
+    # once, when the PR is marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
     # `*` matches only slash-free branch names, so bare `["*"]` skips
     # `milestone/<slug>` PRs; the `milestone/*` glob gates them too (Issue #395).
     branches: ["*", "milestone/*"]
@@ -39,6 +42,7 @@ concurrency:
 
 jobs:
   markdownlint:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Markdown Lint
     runs-on: ubuntu-latest
     timeout-minutes: 10

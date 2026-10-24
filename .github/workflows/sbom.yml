@@ -20,6 +20,9 @@ name: SBOM
 
 on:
   pull_request:
+    # Draft PRs are work in progress (owner, 2026-10-23): CI runs
+    # once, when the PR is marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
     # "**" not "*": a single star does not match "/" so PRs targeting
     # milestone/<slug> branches would silently skip this required check.
     branches: ["**"]
@@ -41,6 +44,7 @@ concurrency:
 
 jobs:
   sbom:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Generate SBOM
     runs-on: ubuntu-latest
     timeout-minutes: 15
