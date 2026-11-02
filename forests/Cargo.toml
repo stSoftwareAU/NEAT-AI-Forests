@@ -1,6 +1,6 @@
 [package]
 name = "neat_ai_forests"
-version = "0.1.41"
+version = "0.1.42"
 edition = "2024"
 # NEAT-AI family Rust floor (NEAT-AI-core#747): keep equal to the
 # rust-toolchain.toml pin, so CI builds at the declared minimum and a newer
@@ -42,7 +42,7 @@ neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v0.23
 # Producer side of population re-entry: `PatchLog` files each accepted patch as
 # a v1 enhancement so Rebase can graft it onto a freshly fetched champion
 # (stSoftwareAU/NEAT-AI-Rebase#65).
-neat-ai-rebase = { git = "https://github.com/stSoftwareAU/NEAT-AI-Rebase", tag = "v0.1.9" }
+neat-ai-rebase = { git = "https://github.com/stSoftwareAU/NEAT-AI-Rebase", tag = "v0.1.10" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
