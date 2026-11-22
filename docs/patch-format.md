@@ -33,6 +33,36 @@
 - Every candidate's patch is stored in the journal, so a creature that is
   ordinary NEAT-AI JSON can still be traced back to what produced it.
 
+## Refinements (version 2, Issue #140)
+
+A refinement is a v1 patch plus `parent`, and carries `"version": 2` so a
+reader that does not know the field refuses it rather than grafting it at the
+anchor:
+
+```json
+{
+  "version": 2,
+  "output": 0,
+  "parent": { "uuid": "forest-3f2a…-if1", "role": "positive" },
+  "root": { "kind": "split", "condition": { … }, "left": { … }, "right": { … } },
+  "provenance": { "strategy": "refine-stump", … }
+}
+```
+
+`parent` names an `IF` neuron already on the creature and the branch sum the
+patch's root feeds. The graft finds it by reading the output's trees back from
+structure (`refine::ForestView`) and attaches the root's single outward edge
+to that role with weight `1 / gain`, where `gain` is `d(output) / d(parent)`.
+Nothing else is touched: the leaf's own constant edge stays, so the
+refinement's corrections add to it on exactly the records that reach the leaf.
+A parent that is missing, is not a readable tree node under the output, or
+hangs off a different output is refused with `GraftError::NoSuchParent`.
+
+The id hashes `(output, root, parent)`, so the same split under two leaves is
+two patches; a patch without `parent` keeps its v1 id. NEAT-AI-Rebase cannot
+replay a refinement yet, so `--refine-leaves` is refused together with
+`--enhancements`.
+
 ## Evaluation semantics
 
 The abstract evaluator mirrors the NEAT-AI-core `IF` kernel exactly:

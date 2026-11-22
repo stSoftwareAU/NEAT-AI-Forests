@@ -127,6 +127,12 @@ struct Cli {
     /// Oblique (multi-feature) split candidates per iteration (0 = off).
     #[arg(long, default_value_t = 0)]
     oblique_candidates: usize,
+    /// Leaves already on the creature to split per iteration, read back from its structure (0 = off; Issue #140).
+    #[arg(long, default_value_t = 0)]
+    refine_leaves: usize,
+    /// Largest total depth a refined path may reach.
+    #[arg(long, default_value_t = neat_ai_forests::config::DEFAULT_REFINE_MAX_DEPTH)]
+    refine_max_depth: usize,
     /// Boosting rounds on the sample: re-search after subtracting the best patch's correction; prefixes of the bundle are verified in one scorer call (1 = off).
     #[arg(long, default_value_t = 1)]
     boost_rounds: usize,
@@ -389,6 +395,8 @@ fn main() -> ExitCode {
         threshold_jitter: cli.threshold_jitter,
         random_candidates: cli.random_candidates,
         oblique_candidates: cli.oblique_candidates,
+        refine_leaves: cli.refine_leaves,
+        refine_max_depth: cli.refine_max_depth,
         combo_candidates: cli.combo_candidates,
         boost_rounds: cli.boost_rounds,
         candidates: cli.candidates,

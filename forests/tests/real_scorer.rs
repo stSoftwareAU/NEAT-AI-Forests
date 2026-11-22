@@ -137,6 +137,8 @@ fn real_scorer_baseline_parity_and_if_graft_agree_with_local_forward_pass() {
         .0;
     assert_eq!(deep_per_patch.neurons.len(), deep.neurons.len() + 3);
     assert_eq!(deep_per_patch.synapses.len(), deep.synapses.len());
+    // Issue #140 — a refinement of an already-refined leaf on the MLP.
+    let refined = neat_ai_forests::refine::fixtures::refined_twice(&small_mlp(3));
     let dir = tmp.path().join("cohort");
     std::fs::create_dir_all(&dir).unwrap();
     for (name, c) in [
@@ -145,6 +147,7 @@ fn real_scorer_baseline_parity_and_if_graft_agree_with_local_forward_pass() {
         ("mlp", &mlp),
         ("deep", &deep),
         ("deep-per-patch", &deep_per_patch),
+        ("refined", &refined),
     ] {
         std::fs::write(
             dir.join(format!("{name}.json")),
@@ -161,6 +164,7 @@ fn real_scorer_baseline_parity_and_if_graft_agree_with_local_forward_pass() {
         ("mlp", &mlp),
         ("deep", &deep),
         ("deep-per-patch", &deep_per_patch),
+        ("refined", &refined),
     ] {
         let inc = Incumbent::from_creature(c.clone(), name).unwrap();
         let local = neat_ai_forests::residuals::compute_residuals(&inc, &train, &corpus, 128, 1)

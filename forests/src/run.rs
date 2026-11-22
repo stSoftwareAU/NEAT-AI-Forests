@@ -550,6 +550,42 @@ pub fn run_forests(
                 strategies.push("oblique-split".into());
             }
         }
+        // Refinements (Issue #140): split leaves already on the creature, read
+        // back from its structure, on the rows that reach each one.
+        if cfg.refine_leaves > 0 {
+            match crate::refine::ForestView::read(&state.incumbent.creature, output) {
+                Ok(view) => {
+                    let refined = crate::refine::search_refinements(
+                        &view,
+                        &set,
+                        &bins,
+                        &cfg.training_data,
+                        state.incumbent.creature.output,
+                        cfg.chunk_records,
+                        &crate::refine::RefineControls {
+                            leaves: cfg.refine_leaves,
+                            max_total_depth: cfg.refine_max_depth,
+                            max_depth: cfg.max_depth,
+                            stump: controls.clone(),
+                            growth: cfg.growth,
+                            threads: cfg.analysis_threads,
+                        },
+                    )?;
+                    log::detail(&format!(
+                        "refine: {} tree(s), {} leaves on the anchor; {} searched, {} discoveries",
+                        refined.trees,
+                        refined.leaves,
+                        refined.searched,
+                        refined.discoveries.len()
+                    ));
+                    if !refined.discoveries.is_empty() {
+                        strategies.push("refine".into());
+                    }
+                    discoveries.extend(refined.discoveries);
+                }
+                Err(e) => log::warn(&format!("refine: cannot read the trees: {e}")),
+            }
+        }
         let search_ms = search_started.elapsed().as_millis() as u64;
 
         // ---- candidates ---------------------------------------------------
@@ -665,8 +701,11 @@ pub fn run_forests(
         }
         // Boosting rounds (#40): subtract the best patch from the sample
         // residuals, search again, and verify the bundle's prefixes together.
+        // A refinement applies on one leaf's rows only, which the boosting
+        // residual update cannot express, so it never seeds a bundle.
         if cfg.boost_rounds > 1
             && let Some(first) = patches.first().cloned()
+            && first.parent.is_none()
         {
             let boost_started = Instant::now();
             let mut boosted = set.clone();
@@ -1992,6 +2031,35 @@ mod tests {
         // The two planted stumps are found by successive rounds.
         assert!(bundles.iter().any(|c| c.features.len() >= 2));
         assert!(r.acceptances >= 1);
+    }
+
+    /// Issue #140 — with `--refine-leaves` on, once the loop has accepted a
+    /// tree it reads it back and offers refinements of its leaves, which are
+    /// grafted and scored like any other candidate.
+    #[test]
+    fn the_loop_offers_refinements_of_the_trees_it_accepted() {
+        let (_tmp, mut cfg) = fixture();
+        cfg.refine_leaves = 4;
+        cfg.screen_sample_rate = None;
+        let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
+        let lines = read_journal(&r.journal_path).unwrap();
+        let refinements: Vec<&CandidateRecord> = lines
+            .iter()
+            .filter_map(|l| match l {
+                JournalLine::Experiment(e) => Some(e),
+                _ => None,
+            })
+            .flat_map(|e| e.candidates.iter())
+            .filter(|c| c.patch.parent.is_some())
+            .collect();
+        assert!(r.acceptances >= 1);
+        assert!(!refinements.is_empty(), "no refinement was offered");
+        assert!(
+            refinements
+                .iter()
+                .all(|c| c.strategy.starts_with("refine-") && c.full_score.is_some()),
+            "refinements are scored like everything else"
+        );
     }
 
     #[test]

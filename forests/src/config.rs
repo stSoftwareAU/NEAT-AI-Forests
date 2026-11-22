@@ -18,6 +18,13 @@ pub const DEFAULT_CHUNK_RECORDS: usize = 4096;
 /// Default in-memory search sample (records). `0` streams the full corpus.
 pub const DEFAULT_SEARCH_RECORDS: u64 = 200_000;
 
+/// Default cap on the total depth of a refined path (Issue #140).
+pub const DEFAULT_REFINE_MAX_DEPTH: usize = 6;
+
+fn default_refine_max_depth() -> usize {
+    DEFAULT_REFINE_MAX_DEPTH
+}
+
 /// Tree growth policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -188,6 +195,18 @@ pub struct ForestsConfig {
     pub random_candidates: usize,
     /// Oblique (2–3 feature) candidates per iteration (0 = off).
     pub oblique_candidates: usize,
+    /// Leaves already on the creature split per iteration (Issue #140; 0 =
+    /// off).
+    ///
+    /// The trees are read back from the creature's structure, so patches from
+    /// every host and every earlier run are candidates. Each chosen leaf gets
+    /// a stump and, where the depth cap leaves room, a deeper subtree, fed into
+    /// the leaf's own branch sum.
+    #[serde(default)]
+    pub refine_leaves: usize,
+    /// Largest total depth a refined path may reach (Issue #140).
+    #[serde(default = "default_refine_max_depth")]
+    pub refine_max_depth: usize,
     /// Boosting rounds on the in-memory sample: after the best patch is chosen
     /// its correction is subtracted from the sample residuals and the search
     /// repeats, producing a bundle whose prefixes are verified in one scorer
@@ -280,6 +299,8 @@ impl Default for ForestsConfig {
             threshold_jitter: 0,
             random_candidates: 4,
             oblique_candidates: 0,
+            refine_leaves: 0,
+            refine_max_depth: DEFAULT_REFINE_MAX_DEPTH,
             combo_candidates: 4,
             boost_rounds: 1,
             candidates: 64,
@@ -341,6 +362,18 @@ impl ForestsConfig {
         if self.max_correction <= 0.0 || self.max_correction.is_nan() {
             return Err("--max-correction must be > 0".into());
         }
+        if self.refine_max_depth < 2 || self.refine_max_depth > 16 {
+            return Err("--refine-max-depth must be in 2..=16".into());
+        }
+        if self.refine_leaves > 0 && self.enhancements {
+            // A refinement attaches to a parent by UUID; NEAT-AI-Rebase's
+            // adapter cannot replay that yet, and a bundle missing an accepted
+            // patch is refused, so the two cannot be on together.
+            return Err(
+                "--refine-leaves cannot be combined with --enhancements until NEAT-AI-Rebase can replay refinements"
+                    .into(),
+            );
+        }
         Ok(())
     }
 
@@ -393,6 +426,17 @@ mod tests {
             ..c.clone()
         };
         assert!(bad.validate().unwrap_err().contains("--max-depth"));
+        let bad = ForestsConfig {
+            refine_max_depth: 1,
+            ..c.clone()
+        };
+        assert!(bad.validate().unwrap_err().contains("--refine-max-depth"));
+        let bad = ForestsConfig {
+            refine_leaves: 4,
+            enhancements: true,
+            ..c.clone()
+        };
+        assert!(bad.validate().unwrap_err().contains("--refine-leaves"));
         let bad = ForestsConfig { bins: 1, ..c };
         assert!(bad.validate().unwrap_err().contains("--bins"));
     }

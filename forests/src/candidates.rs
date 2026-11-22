@@ -127,6 +127,9 @@ pub struct Discovery {
     pub side_records: Option<(f64, f64)>,
     /// Notes.
     pub notes: Vec<String>,
+    /// `Some` when the discovery refines a leaf already on the creature
+    /// (Issue #140): its patches attach there instead of at the anchor.
+    pub parent: Option<crate::patch::Attach>,
 }
 
 impl Discovery {
@@ -140,6 +143,7 @@ impl Discovery {
             affected: s.affected_records,
             side_records: Some((s.left_records, s.right_records)),
             notes: vec![format!("kind={:?} bin={}", s.kind, s.bin)],
+            parent: None,
         }
     }
 
@@ -153,6 +157,7 @@ impl Discovery {
             affected: t.affected_records,
             side_records: None,
             notes: vec![format!("growth={}", t.growth)],
+            parent: None,
         }
     }
 
@@ -166,6 +171,7 @@ impl Discovery {
             affected: o.affected_records,
             side_records: None,
             notes: vec![format!("origin={}", o.origin)],
+            parent: None,
         }
     }
 }
@@ -222,13 +228,14 @@ pub fn expand_discoveries(
             .chain(extra)
             .collect(),
     };
+    // A refinement (Issue #140) keeps its parent through every variant.
+    let make = |d: &Discovery, root: Node, provenance: Provenance| match &d.parent {
+        Some(parent) => Patch::refinement(output, parent.clone(), root, provenance),
+        None => Patch::new(output, root, provenance),
+    };
     // Pass 1: the analytical optimum of every discovery, in rank order.
     for d in discoveries {
-        out.push(Patch::new(
-            output,
-            d.root.clone(),
-            prov(d, d.strategy.clone(), vec![]),
-        ));
+        out.push(make(d, d.root.clone(), prov(d, d.strategy.clone(), vec![])));
     }
     // Pass 2: magnitude variants. Ahead of the one-sided ones because the
     // cohort is capped and this is where the returns are: measured over 23
@@ -245,8 +252,8 @@ pub fn expand_discoveries(
             } else {
                 d.gain * (2.0 * f64::from(scale) - f64::from(scale) * f64::from(scale))
             };
-            let mut p = Patch::new(
-                output,
+            let mut p = make(
+                d,
                 d.root.scaled(scale),
                 prov(
                     d,
@@ -262,8 +269,8 @@ pub fn expand_discoveries(
     for d in discoveries {
         for right in [false, true] {
             if let Some(root) = zero_side(&d.root, right) {
-                let mut p = Patch::new(
-                    output,
+                let mut p = make(
+                    d,
                     root,
                     prov(
                         d,
@@ -300,8 +307,8 @@ pub fn expand_discoveries(
                                     left: left.clone(),
                                     right: right.clone(),
                                 };
-                                let mut p = Patch::new(
-                                    output,
+                                let mut p = make(
+                                    d,
                                     root,
                                     prov(
                                         d,

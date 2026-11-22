@@ -224,6 +224,9 @@ neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/
 # D. oblique splits
 neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/oblique --seed 1 --oblique-candidates 8
 
+# G. refine existing leaves (Issue #140) — compare against A at the same seed and budget
+neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/refine --seed 1 --refine-leaves 8
+
 # E. random-only control (no histogram guidance)
 neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/random --seed 1 --top-k 0 --random-candidates 48
 
