@@ -23,6 +23,7 @@ use neat_ai_forests::graft::fixtures::{if_output_creature, min_clamped_if_creatu
 use neat_ai_forests::graft::{graft_patch, graft_patch_with, graft_patches_with};
 use neat_ai_forests::patch::{Condition, Node, Patch, Provenance, Term};
 use neat_ai_forests::refine::fixtures::refined_twice;
+use neat_ai_forests::refit::fixtures::refitted;
 
 fn scorer_binary() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("NEAT_SCORER_BIN") {
@@ -213,6 +214,10 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
             "clamp-refined-twice",
             refined_twice(&min_clamped_if_creature(4)),
         ),
+        // Issue #137 — every leaf of two planted trees moved through its
+        // constant edge, as a refit moves it.
+        ("if-refitted", refitted(&if_output_creature(4))),
+        ("clamp-refitted", refitted(&min_clamped_if_creature(4))),
         (
             "mlp-two-per-patch",
             graft_patches_with(
