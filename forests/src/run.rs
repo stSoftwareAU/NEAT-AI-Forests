@@ -665,6 +665,42 @@ pub fn run_forests(
                 Err(e) => log::warn(&format!("refine: cannot read the trees: {e}")),
             }
         }
+        // Linear leaves (Issue #138): an intercept and a slope on a second
+        // input per side, for a pool that is not ranked by constant gain alone.
+        if cfg.linear_leaf_conditions > 0 {
+            let existing: Vec<crate::patch::Condition> =
+                crate::refine::ForestView::read(&state.incumbent.creature, output)
+                    .map(|v| v.nodes.into_iter().map(|n| n.condition).collect())
+                    .unwrap_or_default();
+            let pool = crate::linear::condition_pool(
+                &stumps,
+                &existing,
+                &set,
+                search_bins,
+                cfg.linear_leaf_conditions,
+                &mut rng,
+            );
+            let found = crate::linear::search_linear_stumps(
+                &set,
+                search_bins,
+                &pool,
+                &controls,
+                state.incumbent.creature.input,
+                cfg.analysis_threads,
+                cfg.linear_leaf_conditions,
+            )?;
+            log::detail(&format!(
+                "linear leaves: {} condition(s) in the pool, {} beat their constant leaves",
+                pool.len(),
+                found.len()
+            ));
+            if !found.is_empty() {
+                strategies.push("linear-leaf".into());
+            }
+            for (rank, stump) in found.iter().enumerate() {
+                discoveries.extend(stump.discoveries(&set, search_bins, rank < 2));
+            }
+        }
         let search_ms = search_started.elapsed().as_millis() as u64;
 
         // ---- candidates ---------------------------------------------------
@@ -1224,11 +1260,17 @@ pub fn run_forests(
                             condition.terms[0].feature,
                             condition.threshold,
                             match &**right {
-                                crate::patch::Node::Leaf { correction } => correction.to_string(),
+                                crate::patch::Node::Leaf { correction, slopes }
+                                    if slopes.is_empty() =>
+                                    correction.to_string(),
+                                crate::patch::Node::Leaf { .. } => "linear leaf".into(),
                                 _ => "subtree".into(),
                             },
                             match &**left {
-                                crate::patch::Node::Leaf { correction } => correction.to_string(),
+                                crate::patch::Node::Leaf { correction, slopes }
+                                    if slopes.is_empty() =>
+                                    correction.to_string(),
+                                crate::patch::Node::Leaf { .. } => "linear leaf".into(),
                                 _ => "subtree".into(),
                             },
                         ),
@@ -2641,6 +2683,51 @@ mod tests {
         assert_eq!(
             describe_tree(&Node::stump(2, 0.5, 0.0, 0.1)),
             "depth 1 tree over inputs [2]"
+
+    /// Issue #138 — with `--linear-leaf-conditions` on, the loop accepts a
+    /// linear leaf where the residual's slope on one input flips sign with
+    /// another, which no constant-leaf stump can express.
+    #[test]
+    fn the_loop_accepts_a_linear_leaf() {
+        let (tmp, mut cfg) = fixture();
+        let train = tmp.path().join("train-linear");
+        std::fs::create_dir_all(&train).unwrap();
+        let recs: Vec<(Vec<f32>, Vec<f32>)> = (0..900u32)
+            .map(|i| {
+                let x = vec![
+                    (i % 13) as f32 / 13.0,
+                    (i * 7 % 17) as f32 / 8.5 - 1.0,
+                    (i * 5 % 19) as f32 / 9.5 - 1.0,
+                ];
+                let flip = if x[1] > 0.0 { x[2] } else { -x[2] };
+                (x.clone(), vec![x[0] + 0.5 * flip])
+            })
+            .collect();
+        write_bin_file(&train.join("0.bin"), &recs).unwrap();
+        cfg.training_data = train;
+        cfg.output_dir = tmp.path().join("out-linear");
+        cfg.linear_leaf_conditions = 12;
+        cfg.max_depth = 1;
+        cfg.max_iterations = Some(1);
+        cfg.screen_sample_rate = None;
+        cfg.promote_count = 64;
+        let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
+        let lines = read_journal(&r.journal_path).unwrap();
+        let exp = lines
+            .iter()
+            .find_map(|l| match l {
+                JournalLine::Experiment(e) => Some(e),
+                _ => None,
+            })
+            .unwrap();
+        assert!(exp.strategies.iter().any(|s| s == "linear-leaf"));
+        let winner = exp.winner.as_deref().expect("a winner");
+        let w = exp.candidates.iter().find(|c| c.id == winner).unwrap();
+        assert!(w.strategy.starts_with("linear-leaf"), "{}", w.strategy);
+        assert!(w.patch.root.has_slopes());
+        assert_eq!(
+            w.patch.version,
+            crate::patch::LINEAR_LEAF_PATCH_FORMAT_VERSION
         );
     }
 

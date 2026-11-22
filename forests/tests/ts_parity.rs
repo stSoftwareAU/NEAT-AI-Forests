@@ -22,6 +22,7 @@ use neat_ai_forests::corpus::write_bin_file;
 use neat_ai_forests::graft::fixtures::{if_output_creature, min_clamped_if_creature, small_mlp};
 use neat_ai_forests::graft::{graft_patch, graft_patch_with, graft_patches_with};
 use neat_ai_forests::hidden::fixtures::hidden_split;
+use neat_ai_forests::linear::fixtures::linear_stumps;
 use neat_ai_forests::patch::{Condition, Node, Patch, Provenance, Term};
 use neat_ai_forests::refine::fixtures::refined_twice;
 use neat_ai_forests::refit::fixtures::refitted;
@@ -212,6 +213,13 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
         ("clamp-refitted", refitted(&min_clamped_if_creature(4))),
         // Issue #139 — conditions on an evolved hidden neuron.
         ("mlp-hidden-split", hidden_split(&small_mlp(4), "hidden-1")),
+        // Issue #138 — linear leaves: an input in both branch roles with
+        // opposite signs, and an input in all three roles of one `IF`.
+        ("if-linear-leaves", linear_stumps(&if_output_creature(4))),
+        (
+            "clamp-linear-leaves",
+            linear_stumps(&min_clamped_if_creature(4)),
+        ),
         (
             "mlp-two-per-patch",
             graft_patches_with(

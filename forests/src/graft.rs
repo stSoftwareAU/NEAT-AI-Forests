@@ -269,20 +269,49 @@ impl Emitter<'_> {
         Ok(uuid)
     }
 
-    /// Source feeding a parent's branch: a leaf is `(shared constant, weight =
-    /// correction)`, a split is `(its IF neuron, 1.0)`. `positive` selects the
-    /// constant so the two leaves of one IF never share a source.
-    fn branch_source(&mut self, node: &Node, positive: bool) -> Result<(String, f64), GraftError> {
+    /// Sources feeding a parent's branch: a leaf is `(shared constant, weight
+    /// = correction)` plus, for a linear leaf (Issue #138), one `(input,
+    /// weight = slope)` per slope; a split is `(its IF neuron, 1.0)`.
+    /// `positive` selects the constant so the two leaves of one IF never share
+    /// a source.
+    fn branch_sources(
+        &mut self,
+        node: &Node,
+        positive: bool,
+    ) -> Result<Vec<(String, f64)>, GraftError> {
         match node {
-            Node::Leaf { correction } => {
+            Node::Leaf { correction, slopes } => {
                 let one = if positive {
                     self.ones.positive.clone()
                 } else {
                     self.ones.negative.clone()
                 };
-                Ok((one, f64::from(*correction)))
+                let mut out = Vec::with_capacity(slopes.len() + 1);
+                let mut seen = HashSet::new();
+                for t in slopes {
+                    if t.neuron.is_some() {
+                        return Err(GraftError::Canonical(
+                            "a linear leaf's slope must read an input".into(),
+                        ));
+                    }
+                    if t.feature >= self.input {
+                        return Err(GraftError::FeatureOutOfRange {
+                            feature: t.feature,
+                            input: self.input,
+                        });
+                    }
+                    if !seen.insert(t.feature) {
+                        return Err(GraftError::DuplicateSynapse(format!(
+                            "input-{} twice in one branch",
+                            t.feature
+                        )));
+                    }
+                    out.push((format!("input-{}", t.feature), f64::from(t.weight)));
+                }
+                out.push((one, f64::from(*correction)));
+                Ok(out)
             }
-            Node::Split { .. } => Ok((self.emit(node)?, 1.0)),
+            Node::Split { .. } => Ok(vec![(self.emit(node)?, 1.0)]),
         }
     }
 
@@ -297,8 +326,8 @@ impl Emitter<'_> {
                 left,
                 right,
             } => {
-                let (left_src, left_w) = self.branch_source(left, false)?;
-                let (right_src, right_w) = self.branch_source(right, true)?;
+                let left_sources = self.branch_sources(left, false)?;
+                let right_sources = self.branch_sources(right, true)?;
                 let uuid = self.fresh("if")?;
                 let mut spec = IfNodeSpec::new(uuid.clone(), 0.0);
                 let mut seen = HashSet::new();
@@ -337,9 +366,13 @@ impl Emitter<'_> {
                 // The split point rides as a weight on the shared condition
                 // constant: Σ w·x − threshold > 0 ⇔ right.
                 spec = spec
-                    .with_condition(self.ones.condition.clone(), f64::from(-condition.threshold))
-                    .with_positive(right_src, right_w)
-                    .with_negative(left_src, left_w);
+                    .with_condition(self.ones.condition.clone(), f64::from(-condition.threshold));
+                for (src, w) in right_sources {
+                    spec = spec.with_positive(src, w);
+                }
+                for (src, w) in left_sources {
+                    spec = spec.with_negative(src, w);
+                }
                 self.specs.push(spec);
                 Ok(uuid)
             }

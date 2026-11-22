@@ -224,6 +224,11 @@ pub struct ForestsConfig {
     /// Largest total depth a refined path may reach (Issue #140).
     #[serde(default = "default_refine_max_depth")]
     pub refine_max_depth: usize,
+    /// Conditions in the linear-leaf pool per iteration (Issue #138; 0 =
+    /// off). Each gets an intercept and a slope on its best second input per
+    /// side; the best `R` pairs become candidates.
+    #[serde(default)]
+    pub linear_leaf_conditions: usize,
     /// Hidden neurons offered to the search as extra split columns per
     /// iteration (Issue #139; 0 = off).
     #[serde(default)]
@@ -340,6 +345,7 @@ impl Default for ForestsConfig {
             oblique_candidates: 0,
             refine_leaves: 0,
             refine_max_depth: DEFAULT_REFINE_MAX_DEPTH,
+            linear_leaf_conditions: 0,
             hidden_features: 0,
             refit_every: 0,
             refit_records: crate::refit::DEFAULT_REFIT_RECORDS,
@@ -433,6 +439,14 @@ impl ForestsConfig {
                 .any(|r| !(r.is_finite() && *r >= 0.0))
         {
             return Err("--refit-ridges must be finite, non-negative and non-empty".into());
+        }
+        if self.linear_leaf_conditions > 0 && self.enhancements {
+            // A linear leaf carries input edges in its branch sums;
+            // NEAT-AI-Rebase's adapter cannot replay that yet.
+            return Err(
+                "--linear-leaf-conditions cannot be combined with --enhancements until NEAT-AI-Rebase can replay linear leaves"
+                    .into(),
+            );
         }
         if self.hidden_features > 0 && self.enhancements {
             // A hidden-source term names a neuron by UUID; NEAT-AI-Rebase's
@@ -535,6 +549,16 @@ mod tests {
             ..c.clone()
         };
         assert!(bad.validate().unwrap_err().contains("--hidden-features"));
+        let bad = ForestsConfig {
+            linear_leaf_conditions: 8,
+            enhancements: true,
+            ..c.clone()
+        };
+        assert!(
+            bad.validate()
+                .unwrap_err()
+                .contains("--linear-leaf-conditions")
+        );
         let bad = ForestsConfig { bins: 1, ..c };
         assert!(bad.validate().unwrap_err().contains("--bins"));
     }
