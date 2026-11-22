@@ -184,6 +184,8 @@ fn file_learnings(
     let verdicts: Vec<crate::learnings::Verdict<'_>> = record
         .candidates
         .iter()
+        // A refit is not a patch: nothing to replay elsewhere (Issue #137).
+        .filter(|c| !crate::refit::is_refit_patch(&c.patch))
         .filter_map(|c| {
             let delta = c.full_delta?;
             let accepted = record.winner.as_deref() == Some(c.id.as_str());
@@ -411,6 +413,16 @@ pub fn run_forests(
         runner_ups: Vec::new(),
     };
 
+    // Refit (Issue #137): due on each output's first iteration when the
+    // incumbent was last refitted on another corpus, then every
+    // `--refit-every` iterations.
+    let stale_refit = state
+        .meta
+        .tags
+        .iter()
+        .find(|t| t.name == crate::refit::REFIT_CORPUS_TAG)
+        .is_none_or(|t| t.value != corpus.identity);
+    let mut refitted_outputs: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut iterations = 0u64;
     let mut acceptances = 0u64;
     let mut scorer_failures = 0u64;
@@ -813,6 +825,53 @@ pub fn run_forests(
         candidates = singles;
         candidates.extend(combos);
         discarded.extend(single_discarded);
+        if cfg.refit_every > 0
+            && ((stale_refit && !refitted_outputs.contains(&output))
+                || iterations.is_multiple_of(cfg.refit_every))
+        {
+            refitted_outputs.insert(output);
+            let refit_started = Instant::now();
+            match crate::refit::refit_candidates(
+                &state.incumbent.creature,
+                &state.incumbent.checksum,
+                output,
+                &set,
+                &cfg.training_data,
+                cfg.chunk_records,
+                &crate::refit::RefitControls {
+                    records: cfg.refit_records,
+                    steps: cfg.refit_steps.clone(),
+                    ridges: cfg.refit_ridges.clone(),
+                    max_iterations: 200,
+                },
+                &corpus.identity,
+            ) {
+                Ok(crate::refit::RefitBatch {
+                    candidates: refits,
+                    discarded: refit_discarded,
+                    summary,
+                }) => {
+                    log::detail(&format!(
+                        "refit: {} leaves on {} rows ({} clamped) → {} candidate(s) in {} ms",
+                        summary.leaves,
+                        summary.rows,
+                        summary.clamped_rows,
+                        refits.len(),
+                        refit_started.elapsed().as_millis()
+                    ));
+                    if !refits.is_empty() {
+                        strategies.push("refit".into());
+                    }
+                    // Ahead of the grafts: few, and nothing else reaches every
+                    // leaf at once.
+                    let mut ordered = refits;
+                    ordered.append(&mut candidates);
+                    candidates = ordered;
+                    discarded.extend(refit_discarded);
+                }
+                Err(e) => log::warn(&format!("refit: {e}")),
+            }
+        }
         for (id, why) in &discarded {
             log::detail(&format!("discarded {id}: {why}"));
         }
@@ -1105,12 +1164,18 @@ pub fn run_forests(
                         );
                     }
                 }
+                if crate::refit::is_refit(winner) {
+                    state
+                        .meta
+                        .upsert(crate::refit::REFIT_CORPUS_TAG, corpus.identity.clone());
+                }
                 state.last_strategy = winner.strategy();
                 state.last_target = target_uuid;
                 // Near-winners: fully scored, positive Δ, not the winner → carry forward.
                 state.runner_ups = candidates
                     .iter()
                     .filter(|c| &c.id != id && c.combo.is_empty())
+                    .filter(|c| !crate::refit::is_refit(c))
                     .filter(|c| {
                         full.scores
                             .get(&c.id)
@@ -1143,6 +1208,7 @@ pub fn run_forests(
                         candidates
                             .iter()
                             .filter(|c| c.combo.is_empty())
+                            .filter(|c| !crate::refit::is_refit(c))
                             .filter(|c| {
                                 f.scores
                                     .get(&c.id)
@@ -2059,6 +2125,42 @@ mod tests {
                 .iter()
                 .all(|c| c.strategy.starts_with("refine-") && c.full_score.is_some()),
             "refinements are scored like everything else"
+        );
+    }
+
+    /// Issue #137 — with `--refit-every` on, once the loop has accepted a tree
+    /// it offers joint refits of every leaf, scored like everything else and
+    /// never carried forward as a patch.
+    #[test]
+    fn the_loop_offers_refits_of_the_leaves_it_accepted() {
+        let (_tmp, mut cfg) = fixture();
+        cfg.refit_every = 1;
+        cfg.screen_sample_rate = None;
+        let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
+        let lines = read_journal(&r.journal_path).unwrap();
+        let experiments: Vec<&ExperimentRecord> = lines
+            .iter()
+            .filter_map(|l| match l {
+                JournalLine::Experiment(e) => Some(&**e),
+                _ => None,
+            })
+            .collect();
+        let refits: Vec<&CandidateRecord> = experiments
+            .iter()
+            .flat_map(|e| e.candidates.iter())
+            .filter(|c| c.strategy == "refit")
+            .collect();
+        assert!(r.acceptances >= 1);
+        assert!(!refits.is_empty(), "no refit was offered");
+        assert!(refits.iter().all(|c| c.full_score.is_some()));
+        assert!(
+            experiments
+                .iter()
+                .filter(|e| e.strategies.iter().any(|s| s == "refit"))
+                .all(|e| e
+                    .candidates
+                    .iter()
+                    .all(|c| !c.strategy.starts_with("carry-forward:refit")))
         );
     }
 

@@ -243,6 +243,10 @@ experiment back on the table.
 | `--oblique-candidates` | `0` | oblique 2–3 feature splits per iteration |
 | `--refine-leaves` | `0` | leaves already on the creature split per iteration, read back from its structure (#140); cannot be combined with `--enhancements` yet |
 | `--refine-max-depth` | `6` | largest total depth a refined path may reach |
+| `--refit-every` | `0` | refit every leaf on the creature in one ridge least-squares solve every N iterations, and on each output's first iteration after a corpus change (#137); cannot be combined with `--enhancements` |
+| `--refit-records` | `20000` | search-set rows held in memory for the refit solve (0 = all) |
+| `--refit-steps` | `0.25,0.5,1.0` | step multipliers tried on the refit's least-squares step |
+| `--refit-ridges` | `1.0,0.1` | ridge strengths tried, relative to each leaf's curvature |
 | `--boost-rounds` | `1` | boosting rounds on the sample: subtract the best patch, search again; bundle prefixes verified in one scorer call |
 | `--combo-candidates` | `4` | combinations: top-2…top-N distinct discoveries stacked on one clone, plus last iteration's near-winners carried forward |
 | `--candidates` | `64` | maximum grafted candidates per iteration |
@@ -780,6 +784,7 @@ NEAT-AI-Forests/
 │   │   ├── patch.rs           # portable patch format + evaluator (#7)
 │   │   ├── promote.rs         # screen + authoritative promotion (#9)
 │   │   ├── refine.rs          # read trees back + refine their leaves (#140)
+│   │   ├── refit.rs           # joint ridge refit of every leaf (#137)
 │   │   ├── report.rs          # journal economics report (#15)
 │   │   ├── residuals.rs       # residual extraction + sidecar (#4)
 │   │   ├── run.rs             # the evolution loop (#10)
