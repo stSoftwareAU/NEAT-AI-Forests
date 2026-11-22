@@ -25,6 +25,23 @@ fn default_refine_max_depth() -> usize {
     DEFAULT_REFINE_MAX_DEPTH
 }
 
+fn default_refit_records() -> u64 {
+    crate::refit::DEFAULT_REFIT_RECORDS
+}
+
+/// Default refit step multipliers (Issue #137).
+pub const DEFAULT_REFIT_STEPS: [f64; 3] = [0.25, 0.5, 1.0];
+/// Default refit ridge strengths (Issue #137).
+pub const DEFAULT_REFIT_RIDGES: [f64; 2] = [1.0, 0.1];
+
+fn default_refit_steps() -> Vec<f64> {
+    DEFAULT_REFIT_STEPS.to_vec()
+}
+
+fn default_refit_ridges() -> Vec<f64> {
+    DEFAULT_REFIT_RIDGES.to_vec()
+}
+
 /// Tree growth policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -207,6 +224,24 @@ pub struct ForestsConfig {
     /// Largest total depth a refined path may reach (Issue #140).
     #[serde(default = "default_refine_max_depth")]
     pub refine_max_depth: usize,
+    /// Refit every leaf on the creature in one solve every this many
+    /// iterations on each output, counted per output (Issue #137; 0 = off).
+    ///
+    /// Whatever the cadence, a refit also runs on each output's first
+    /// iteration when the incumbent was last refitted on another corpus (or
+    /// never), since that is when every leaf is slightly stale at once.
+    #[serde(default)]
+    pub refit_every: u64,
+    /// Search-set rows held in memory for the refit solve (0 = all).
+    #[serde(default = "default_refit_records")]
+    pub refit_records: u64,
+    /// Step multipliers tried on the refit's least-squares step.
+    #[serde(default = "default_refit_steps")]
+    pub refit_steps: Vec<f64>,
+    /// Ridge strengths tried, relative to each leaf's own curvature (the
+    /// zero step is the incumbent).
+    #[serde(default = "default_refit_ridges")]
+    pub refit_ridges: Vec<f64>,
     /// Boosting rounds on the in-memory sample: after the best patch is chosen
     /// its correction is subtracted from the sample residuals and the search
     /// repeats, producing a bundle whose prefixes are verified in one scorer
@@ -301,6 +336,10 @@ impl Default for ForestsConfig {
             oblique_candidates: 0,
             refine_leaves: 0,
             refine_max_depth: DEFAULT_REFINE_MAX_DEPTH,
+            refit_every: 0,
+            refit_records: crate::refit::DEFAULT_REFIT_RECORDS,
+            refit_steps: default_refit_steps(),
+            refit_ridges: default_refit_ridges(),
             combo_candidates: 4,
             boost_rounds: 1,
             candidates: 64,
@@ -374,6 +413,30 @@ impl ForestsConfig {
                     .into(),
             );
         }
+        if self.refit_steps.is_empty()
+            || self
+                .refit_steps
+                .iter()
+                .any(|s| !(s.is_finite() && *s > 0.0))
+        {
+            return Err("--refit-steps must be finite, positive and non-empty".into());
+        }
+        if self.refit_ridges.is_empty()
+            || self
+                .refit_ridges
+                .iter()
+                .any(|r| !(r.is_finite() && *r >= 0.0))
+        {
+            return Err("--refit-ridges must be finite, non-negative and non-empty".into());
+        }
+        if self.refit_every > 0 && self.enhancements {
+            // A refit changes weights, not structure, so there is no patch for
+            // NEAT-AI-Rebase to carry; re-run it on the moved champion instead.
+            return Err(
+                "--refit-every cannot be combined with --enhancements: a refit is not a patch Rebase can replay; re-run it on the champion instead"
+                    .into(),
+            );
+        }
         Ok(())
     }
 
@@ -437,6 +500,22 @@ mod tests {
             ..c.clone()
         };
         assert!(bad.validate().unwrap_err().contains("--refine-leaves"));
+        let bad = ForestsConfig {
+            refit_steps: vec![0.0],
+            ..c.clone()
+        };
+        assert!(bad.validate().unwrap_err().contains("--refit-steps"));
+        let bad = ForestsConfig {
+            refit_ridges: vec![-1.0],
+            ..c.clone()
+        };
+        assert!(bad.validate().unwrap_err().contains("--refit-ridges"));
+        let bad = ForestsConfig {
+            refit_every: 5,
+            enhancements: true,
+            ..c.clone()
+        };
+        assert!(bad.validate().unwrap_err().contains("--refit-every"));
         let bad = ForestsConfig { bins: 1, ..c };
         assert!(bad.validate().unwrap_err().contains("--bins"));
     }

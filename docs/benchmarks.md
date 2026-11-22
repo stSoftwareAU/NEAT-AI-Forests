@@ -227,6 +227,10 @@ neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/
 # G. refine existing leaves (Issue #140) — compare against A at the same seed and budget
 neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/refine --seed 1 --refine-leaves 8
 
+# H. one refit at the start of the run (Issue #137) — compare against A at the same seed and budget;
+#    --refit-every larger than the run's iteration count means "only the opening refit"
+neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/refit --seed 1 --refit-every 100000
+
 # E. random-only control (no histogram guidance)
 neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/random --seed 1 --top-k 0 --random-candidates 48
 

@@ -7,6 +7,16 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Added
 
+- **Refit every leaf on the creature in one solve (Issue #137).**
+  `--refit-every n` (off by default) reads every tree back from structure and
+  solves the ridge-regularised least-squares problem for all leaf values at
+  once, with splits fixed, by conjugate gradient on a stride sample
+  (`--refit-records`). Records where an output clamp binds get no weight.
+  Each `--refit-steps` × `--refit-ridges` pair is one candidate, judged by the
+  full-corpus scorer. It runs on each output's first iteration after a corpus
+  change (tracked by the `forests-refit-corpus` tag) and then every `n`
+  iterations on each output, counted per output. Refits change weights only, are never replayed, and are refused
+  with `--enhancements`.
 - **Refine leaves already on the creature (Issue #140).** `--refine-leaves n`
   (off by default) reads every tree on an output's anchor back from the
   creature's structure, picks the `n` leaves with the most residual spread a
