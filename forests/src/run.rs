@@ -835,11 +835,13 @@ pub fn run_forests(
         }
         // Boosting rounds (#40): subtract the best patch from the sample
         // residuals, search again, and verify the bundle's prefixes together.
-        // A refinement applies on one leaf's rows only, which the boosting
-        // residual update cannot express, so it never seeds a bundle.
+        // A refinement applies on one leaf's rows only, and a linear leaf's
+        // slope is not a bin-space correction: the boosting residual update
+        // can express neither, so neither seeds a bundle.
         if cfg.boost_rounds > 1
             && let Some(first) = patches.first().cloned()
             && first.parent.is_none()
+            && !first.root.has_slopes()
         {
             let boost_started = Instant::now();
             let mut boosted = set.clone();

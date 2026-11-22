@@ -59,8 +59,11 @@ neuron in the scorer's growth cost. A sign flip puts one input in both branch
 roles, which NEAT-AI-core keys by `(from, to, type)` and allows for an `IF`
 target (#68). Slopes read inputs only, never hidden columns. A refinement
 (#140) and a refit (#137) treat a branch with a slope as not a constant leaf
-and leave it alone. NEAT-AI-Rebase cannot replay a slope yet, so the flag is
-refused with `--enhancements`.
+and leave it alone. A linear leaf never seeds a boosting bundle, since the
+residual update works in bin space and cannot apply a slope. Slopes are not
+capped by `--max-correction` (intercepts are); a steep slope is judged by the
+full-corpus scorer like any other candidate. NEAT-AI-Rebase
+cannot replay a slope yet, so the flag is refused with `--enhancements`.
 
 ## Splitting on hidden neurons (Issue #139)
 

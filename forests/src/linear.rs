@@ -691,4 +691,30 @@ mod tests {
         }
         assert!(gain > 0.0);
     }
+
+    /// Refinement and refit read trees back from structure and must leave a
+    /// linear leaf alone: a branch with an input source is neither a constant
+    /// leaf nor a child `IF`. The constant leaves around it are still read.
+    #[test]
+    fn refine_and_refit_leave_linear_leaves_alone() {
+        use crate::refine::ForestView;
+        let creature = graft_patch(
+            &fixtures::linear_stumps(&identity_creature(3, 1)),
+            &Patch::new(0, Node::stump(1, 0.2, 0.1, -0.1), Provenance::default()),
+        )
+        .unwrap()
+        .creature;
+        let view = ForestView::read(&creature, 0).unwrap();
+        let mut values: Vec<f64> = view.leaves.iter().map(|l| l.value).collect();
+        values.sort_by(f64::total_cmp);
+        let expected = [-0.1f32, 0.03, 0.1];
+        assert_eq!(
+            values.len(),
+            expected.len(),
+            "only the constant leaves: {values:?}"
+        );
+        for (got, want) in values.iter().zip(expected) {
+            assert!((*got as f32 - want).abs() < 1e-6, "{values:?}");
+        }
+    }
 }
