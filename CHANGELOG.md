@@ -5,6 +5,22 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Refine leaves already on the creature (Issue #140).** `--refine-leaves n`
+  (off by default) reads every tree on an output's anchor back from the
+  creature's structure, picks the `n` leaves with the most residual spread a
+  constant cannot fit, and searches a stump and a subtree on the rows that
+  reach each one. The result is grafted as a child `IF` in the leaf's own
+  branch sum, so it stays additive and is addressed by parent UUID and role
+  (patch format v2, `parent`). `--refine-max-depth` (default 6) caps the total
+  depth. Not yet combinable with `--enhancements`: NEAT-AI-Rebase cannot replay
+  a refinement. Learnings replay keeps a refinement's parent and format
+  version, so a cached refinement grafts into the same leaf under the same id,
+  or is refused with `NoSuchParent` on a creature that lacks that leaf. A
+  cached refinement is only offered where its parent leaf is, and never to an
+  `--enhancements` run.
+
 ### Changed
 
 - **`security.yml` installs a prebuilt `cargo-audit` (#119).** The

@@ -363,6 +363,40 @@ pub fn apply_patch_residuals(
     Ok(())
 }
 
+/// Stream the corpus once and call `f(position, inputs)` for every search-set
+/// record, in set order, with the record's whole raw input row.
+///
+/// `position` indexes the set's rows across its chunks, so it lines up with
+/// the residuals and weights the chunks hold.
+///
+/// # Errors
+///
+/// A corpus read failure, or whatever `f` returns.
+pub fn for_each_set_row(
+    set: &SearchSet,
+    training_dir: &Path,
+    width: usize,
+    outputs: usize,
+    chunk_records: usize,
+    mut f: impl FnMut(usize, &[f32]) -> Result<(), String>,
+) -> Result<(), String> {
+    let config = TrainingDataConfig::new(width, outputs);
+    let mut next = 0usize;
+    for_each_chunk(training_dir, &config, chunk_records, |chunk| {
+        let end = chunk.first_index + chunk.records as u64;
+        while next < set.record_indices.len() && set.record_indices[next] < end {
+            let r = (set.record_indices[next] - chunk.first_index) as usize;
+            f(next, &chunk.inputs[r * width..(r + 1) * width])?;
+            next += 1;
+        }
+        Ok(())
+    })?;
+    if next != set.record_indices.len() {
+        return Err("search set / corpus record mismatch".into());
+    }
+    Ok(())
+}
+
 /// Raw feature values for a subset of features over the search-set records
 /// (used by oblique search, which cannot work on bins).
 #[derive(Debug, Clone)]

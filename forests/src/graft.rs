@@ -147,6 +147,9 @@ pub enum GraftError {
     /// NEAT-AI-core's canonical `IF` graft helper refused the node, carrying
     /// its `neat_core::GraftError` text verbatim (Issue #42).
     Canonical(String),
+    /// A refinement names a parent that is not a readable tree node under the
+    /// patch's output — gone, rewired, or never a tree (Issue #140).
+    NoSuchParent(String),
 }
 
 impl fmt::Display for GraftError {
@@ -198,6 +201,10 @@ impl fmt::Display for GraftError {
             Self::Canonical(m) => {
                 write!(f, "NEAT-AI-core refused the canonical IF graft: {m}")
             }
+            Self::NoSuchParent(u) => write!(
+                f,
+                "refinement parent `{u}` is not a readable tree node under this output; refusing to graft"
+            ),
         }
     }
 }
@@ -496,16 +503,16 @@ const MAX_ANCHOR_DEPTH: usize = 8;
 
 /// Where a correction can enter the creature, and what it is worth at the
 /// output once it does.
-struct Anchor {
+pub(crate) struct Anchor {
     /// Neuron the patch root's outward edge attaches to.
-    uuid: String,
+    pub(crate) uuid: String,
     /// `d(output) / d(anchor activation)` along the branch walked — the
     /// product of the synapse weights passed on the way down. The root's
     /// outward edge carries `1 / gain`, so a correction of `c` moves the
     /// output by `c` on every record whose value flows down that branch.
-    gain: f64,
+    pub(crate) gain: f64,
     /// The anchor's squash, already parsed.
-    squash: SquashType,
+    pub(crate) squash: SquashType,
 }
 
 /// Find the neuron a correction for `output_uuid` can be added to.
@@ -529,7 +536,10 @@ struct Anchor {
 /// input nor a constant — and fails closed otherwise. Nothing pre-existing is
 /// ever rewritten: the clamps stay, and on a record where a clamp binds the
 /// correction is simply capped, which the scorer sees.
-fn resolve_anchor(incumbent: &CreatureExport, output_uuid: &str) -> Result<Anchor, GraftError> {
+pub(crate) fn resolve_anchor(
+    incumbent: &CreatureExport,
+    output_uuid: &str,
+) -> Result<Anchor, GraftError> {
     let by_uuid: HashMap<&str, &NeuronExport> = incumbent
         .neurons
         .iter()
@@ -604,7 +614,7 @@ fn resolve_anchor(incumbent: &CreatureExport, output_uuid: &str) -> Result<Ancho
 /// The uuid of `incumbent`'s output neuron `output`, checking that the output
 /// neurons are the trailing entries of `neurons` — the layout every index in
 /// this module assumes.
-fn output_uuid(incumbent: &CreatureExport, output: usize) -> Result<String, GraftError> {
+pub(crate) fn output_uuid(incumbent: &CreatureExport, output: usize) -> Result<String, GraftError> {
     if output >= incumbent.output {
         return Err(GraftError::OutputOutOfRange {
             output,
@@ -725,11 +735,27 @@ pub fn graft_patch_options(
     // the fleet has wrapped the output in `MINIMUM`/`MAXIMUM` clamps — the
     // neuron behind them, with the gain back out to the output (Issue #58).
     let anchor = resolve_anchor(incumbent, &output_neuron)?;
-    let target_uuid = anchor.uuid.clone();
+    // A refinement (Issue #140) enters one branch sum of an existing tree node
+    // instead, found by reading the trees back from structure; its gain is the
+    // node's, so the leaves stay in output space there too.
+    let refine = match &patch.parent {
+        None => None,
+        Some(parent) => {
+            let view = crate::refine::ForestView::read(incumbent, patch.output)?;
+            let node = view
+                .node(&parent.uuid)
+                .ok_or_else(|| GraftError::NoSuchParent(parent.uuid.clone()))?;
+            Some((parent.clone(), node.gain))
+        }
+    };
+    let (target_uuid, gain) = match &refine {
+        Some((parent, gain)) => (parent.uuid.clone(), *gain),
+        None => (anchor.uuid.clone(), anchor.gain),
+    };
     // A correction of `c` at the anchor is worth `gain · c` at the output, so
     // the outward edge carries `1 / gain` and the patch's leaves stay in the
     // output space the residuals were measured in.
-    let edge = 1.0 / anchor.gain;
+    let edge = 1.0 / gain;
     let n = incumbent.neurons.len();
     let first_output = n - incumbent.output;
     let existing: HashSet<&str> = incumbent.neurons.iter().map(|x| x.uuid.as_str()).collect();
@@ -756,7 +782,7 @@ pub fn graft_patch_options(
     //   root feeds the positive branch directly and an IDENTITY relay feeds
     //   the negative branch (two distinct (from, to) pairs).
     // `resolve_anchor` has already refused anything else.
-    let target_is_if = anchor.squash == SquashType::If;
+    let target_is_if = refine.is_none() && anchor.squash == SquashType::If;
     // The root's outward edge: untyped into a point-wise anchor, `positive`
     // into an `IF` one, where the relay below carries the `negative` half.
     // An `IF` anchor needs the correction in both of its branch sums. Two
@@ -777,6 +803,16 @@ pub fn graft_patch_options(
             .last_mut()
             .expect("a split patch describes at least one node");
         *root = match (target_is_if, relay.is_some()) {
+            // A refinement feeds exactly the one branch it refines.
+            _ if refine.is_some() => {
+                let (parent, _) = refine.as_ref().expect("checked");
+                let role = match parent.role {
+                    crate::patch::BranchRole::Positive => SynapseType::Positive,
+                    crate::patch::BranchRole::Negative => SynapseType::Negative,
+                };
+                root.clone()
+                    .with_target_role(target_uuid.clone(), edge, role)
+            }
             // Both branches from the one source, no relay in between.
             (true, false) => root
                 .clone()

@@ -14,6 +14,44 @@ use serde::{Deserialize, Serialize};
 /// Current patch format version.
 pub const PATCH_FORMAT_VERSION: u32 = 1;
 
+/// Format version of a patch that refines a leaf already on the creature
+/// (Issue #140). It is a v1 patch plus [`Patch::parent`]; the version moves so
+/// a reader that does not know the field refuses the patch instead of grafting
+/// it at the anchor.
+pub const REFINE_PATCH_FORMAT_VERSION: u32 = 2;
+
+/// Which branch sum of an existing `IF` neuron a refinement feeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BranchRole {
+    /// Summed when the parent's condition is strictly positive (the right branch).
+    Positive,
+    /// Summed otherwise (the left branch).
+    Negative,
+}
+
+impl BranchRole {
+    /// Lower-case label, as the creature's synapse `type` spells it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Positive => "positive",
+            Self::Negative => "negative",
+        }
+    }
+}
+
+/// Where a refinement attaches: one branch of an `IF` neuron already on the
+/// creature, addressed by UUID so a replay on a moved champion can find it or
+/// refuse cleanly when it is gone (Issue #140).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attach {
+    /// UUID of the existing `IF` neuron.
+    pub uuid: String,
+    /// The branch sum the patch's root feeds.
+    pub role: BranchRole,
+}
+
 /// One weighted feature in a (possibly oblique) condition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Term {
@@ -247,6 +285,11 @@ pub struct Patch {
     pub output: usize,
     /// Tree root.
     pub root: Node,
+    /// `Some` for a refinement (Issue #140): the root feeds this branch of an
+    /// existing `IF` instead of the output's anchor, so its leaves only apply
+    /// to records that already reach that leaf.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<Attach>,
     /// Provenance.
     pub provenance: Provenance,
 }
@@ -258,13 +301,49 @@ impl Patch {
             version: PATCH_FORMAT_VERSION,
             output,
             root,
+            parent: None,
             provenance,
         }
     }
 
-    /// Deterministic identity: SHA-256 of `output` + canonical root JSON (provenance excluded).
+    /// New refinement of the leaf at `parent` (Issue #140), format v2.
+    pub fn refinement(output: usize, parent: Attach, root: Node, provenance: Provenance) -> Self {
+        Self {
+            version: REFINE_PATCH_FORMAT_VERSION,
+            output,
+            root,
+            parent: Some(parent),
+            provenance,
+        }
+    }
+
+    /// The lowest format version that can carry this patch, read from its
+    /// shape: version 2 for a refinement (`parent`), version 1 otherwise.
+    pub fn required_version(&self) -> u32 {
+        if self.parent.is_some() {
+            REFINE_PATCH_FORMAT_VERSION
+        } else {
+            PATCH_FORMAT_VERSION
+        }
+    }
+
+    /// Whether NEAT-AI-Rebase can replay this patch: version-1 shapes only.
+    /// It has no `parent` yet, so it would mirror a refinement under a
+    /// different id and refuse the bundle.
+    pub fn rebase_can_replay(&self) -> bool {
+        self.required_version() == PATCH_FORMAT_VERSION
+    }
+
+    /// Deterministic identity: SHA-256 of `output` + canonical root JSON
+    /// (provenance excluded). A refinement also hashes where it attaches, so
+    /// one split under two different leaves is two patches; a patch without a
+    /// parent keeps the id it always had.
     pub fn id(&self) -> String {
-        let canon = serde_json::to_string(&(&self.output, &self.root)).unwrap_or_default();
+        let canon = match &self.parent {
+            None => serde_json::to_string(&(&self.output, &self.root)),
+            Some(parent) => serde_json::to_string(&(&self.output, &self.root, parent)),
+        }
+        .unwrap_or_default();
         crate::incumbent::sha256_hex(canon.as_bytes())[..16].to_string()
     }
 
@@ -301,6 +380,36 @@ mod tests {
         assert_eq!(p.id(), q.id());
         let r = Patch::new(1, p.root.clone(), Provenance::default());
         assert_ne!(p.id(), r.id());
+    }
+
+    #[test]
+    fn a_refinement_round_trips_and_its_parent_is_part_of_its_identity() {
+        let root = Node::stump(3, 0.25, 0.0, 0.01);
+        let plain = Patch::new(0, root.clone(), Provenance::default());
+        let attach = |uuid: &str, role| Attach {
+            uuid: uuid.into(),
+            role,
+        };
+        let a = Patch::refinement(
+            0,
+            attach("forest-x-if0", BranchRole::Positive),
+            root.clone(),
+            Provenance::default(),
+        );
+        let b = Patch::refinement(
+            0,
+            attach("forest-x-if0", BranchRole::Negative),
+            root,
+            Provenance::default(),
+        );
+        assert_eq!(a.version, REFINE_PATCH_FORMAT_VERSION);
+        assert_ne!(a.id(), plain.id());
+        assert_ne!(a.id(), b.id());
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(json.contains(r#""parent":{"uuid":"forest-x-if0","role":"positive"}"#));
+        assert_eq!(serde_json::from_str::<Patch>(&json).unwrap(), a);
+        // A patch with no parent serialises exactly as v1 always did.
+        assert!(!serde_json::to_string(&plain).unwrap().contains("parent"));
     }
 
     #[test]

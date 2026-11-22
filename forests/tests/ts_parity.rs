@@ -22,6 +22,7 @@ use neat_ai_forests::corpus::write_bin_file;
 use neat_ai_forests::graft::fixtures::{if_output_creature, min_clamped_if_creature, small_mlp};
 use neat_ai_forests::graft::{graft_patch, graft_patch_with, graft_patches_with};
 use neat_ai_forests::patch::{Condition, Node, Patch, Provenance, Term};
+use neat_ai_forests::refine::fixtures::refined_twice;
 
 fn scorer_binary() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("NEAT_SCORER_BIN") {
@@ -204,6 +205,13 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
             )
             .unwrap()
             .creature,
+        ),
+        // Issue #140 — a refinement and a refinement of that refinement, fed
+        // into an existing node's branch sum rather than the anchor.
+        ("if-refined-twice", refined_twice(&if_output_creature(4))),
+        (
+            "clamp-refined-twice",
+            refined_twice(&min_clamped_if_creature(4)),
         ),
         (
             "mlp-two-per-patch",

@@ -550,6 +550,42 @@ pub fn run_forests(
                 strategies.push("oblique-split".into());
             }
         }
+        // Refinements (Issue #140): split leaves already on the creature, read
+        // back from its structure, on the rows that reach each one.
+        if cfg.refine_leaves > 0 {
+            match crate::refine::ForestView::read(&state.incumbent.creature, output) {
+                Ok(view) => {
+                    let refined = crate::refine::search_refinements(
+                        &view,
+                        &set,
+                        &bins,
+                        &cfg.training_data,
+                        state.incumbent.creature.output,
+                        cfg.chunk_records,
+                        &crate::refine::RefineControls {
+                            leaves: cfg.refine_leaves,
+                            max_total_depth: cfg.refine_max_depth,
+                            max_depth: cfg.max_depth,
+                            stump: controls.clone(),
+                            growth: cfg.growth,
+                            threads: cfg.analysis_threads,
+                        },
+                    )?;
+                    log::detail(&format!(
+                        "refine: {} tree(s), {} leaves on the anchor; {} searched, {} discoveries",
+                        refined.trees,
+                        refined.leaves,
+                        refined.searched,
+                        refined.discoveries.len()
+                    ));
+                    if !refined.discoveries.is_empty() {
+                        strategies.push("refine".into());
+                    }
+                    discoveries.extend(refined.discoveries);
+                }
+                Err(e) => log::warn(&format!("refine: cannot read the trees: {e}")),
+            }
+        }
         let search_ms = search_started.elapsed().as_millis() as u64;
 
         // ---- candidates ---------------------------------------------------
@@ -600,8 +636,15 @@ pub fn run_forests(
         // better evidence than a proxy gain, and it is the only way a win
         // survives the fittest creature moving on before we could re-apply it.
         if !known.is_empty() {
+            // Only what can graft here, and under `--enhancements` only what
+            // NEAT-AI-Rebase can replay: `--refine-leaves` is refused there,
+            // and the shared cache must not bring refinements in by the back
+            // door, where Rebase would mirror them under another id and fail
+            // the bundle.
+            let replayable =
+                crate::learnings::replayable(&known, &state.incumbent.creature, cfg.enhancements);
             let chosen = crate::learnings::choose(
-                &known,
+                &replayable,
                 &state.incumbent.checksum,
                 state.incumbent.creature.input,
                 state.incumbent.creature.output,
@@ -665,8 +708,11 @@ pub fn run_forests(
         }
         // Boosting rounds (#40): subtract the best patch from the sample
         // residuals, search again, and verify the bundle's prefixes together.
+        // A refinement applies on one leaf's rows only, which the boosting
+        // residual update cannot express, so it never seeds a bundle.
         if cfg.boost_rounds > 1
             && let Some(first) = patches.first().cloned()
+            && first.parent.is_none()
         {
             let boost_started = Instant::now();
             let mut boosted = set.clone();
@@ -1992,6 +2038,110 @@ mod tests {
         // The two planted stumps are found by successive rounds.
         assert!(bundles.iter().any(|c| c.features.len() >= 2));
         assert!(r.acceptances >= 1);
+    }
+
+    /// Issue #140 — with `--refine-leaves` on, once the loop has accepted a
+    /// tree it reads it back and offers refinements of its leaves, which are
+    /// grafted and scored like any other candidate.
+    #[test]
+    fn the_loop_offers_refinements_of_the_trees_it_accepted() {
+        let (_tmp, mut cfg) = fixture();
+        cfg.refine_leaves = 4;
+        cfg.screen_sample_rate = None;
+        let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
+        let lines = read_journal(&r.journal_path).unwrap();
+        let refinements: Vec<&CandidateRecord> = lines
+            .iter()
+            .filter_map(|l| match l {
+                JournalLine::Experiment(e) => Some(e),
+                _ => None,
+            })
+            .flat_map(|e| e.candidates.iter())
+            .filter(|c| c.patch.parent.is_some())
+            .collect();
+        assert!(r.acceptances >= 1);
+        assert!(!refinements.is_empty(), "no refinement was offered");
+        assert!(
+            refinements
+                .iter()
+                .all(|c| c.strategy.starts_with("refine-") && c.full_score.is_some()),
+            "refinements are scored like everything else"
+        );
+    }
+
+    /// Issue #140 — `--refine-leaves` is refused with `--enhancements`, and
+    /// the shared cache must not bring a refinement in anyway: with an
+    /// accepted refinement of a leaf the opening creature carries on file, an
+    /// `--enhancements` run never offers it and still writes its bundle.
+    #[test]
+    fn an_enhancements_run_does_not_replay_a_refinement() {
+        use crate::learnings::{CorpusId, HostName, Learning, LearningsStore, Outcome};
+        use crate::patch::{Attach, BranchRole, Node, Provenance};
+        let (tmp, mut cfg) = fixture();
+        let planted = crate::graft::graft_patch(
+            &crate::graft::fixtures::identity_creature(3, 1),
+            &Patch::new(0, Node::stump(0, 0.5, 0.0, 0.1), Provenance::default()),
+        )
+        .unwrap()
+        .creature;
+        std::fs::write(&cfg.creature, serde_json::to_string(&planted).unwrap()).unwrap();
+        let view = crate::refine::ForestView::read(&planted, 0).unwrap();
+        let leaf = view.leaves[0].attach.clone();
+        let refinement = Patch::refinement(
+            0,
+            Attach {
+                uuid: leaf.uuid,
+                role: BranchRole::Negative,
+            },
+            Node::stump(1, 0.0, 0.0, 0.3),
+            Provenance {
+                strategy: "refine-stump".into(),
+                ..Provenance::default()
+            },
+        );
+        let shared = tmp.path().join("shared/learnings");
+        cfg.learnings_dir = Some(shared.clone());
+        cfg.learnings_host = Some("host-b".into());
+        cfg.enhancements = true;
+        cfg.max_iterations = Some(2);
+        let identity = corpus_info(&cfg.training_data, &TrainingDataConfig::new(3, 1))
+            .unwrap()
+            .identity;
+        let filed = Learning {
+            version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+            id: refinement.id(),
+            patch: refinement.clone(),
+            combo: None,
+            outcome: Outcome::Accepted,
+            delta: 1e-2,
+            corpus: identity.clone(),
+            inputs: 3,
+            outputs: 1,
+            incumbent: "another-creature".into(),
+            incumbent_score: 0.5,
+            host: "host-a".into(),
+            at_unix: 1,
+            tool_version: "test".into(),
+            notes: Vec::new(),
+        };
+        LearningsStore::new(&shared, CorpusId::new(identity), HostName::new("host-a"))
+            .append(&[filed])
+            .unwrap();
+
+        let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
+        for l in &read_journal(&r.journal_path).unwrap() {
+            if let JournalLine::Experiment(e) = l {
+                assert!(
+                    e.candidates
+                        .iter()
+                        .all(|c| c.patch.parent.is_none()
+                            && c.combo.iter().all(|p| p.parent.is_none())),
+                    "a refinement was replayed under --enhancements"
+                );
+            }
+        }
+        assert!(r.acceptances >= 1, "the fixture must accept something");
+        assert!(r.enhancements_path.is_some(), "and the bundle is written");
     }
 
     #[test]

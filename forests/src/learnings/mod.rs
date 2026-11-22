@@ -57,7 +57,8 @@ mod test_support;
 pub use model::{Context, LEARNINGS_FORMAT_VERSION, Learning, Outcome, Verdict, file_verdicts};
 pub use prune::{PruneOutcome, PrunePolicy, plan_prune};
 pub use replay::{
-    DEFAULT_RETRY_AFTER_SECS, ReplayConfig, choose, grafted_patch_ids, known_failures,
+    DEFAULT_RETRY_AFTER_SECS, ReplayConfig, choose, graftable, grafted_patch_ids, known_failures,
+    replayable,
 };
 pub use store::{CorpusId, HostName, LearningsStore, corpora, default_host, usable_root};
 
