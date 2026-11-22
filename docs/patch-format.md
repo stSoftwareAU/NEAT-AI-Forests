@@ -63,6 +63,23 @@ two patches; a patch without `parent` keeps its v1 id. NEAT-AI-Rebase cannot
 replay a refinement yet, so `--refine-leaves` is refused together with
 `--enhancements`.
 
+## Hidden-source terms (version 2, Issue #139)
+
+A condition term may read a neuron already on the creature instead of an
+input:
+
+```json
+{ "neuron": "hidden-17", "feature": 0, "weight": 1.0 }
+```
+
+`feature` is unused (and `0`) when `neuron` is set; an input term serialises
+exactly as before, without `neuron`. A patch with any such term is version 2.
+The graft emits the condition synapse from that neuron and refuses one that
+is not a hidden neuron of the creature (`NoSuchSource`) or is fed by the
+correction's own target (`DownstreamSource`). The abstract evaluator needs the
+neuron's activation for the record (`Patch::evaluate_with`); without it the
+term reads `NaN` and the record goes left.
+
 ## Evaluation semantics
 
 The abstract evaluator mirrors the NEAT-AI-core `IF` kernel exactly:

@@ -147,6 +147,12 @@ pub enum GraftError {
     /// NEAT-AI-core's canonical `IF` graft helper refused the node, carrying
     /// its `neat_core::GraftError` text verbatim (Issue #42).
     Canonical(String),
+    /// A condition names a hidden source that is not a hidden neuron of the
+    /// creature (Issue #139).
+    NoSuchSource(String),
+    /// A condition reads the neuron its correction feeds, or one downstream of
+    /// it — the graft would feed itself (Issue #139).
+    DownstreamSource(String),
     /// A refinement names a parent that is not a readable tree node under the
     /// patch's output — gone, rewired, or never a tree (Issue #140).
     NoSuchParent(String),
@@ -201,6 +207,14 @@ impl fmt::Display for GraftError {
             Self::Canonical(m) => {
                 write!(f, "NEAT-AI-core refused the canonical IF graft: {m}")
             }
+            Self::NoSuchSource(u) => write!(
+                f,
+                "condition source `{u}` is not a hidden neuron of this creature; refusing to graft"
+            ),
+            Self::DownstreamSource(u) => write!(
+                f,
+                "condition source `{u}` is fed by the correction's own target; the graft would feed itself"
+            ),
             Self::NoSuchParent(u) => write!(
                 f,
                 "refinement parent `{u}` is not a readable tree node under this output; refusing to graft"
@@ -238,6 +252,11 @@ struct Emitter<'a> {
     counter: usize,
     input: usize,
     existing: &'a HashSet<&'a str>,
+    /// Hidden neurons a condition may read (Issue #139).
+    hidden: HashSet<&'a str>,
+    /// The root's target and every neuron it feeds: a condition reading any
+    /// of them would feed itself.
+    downstream: HashSet<&'a str>,
 }
 
 impl Emitter<'_> {
@@ -283,7 +302,24 @@ impl Emitter<'_> {
                 let uuid = self.fresh("if")?;
                 let mut spec = IfNodeSpec::new(uuid.clone(), 0.0);
                 let mut seen = HashSet::new();
+                let mut seen_neurons = HashSet::new();
                 for t in &condition.terms {
+                    if let Some(source) = &t.neuron {
+                        // A learned feature already on the creature (Issue
+                        // #139): it must be a hidden neuron the root's target
+                        // does not feed, or the graft would feed itself.
+                        if !self.hidden.contains(source.as_str()) {
+                            return Err(GraftError::NoSuchSource(source.clone()));
+                        }
+                        if self.downstream.contains(source.as_str()) {
+                            return Err(GraftError::DownstreamSource(source.clone()));
+                        }
+                        if !seen_neurons.insert(source.as_str()) {
+                            return Err(GraftError::DuplicateSynapse(format!("{source} → {uuid}")));
+                        }
+                        spec = spec.with_condition(source.clone(), f64::from(t.weight));
+                        continue;
+                    }
                     if t.feature >= self.input {
                         return Err(GraftError::FeatureOutOfRange {
                             feature: t.feature,
@@ -503,6 +539,30 @@ fn with_constants(
         .neurons
         .splice(first_hidden..first_hidden, constants);
     creature
+}
+
+/// `uuid` and every neuron reachable from it along synapses.
+fn downstream_of<'a>(creature: &'a CreatureExport, uuid: &str) -> HashSet<&'a str> {
+    let mut outward: HashMap<&str, Vec<&str>> = HashMap::new();
+    for s in &creature.synapses {
+        outward
+            .entry(s.from_uuid.as_str())
+            .or_default()
+            .push(s.to_uuid.as_str());
+    }
+    let mut out: HashSet<&'a str> = HashSet::new();
+    let mut stack: Vec<&'a str> = creature
+        .neurons
+        .iter()
+        .filter(|n| n.uuid == uuid)
+        .map(|n| n.uuid.as_str())
+        .collect();
+    while let Some(n) = stack.pop() {
+        if out.insert(n) {
+            stack.extend(outward.get(n).into_iter().flatten().copied());
+        }
+    }
+    out
 }
 
 /// How far past aggregate neurons the anchor walk descends (Issue #58).
@@ -784,6 +844,17 @@ pub fn graft_patch_options(
         counter: 0,
         input: incumbent.input,
         existing: &existing,
+        hidden: incumbent
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "hidden")
+            .map(|n| n.uuid.as_str())
+            .collect(),
+        downstream: if patch.root.hidden_sources().is_empty() {
+            HashSet::new()
+        } else {
+            downstream_of(incumbent, &target_uuid)
+        },
     };
     let root_uuid = em.emit(&patch.root)?;
     // How the correction enters the anchor depends on the anchor's squash:
@@ -1417,16 +1488,7 @@ mod tests {
         let inc = identity_creature(3, 2);
         let root = Node::Split {
             condition: Condition {
-                terms: vec![
-                    Term {
-                        feature: 0,
-                        weight: 0.8,
-                    },
-                    Term {
-                        feature: 2,
-                        weight: -1.3,
-                    },
-                ],
+                terms: vec![Term::input(0, 0.8), Term::input(2, -1.3)],
                 threshold: 0.05,
             },
             left: Box::new(Node::leaf(0.0)),
@@ -1776,16 +1838,7 @@ mod tests {
                 left: Box::new(Node::stump(1, -0.5, -0.2, 0.0)),
                 right: Box::new(Node::Split {
                     condition: Condition {
-                        terms: vec![
-                            Term {
-                                feature: 1,
-                                weight: 0.7,
-                            },
-                            Term {
-                                feature: 2,
-                                weight: -0.4,
-                            },
-                        ],
+                        terms: vec![Term::input(1, 0.7), Term::input(2, -0.4)],
                         threshold: 0.05,
                     },
                     left: Box::new(Node::leaf(0.3)),
@@ -1804,16 +1857,7 @@ mod tests {
         // A condition naming the same feature twice is refused.
         let bad = Node::Split {
             condition: Condition {
-                terms: vec![
-                    Term {
-                        feature: 0,
-                        weight: 1.0,
-                    },
-                    Term {
-                        feature: 0,
-                        weight: 1.0,
-                    },
-                ],
+                terms: vec![Term::input(0, 1.0), Term::input(0, 1.0)],
                 threshold: 0.0,
             },
             left: Box::new(Node::leaf(0.0)),
@@ -2703,7 +2747,7 @@ mod tests {
             terms: [Some((a, 0.8f32)), Some((b, -1.3)), c.map(|f| (f, 0.45))]
                 .into_iter()
                 .flatten()
-                .map(|(feature, weight)| Term { feature, weight })
+                .map(|(feature, weight)| Term::input(feature, weight))
                 .collect(),
             threshold,
         };

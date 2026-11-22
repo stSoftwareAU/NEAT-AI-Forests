@@ -7,6 +7,14 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Added
 
+- **Split on hidden neurons (Issue #139).** `--hidden-features n` (off by
+  default) traces the incumbent on the search set and appends up to `n` hidden
+  neurons upstream of the anchor as extra binned split columns, ranked by the
+  residual they explain. A condition term can now name a neuron by UUID
+  (`Term::neuron`, patch format v2); the graft emits the condition edge from
+  it and refuses a neuron that is missing or downstream of the correction's
+  target. Strategies of such patches end in `+hidden`. Refused with
+  `--enhancements` until NEAT-AI-Rebase can replay them.
 - **Refit every leaf on the creature in one solve (Issue #137).**
   `--refit-every n` (off by default) reads every tree back from structure and
   solves the ridge-regularised least-squares problem for all leaf values at

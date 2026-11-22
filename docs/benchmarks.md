@@ -231,6 +231,10 @@ neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/
 #    --refit-every larger than the run's iteration count means "only the opening refit"
 neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/refit --seed 1 --refit-every 100000
 
+# I. hidden neurons as split sources (Issue #139) — compare against A; report the share of
+#    accepted patches whose strategy ends in `+hidden` and their score gained per scorer call
+neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/hidden --seed 1 --hidden-features 256
+
 # E. random-only control (no histogram guidance)
 neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/random --seed 1 --top-k 0 --random-candidates 48
 

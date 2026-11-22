@@ -376,10 +376,7 @@ fn read_condition(
     {
         any = true;
         if let Some(feature) = input_index(&s.from_uuid, width) {
-            terms.push(Term {
-                feature,
-                weight: s.weight as f32,
-            });
+            terms.push(Term::input(feature, s.weight as f32));
         } else if let Some(n) = by_uuid.get(s.from_uuid.as_str())
             && is_plain_constant(n)
         {
@@ -480,7 +477,7 @@ pub fn search_refinements(
     for_each_set_row(
         set,
         training_dir,
-        bins.features(),
+        bins.meta.input_count,
         outputs,
         chunk_records,
         |pos, row| {
@@ -520,7 +517,7 @@ pub fn search_refinements(
     for_each_set_row(
         set,
         training_dir,
-        bins.features(),
+        bins.meta.input_count,
         outputs,
         chunk_records,
         |pos, row| {

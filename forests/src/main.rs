@@ -133,6 +133,9 @@ struct Cli {
     /// Largest total depth a refined path may reach.
     #[arg(long, default_value_t = neat_ai_forests::config::DEFAULT_REFINE_MAX_DEPTH)]
     refine_max_depth: usize,
+    /// Hidden neurons offered to the search as extra split columns each iteration, ranked by how much residual they explain (0 = off; Issue #139).
+    #[arg(long, default_value_t = 0)]
+    hidden_features: usize,
     /// Refit every leaf on the creature in one solve every N iterations on each output (counted per output), and on each output's first iteration after a corpus change (0 = off; Issue #137).
     #[arg(long, default_value_t = 0)]
     refit_every: u64,
@@ -409,6 +412,7 @@ fn main() -> ExitCode {
         oblique_candidates: cli.oblique_candidates,
         refine_leaves: cli.refine_leaves,
         refine_max_depth: cli.refine_max_depth,
+        hidden_features: cli.hidden_features,
         refit_every: cli.refit_every,
         refit_records: cli.refit_records,
         refit_steps: cli.refit_steps.clone(),

@@ -427,7 +427,9 @@ pub fn raw_sample(
     outputs: usize,
     chunk_records: usize,
 ) -> Result<RawSample, String> {
-    let width = cache.features();
+    // The corpus width, not `cache.features()`: a per-iteration copy of the
+    // cache may carry hidden-neuron columns after the inputs (Issue #139).
+    let width = cache.meta.input_count;
     let config = TrainingDataConfig::new(width, outputs);
     let mut values = Vec::with_capacity(set.record_indices.len() * features.len());
     let mut residual = Vec::with_capacity(set.record_indices.len());

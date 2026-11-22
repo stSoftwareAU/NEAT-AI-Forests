@@ -480,7 +480,7 @@ pub fn run_forests(
 
         // ---- search -------------------------------------------------------
         let search_started = Instant::now();
-        let set = build_search_set(
+        let mut set = build_search_set(
             cfg,
             &bins,
             &state.residuals,
@@ -488,7 +488,41 @@ pub fn run_forests(
             output,
             iteration_seed,
         )?;
-        let bins_per_feature = set.bins_per_feature(&bins);
+        // Hidden-neuron columns (Issue #139): the incumbent's own learned
+        // features, binned and appended after the inputs. The search then
+        // uses a per-iteration copy of the bin cache that carries their edges.
+        let mut hidden_bins: Option<BinCache> = None;
+        let hidden_columns = if cfg.hidden_features > 0 {
+            let mut extended = bins.clone();
+            match crate::hidden::append_hidden_columns(
+                &mut set,
+                &mut extended,
+                &state.incumbent.creature,
+                output,
+                &cfg.training_data,
+                cfg.chunk_records,
+                cfg.hidden_features,
+                cfg.bins,
+            ) {
+                Ok(columns) => {
+                    log::detail(&format!(
+                        "hidden features: {} of {} eligible neuron(s) appended",
+                        columns.uuids.len(),
+                        columns.eligible
+                    ));
+                    hidden_bins = Some(extended);
+                    (!columns.uuids.is_empty()).then_some(columns)
+                }
+                Err(e) => {
+                    log::warn(&format!("hidden features: {e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let search_bins: &BinCache = hidden_bins.as_ref().unwrap_or(&bins);
+        let bins_per_feature = set.bins_per_feature(search_bins);
         let hist = HistogramSet::from_source_threads(
             &set.source,
             &bins_per_feature,
@@ -502,7 +536,7 @@ pub fn run_forests(
         // row count when every weight is 1, which is every stride-sampled set.
         let searched_weight = hist.total_count;
         let controls = cfg.search_controls();
-        let threshold = set.threshold(&bins);
+        let threshold = set.threshold(search_bins);
         let stumps = search_stumps(&hist, &threshold, &controls, &backend_label);
         let mut discoveries: Vec<Discovery> = stumps
             .iter()
@@ -544,6 +578,11 @@ pub fn run_forests(
             let mut feats: Vec<usize> = Vec::new();
             for s in &stumps {
                 let f = set.feature_map[s.feature];
+                // Oblique search re-reads raw input values; a hidden column
+                // has none (Issue #139).
+                if f >= state.incumbent.creature.input {
+                    continue;
+                }
                 if !feats.contains(&f) {
                     feats.push(f);
                 }
@@ -582,7 +621,7 @@ pub fn run_forests(
                     let refined = crate::refine::search_refinements(
                         &view,
                         &set,
-                        &bins,
+                        search_bins,
                         &cfg.training_data,
                         state.incumbent.creature.output,
                         cfg.chunk_records,
@@ -634,7 +673,7 @@ pub fn run_forests(
         };
         let mut patches = expand_discoveries(
             &discoveries,
-            &bins,
+            search_bins,
             output,
             &state.incumbent.checksum,
             iteration_seed,
@@ -650,6 +689,18 @@ pub fn run_forests(
                 &cand_cfg,
             ));
             strategies.push("random-stump".into());
+        }
+        // A discovery on a hidden column names it by extended index; the
+        // patch names the neuron by UUID, so it stays portable (Issue #139).
+        if let Some(columns) = &hidden_columns {
+            let resolved = patches
+                .iter_mut()
+                .map(|p| columns.resolve(p))
+                .filter(|&c| c)
+                .count();
+            if resolved > 0 {
+                strategies.push("hidden-features".into());
+            }
         }
         // Combinations: stack the top-k distinct discoveries, and carry the
         // previous iteration's near-winners forward onto the new incumbent
@@ -743,7 +794,7 @@ pub fn run_forests(
             let mut bundle = vec![first];
             for round in 2..=cfg.boost_rounds {
                 let Some(last) = bundle.last() else { break };
-                if crate::strategies::apply_patch_residuals(&mut boosted, &bins, &last.root)
+                if crate::strategies::apply_patch_residuals(&mut boosted, search_bins, &last.root)
                     .is_err()
                 {
                     break;
@@ -776,6 +827,9 @@ pub fn run_forests(
                     },
                 );
                 p.provenance.notes.extend(boosted.notes.iter().cloned());
+                if let Some(columns) = &hidden_columns {
+                    columns.resolve(&mut p);
+                }
                 bundle.push(p);
             }
             for k in 2..=bundle.len() {
@@ -2378,6 +2432,56 @@ mod tests {
             crate::refit::REFIT_CORPUS_TAG,
             meta.tags
         );
+    }
+
+    /// Issue #139 — with `--hidden-features` on, the loop splits on the
+    /// creature's own learned feature when that is where the residual steps,
+    /// and the accepted patch names the neuron by UUID.
+    #[test]
+    fn the_loop_accepts_a_split_on_a_hidden_neuron() {
+        let (tmp, mut cfg) = fixture();
+        let train = tmp.path().join("train-hidden");
+        std::fs::create_dir_all(&train).unwrap();
+        let recs: Vec<(Vec<f32>, Vec<f32>)> = (0..800u32)
+            .map(|i| {
+                let x = vec![
+                    (i % 13) as f32 / 13.0,
+                    (i * 7 % 17) as f32 / 17.0,
+                    (i * 5 % 19) as f32 / 19.0,
+                ];
+                let step = if x[1] + x[2] > 1.0 { 0.4 } else { 0.0 };
+                let y = x[0] + 0.001 * (x[1] + x[2]) + step;
+                (x, vec![y])
+            })
+            .collect();
+        write_bin_file(&train.join("0.bin"), &recs).unwrap();
+        let creature = tmp.path().join("sum.json");
+        std::fs::write(
+            &creature,
+            neat_core::creature_to_json(&crate::hidden::fixtures::sum_creature()).unwrap(),
+        )
+        .unwrap();
+        cfg.creature = creature;
+        cfg.training_data = train;
+        cfg.output_dir = tmp.path().join("out-hidden");
+        cfg.hidden_features = 2;
+        cfg.max_depth = 1;
+        cfg.max_iterations = Some(1);
+        cfg.screen_sample_rate = None;
+        let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
+        let lines = read_journal(&r.journal_path).unwrap();
+        let exp = lines
+            .iter()
+            .find_map(|l| match l {
+                JournalLine::Experiment(e) => Some(e),
+                _ => None,
+            })
+            .unwrap();
+        assert!(exp.strategies.iter().any(|s| s == "hidden-features"));
+        let winner = exp.winner.as_deref().expect("a winner");
+        let w = exp.candidates.iter().find(|c| c.id == winner).unwrap();
+        assert!(w.strategy.contains("+hidden"), "{}", w.strategy);
+        assert_eq!(w.patch.root.hidden_sources(), vec!["sum".to_string()]);
     }
 
     #[test]
