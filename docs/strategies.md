@@ -50,7 +50,9 @@ constant edges, so a refit changes weights and never structure.
 
 A refit runs on each output's first iteration whenever the incumbent's
 `forests-refit-corpus` tag names a different corpus (or is missing), and then
-every `--refit-every` iterations. An accepted refit writes the tag. Candidates
+every `--refit-every` iterations on that output — the cadence is counted per
+output, so on a multi-output creature each output's anchor gets its turn. An
+accepted refit writes the tag. Candidates
 are judged by the full-corpus scorer like everything else; they are never
 carried forward, filed in the learnings cache or replayed, and
 `--refit-every` is refused with `--enhancements`: a refit is not a patch
