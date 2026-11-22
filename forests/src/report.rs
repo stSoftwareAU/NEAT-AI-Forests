@@ -293,6 +293,7 @@ mod tests {
             backend: "cpu".into(),
             depth: 1,
             features: vec![0],
+            hidden_sources: Vec::new(),
             predicted_gain: 1.0,
             affected_records: 10,
             affected_fraction: 0.1,

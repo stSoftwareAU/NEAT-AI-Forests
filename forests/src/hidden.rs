@@ -21,7 +21,8 @@
 //!   forward-only — the anchor itself and everything it feeds, the output
 //!   included, would make a graft that feeds itself;
 //! * not Forests' own graft neurons (`forest-…`), which are trees of inputs;
-//! * not degenerate: at least two distinct quantile edges on the sample;
+//! * not constant: at least one quantile edge on the sample (a two-valued
+//!   neuron, such as a STEP, has exactly one and is offered);
 //! * ranked by the same between-bin variance of the mean residual the
 //!   `error-ranked` feature selection uses, on a small stride sample, and
 //!   capped at `N`.
@@ -65,6 +66,24 @@ impl HiddenColumns {
             .checked_sub(self.input)
             .and_then(|k| self.uuids.get(k))
             .map(String::as_str)
+    }
+
+    /// `root` with every term on one of these columns' neurons mapped back to
+    /// its extended feature index: the tree as the extended search set (and
+    /// `evaluate_on_bins` over it) sees it, for the boosting residual update.
+    /// Terms on other neurons are left as they are.
+    pub fn unresolved(&self, root: &Node) -> Node {
+        let mut out = root.clone();
+        out.visit_terms_mut(&mut |t: &mut Term| {
+            if let Some(k) = t
+                .neuron
+                .as_deref()
+                .and_then(|u| self.uuids.iter().position(|c| c == u))
+            {
+                *t = Term::input(self.input + k, t.weight);
+            }
+        });
+        out
     }
 
     /// Rewrite every term of `patch` that names a hidden column by extended
@@ -223,7 +242,7 @@ pub fn append_hidden_columns(
         .enumerate()
         .filter_map(|(k, _)| {
             let edges = quantile_edges(&mut sample[k].clone(), requested_bins);
-            (edges.len() >= 2).then(|| {
+            (!edges.is_empty()).then(|| {
                 (
                     explained(&edges, &sample[k], &sample_residual, &sample_weight),
                     k,
@@ -528,6 +547,162 @@ mod tests {
             let got = cand.activate(&x, 1)[0] - base.activate(&x, 1)[0];
             assert!((got - expected).abs() < 1e-6, "{got} vs {expected}");
         }
+    }
+
+    /// `output = x0 + 0.001·(noise + konst + binary + sum)` over four hidden
+    /// neurons: `noise = x0`, `konst` a constant 0.3, `binary = STEP(x1 + x2
+    /// − 1)` (two values) and `sum = x1 + x2`.
+    fn four_neuron_creature() -> CreatureExport {
+        use neat_core::{NeuronExport, SynapseExport};
+        let neuron = |uuid: &str, kind: &str, bias: f64, squash: &str| NeuronExport {
+            id: None,
+            neuron_type: kind.into(),
+            uuid: uuid.into(),
+            bias,
+            squash: Some(squash.into()),
+        };
+        let synapse = |from: &str, to: &str, weight: f64| SynapseExport {
+            from_uuid: from.into(),
+            to_uuid: to.into(),
+            weight,
+            synapse_type: None,
+        };
+        CreatureExport {
+            input: 3,
+            output: 1,
+            neurons: vec![
+                neuron("noise", "hidden", 0.0, "IDENTITY"),
+                neuron("konst", "hidden", 0.3, "IDENTITY"),
+                neuron("binary", "hidden", -1.0, "STEP"),
+                neuron("sum", "hidden", 0.0, "IDENTITY"),
+                neuron("output-0", "output", 0.0, "IDENTITY"),
+            ],
+            synapses: vec![
+                synapse("input-0", "noise", 1.0),
+                synapse("input-0", "konst", 0.0),
+                synapse("input-1", "binary", 1.0),
+                synapse("input-2", "binary", 1.0),
+                synapse("input-1", "sum", 1.0),
+                synapse("input-2", "sum", 1.0),
+                synapse("input-0", "output-0", 1.0),
+                synapse("noise", "output-0", 0.001),
+                synapse("konst", "output-0", 0.001),
+                synapse("binary", "output-0", 0.001),
+                synapse("sum", "output-0", 0.001),
+            ],
+            semantic_version: Some("4.0.0".into()),
+            forward_only: true,
+            memetic: None,
+        }
+    }
+
+    /// Issue #139 — the selection: every eligible neuron is counted, a
+    /// constant one is skipped, a two-valued one is offered, and the cap keeps
+    /// the neuron that explains the residual best.
+    #[test]
+    fn the_cap_keeps_the_neuron_that_explains_the_residual() {
+        let tmp = tempfile::tempdir().unwrap();
+        let recs: Vec<(Vec<f32>, Vec<f32>)> = records(4000, 3)
+            .into_iter()
+            .map(|x| {
+                let step = if x[1] + x[2] > 1.0 { 0.5 } else { 0.0 };
+                (x.clone(), vec![x[0] + step])
+            })
+            .collect();
+        write_bin_file(&tmp.path().join("0.bin"), &recs).unwrap();
+        let tcfg = TrainingDataConfig::new(3, 1);
+        let corpus = corpus_info(tmp.path(), &tcfg).unwrap();
+        let bins = build_bin_cache(
+            tmp.path(),
+            &tcfg,
+            &corpus,
+            &BinBuildOptions {
+                bins: 32,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let cfg = ForestsConfig {
+            search_records: 0,
+            min_leaf_records: 20.0,
+            ..Default::default()
+        };
+        let creature = four_neuron_creature();
+        let inc = Incumbent::from_creature(creature.clone(), "t").unwrap();
+        let res = compute_residuals(&inc, tmp.path(), &corpus, 512, 1).unwrap();
+        let columns_with = |max: usize| {
+            let mut set = build_search_set(&cfg, &bins, &res, tmp.path(), 0, 1).unwrap();
+            let mut extended = bins.clone();
+            let columns = append_hidden_columns(
+                &mut set,
+                &mut extended,
+                &creature,
+                0,
+                tmp.path(),
+                512,
+                max,
+                32,
+            )
+            .unwrap();
+            (columns, set, extended)
+        };
+
+        let (all, _, _) = columns_with(4);
+        assert_eq!(all.eligible, 4, "every upstream neuron is eligible");
+        assert!(
+            !all.uuids.contains(&"konst".to_string()),
+            "a constant is skipped"
+        );
+        assert!(
+            all.uuids.contains(&"binary".to_string()),
+            "a two-valued neuron is offered: {:?}",
+            all.uuids
+        );
+
+        let (one, set, extended) = columns_with(1);
+        assert_eq!(one.eligible, 4);
+        assert_eq!(
+            one.uuids,
+            vec!["binary".to_string()],
+            "the step itself ranks first"
+        );
+        assert_eq!(set.features(), 4, "exactly one column appended");
+        let hist =
+            HistogramSet::from_source(&set.source, &set.bins_per_feature(&extended)).unwrap();
+        let best = search_stumps(
+            &hist,
+            &set.threshold(&extended),
+            &cfg.search_controls(),
+            "cpu",
+        )
+        .into_iter()
+        .next()
+        .unwrap();
+        let found = Discovery::from_stump(&best, set.feature_map[best.feature], "cpu");
+        let mut patch = Patch::new(0, found.root, Provenance::default());
+        assert!(
+            one.resolve(&mut patch),
+            "the best stump is on the hidden column"
+        );
+        assert_eq!(patch.root.hidden_sources(), vec!["binary".to_string()]);
+    }
+
+    /// Forests' own graft neurons are trees of inputs, never offered.
+    #[test]
+    fn forests_own_neurons_are_not_eligible() {
+        let grafted = fixtures::hidden_split(&fixtures::sum_creature(), "sum");
+        assert!(
+            grafted
+                .neurons
+                .iter()
+                .any(|n| n.uuid.starts_with("forest-"))
+        );
+        let eligible: Vec<String> = eligible_sources(&grafted, 0)
+            .unwrap()
+            .into_iter()
+            .map(|(_, u)| u)
+            .collect();
+        assert_eq!(eligible, ["sum"]);
     }
 
     #[test]

@@ -166,6 +166,22 @@ fn write_best(
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// The winner tag's description of a tree that is not one axis-aligned
+/// stump: its depth and every source it reads, hidden neurons by UUID
+/// (Issue #139).
+fn describe_tree(root: &crate::patch::Node) -> String {
+    let hidden = root.hidden_sources();
+    let mut out = format!(
+        "depth {} tree over inputs {:?}",
+        root.depth(),
+        root.features()
+    );
+    if !hidden.is_empty() {
+        out.push_str(&format!(" and hidden neurons {hidden:?}"));
+    }
+    out
+}
+
 /// Whether output's refit is due on its `visit`-th iteration (1-based, counted
 /// per output, Issue #137): on its first visit when the incumbent was last
 /// refitted on another corpus (`stale`), then every `every` visits. `every`
@@ -712,10 +728,10 @@ pub fn run_forests(
         // survives the fittest creature moving on before we could re-apply it.
         if !known.is_empty() {
             // Only what can graft here, and under `--enhancements` only what
-            // NEAT-AI-Rebase can replay: `--refine-leaves` is refused there,
-            // and the shared cache must not bring refinements in by the back
-            // door, where Rebase would mirror them under another id and fail
-            // the bundle.
+            // NEAT-AI-Rebase can replay: `--refine-leaves` and
+            // `--hidden-features` are refused there, and the shared cache must
+            // not bring their patches in by the back door, where Rebase would
+            // mirror them under another id and fail the bundle.
             let replayable =
                 crate::learnings::replayable(&known, &state.incumbent.creature, cfg.enhancements);
             let chosen = crate::learnings::choose(
@@ -794,9 +810,16 @@ pub fn run_forests(
             let mut bundle = vec![first];
             for round in 2..=cfg.boost_rounds {
                 let Some(last) = bundle.last() else { break };
-                if crate::strategies::apply_patch_residuals(&mut boosted, search_bins, &last.root)
-                    .is_err()
+                // The bundle holds resolved patches (hidden terms by UUID);
+                // the residual update needs the tree on the extended columns.
+                let on_columns = match &hidden_columns {
+                    Some(columns) => columns.unresolved(&last.root),
+                    None => last.root.clone(),
+                };
+                if let Err(e) =
+                    crate::strategies::apply_patch_residuals(&mut boosted, search_bins, &on_columns)
                 {
+                    log::detail(&format!("boosting stopped after round {}: {e}", round - 1));
                     break;
                 }
                 let h = HistogramSet::from_source_threads(
@@ -986,6 +1009,7 @@ pub fn run_forests(
                     backend: c.patch.provenance.backend.clone(),
                     depth: c.depth(),
                     features: c.features(),
+                    hidden_sources: c.hidden_sources(),
                     predicted_gain: c.predicted_gain(),
                     affected_records: c.affected_records(),
                     // The weighted total, not the row count: under
@@ -1208,11 +1232,7 @@ pub fn run_forests(
                                 _ => "subtree".into(),
                             },
                         ),
-                        _ => format!(
-                            "depth {} tree over inputs {:?}",
-                            p.root.depth(),
-                            p.root.features()
-                        ),
+                        _ => describe_tree(&p.root),
                     };
                     for uuid in uuids {
                         state.meta.tag_neuron(
@@ -2434,11 +2454,9 @@ mod tests {
         );
     }
 
-    /// Issue #139 — with `--hidden-features` on, the loop splits on the
-    /// creature's own learned feature when that is where the residual steps,
-    /// and the accepted patch names the neuron by UUID.
-    #[test]
-    fn the_loop_accepts_a_split_on_a_hidden_neuron() {
+    /// `sum_creature` on a corpus with a step on its hidden neuron
+    /// (`x1 + x2 > 1`), the one thing the output does not already use.
+    fn hidden_step_fixture() -> (tempfile::TempDir, ForestsConfig) {
         let (tmp, mut cfg) = fixture();
         let train = tmp.path().join("train-hidden");
         std::fs::create_dir_all(&train).unwrap();
@@ -2468,6 +2486,58 @@ mod tests {
         cfg.max_depth = 1;
         cfg.max_iterations = Some(1);
         cfg.screen_sample_rate = None;
+        (tmp, cfg)
+    }
+
+    /// Issue #139 — boosting sees hidden columns like inputs: when round 1 is
+    /// a stump on the hidden neuron, later rounds still run on the residual
+    /// it leaves, and a `boost-rounds/k` bundle is offered.
+    #[test]
+    fn boosting_continues_past_a_hidden_stump() {
+        let (_tmp, mut cfg) = hidden_step_fixture();
+        cfg.boost_rounds = 3;
+        let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
+        let lines = read_journal(&r.journal_path).unwrap();
+        let exp = lines
+            .iter()
+            .find_map(|l| match l {
+                JournalLine::Experiment(e) => Some(e),
+                _ => None,
+            })
+            .unwrap();
+        let bundles: Vec<&CandidateRecord> = exp
+            .candidates
+            .iter()
+            .filter(|c| !c.combo.is_empty() && c.patch.root.hidden_sources() == ["sum"])
+            .filter(|c| {
+                c.combo
+                    .iter()
+                    .any(|p| p.provenance.strategy.starts_with("boost-round"))
+            })
+            .collect();
+        assert!(
+            exp.strategies
+                .iter()
+                .any(|s| s.starts_with("boost-rounds/")),
+            "no boost bundle: {:?}",
+            exp.strategies
+        );
+        assert!(
+            !bundles.is_empty(),
+            "a bundle seeded by the hidden stump: {:?}",
+            exp.candidates
+                .iter()
+                .map(|c| (&c.strategy, c.combo.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Issue #139 — with `--hidden-features` on, the loop splits on the
+    /// creature's own learned feature when that is where the residual steps,
+    /// and the accepted patch names the neuron by UUID.
+    #[test]
+    fn the_loop_accepts_a_split_on_a_hidden_neuron() {
+        let (_tmp, cfg) = hidden_step_fixture();
         let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
         let lines = read_journal(&r.journal_path).unwrap();
         let exp = lines
@@ -2482,6 +2552,96 @@ mod tests {
         let w = exp.candidates.iter().find(|c| c.id == winner).unwrap();
         assert!(w.strategy.contains("+hidden"), "{}", w.strategy);
         assert_eq!(w.patch.root.hidden_sources(), vec!["sum".to_string()]);
+    }
+
+    /// Issue #139 — `--hidden-features` is refused with `--enhancements`, and
+    /// the shared cache must not bring a hidden-source patch in anyway: with
+    /// one accepted elsewhere on file, an `--enhancements` run does not
+    /// replay it and still writes its bundle.
+    #[test]
+    fn an_enhancements_run_does_not_replay_a_hidden_source_learning() {
+        use crate::learnings::{CorpusId, HostName, Learning, LearningsStore, Outcome};
+        use crate::patch::{Condition, Node, Provenance};
+        let (tmp, mut cfg) = fixture();
+        std::fs::write(
+            &cfg.creature,
+            serde_json::to_string(&crate::hidden::fixtures::sum_creature()).unwrap(),
+        )
+        .unwrap();
+        let shared = tmp.path().join("shared/learnings");
+        cfg.learnings_dir = Some(shared.clone());
+        cfg.learnings_host = Some("host-b".into());
+        cfg.enhancements = true;
+        cfg.max_iterations = Some(2);
+        let identity = corpus_info(&cfg.training_data, &TrainingDataConfig::new(3, 1))
+            .unwrap()
+            .identity;
+        let hidden = Patch::new(
+            0,
+            Node::Split {
+                condition: Condition::hidden("sum", 0.5),
+                left: Box::new(Node::leaf(-0.05)),
+                right: Box::new(Node::leaf(0.05)),
+            },
+            Provenance {
+                strategy: "histogram-stump+hidden".into(),
+                ..Provenance::default()
+            },
+        );
+        let filed = Learning {
+            version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+            id: hidden.id(),
+            patch: hidden.clone(),
+            combo: None,
+            outcome: Outcome::Accepted,
+            delta: 1e-3,
+            corpus: identity.clone(),
+            inputs: 3,
+            outputs: 1,
+            incumbent: "another-creature".into(),
+            incumbent_score: 0.5,
+            host: "host-a".into(),
+            at_unix: 1,
+            tool_version: "test".into(),
+            notes: Vec::new(),
+        };
+        LearningsStore::new(&shared, CorpusId::new(identity), HostName::new("host-a"))
+            .append(&[filed])
+            .unwrap();
+
+        let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
+        let lines = read_journal(&r.journal_path).unwrap();
+        for l in &lines {
+            if let JournalLine::Experiment(e) = l {
+                assert!(
+                    e.candidates
+                        .iter()
+                        .all(|c| c.id != hidden.id() && c.patch.root.hidden_sources().is_empty()),
+                    "a hidden-source learning was replayed under --enhancements"
+                );
+            }
+        }
+        assert!(r.acceptances >= 1, "the fixture must accept something");
+        assert!(r.enhancements_path.is_some(), "and the bundle is written");
+    }
+
+    /// Issue #139 — a winner's tag names the hidden neurons its tree reads.
+    #[test]
+    fn the_winner_tag_names_hidden_sources() {
+        use crate::patch::{Condition, Node};
+        let root = Node::Split {
+            condition: Condition::hidden("sum", 0.5),
+            left: Box::new(Node::leaf(-0.1)),
+            right: Box::new(Node::stump(1, 0.3, 0.0, 0.2)),
+        };
+        assert_eq!(
+            describe_tree(&root),
+            "depth 2 tree over inputs [1] and hidden neurons [\"sum\"]"
+        );
+        assert_eq!(
+            describe_tree(&Node::stump(2, 0.5, 0.0, 0.1)),
+            "depth 1 tree over inputs [2]"
+        );
     }
 
     #[test]

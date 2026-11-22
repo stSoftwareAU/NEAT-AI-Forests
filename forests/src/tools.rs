@@ -177,6 +177,7 @@ pub fn import_xgboost(
                 backend: c.patch.provenance.backend.clone(),
                 depth: c.patch.root.depth(),
                 features: c.patch.root.features(),
+                hidden_sources: c.patch.root.hidden_sources(),
                 predicted_gain: 0.0,
                 affected_records: 0,
                 affected_fraction: 0.0,

@@ -37,7 +37,8 @@ Eligible neurons are hidden neurons listed before the output's anchor, so the
 graft stays forward-only; the anchor and everything it feeds, the output
 included, would make a graft that feeds itself and are refused at graft time
 (`GraftError::DownstreamSource`). Forests' own `forest-…` neurons are skipped,
-and so is any neuron with fewer than two distinct quantile edges. The rest are
+and so is any neuron that is constant on the sample (no quantile edge); a
+two-valued neuron such as a STEP has one edge and is offered. The rest are
 ranked by the `error-ranked` proxy — between-bin variance of the mean residual
 — on a 4,096-row stride sample, which also places their quantile edges; then
 every row is traced again and the top `n` are binned. Memory is one `u8` per
