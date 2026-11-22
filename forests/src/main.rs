@@ -133,6 +133,18 @@ struct Cli {
     /// Largest total depth a refined path may reach.
     #[arg(long, default_value_t = neat_ai_forests::config::DEFAULT_REFINE_MAX_DEPTH)]
     refine_max_depth: usize,
+    /// Refit every leaf on the creature in one solve every N iterations, and on each output's first iteration after a corpus change (0 = off; Issue #137).
+    #[arg(long, default_value_t = 0)]
+    refit_every: u64,
+    /// Search-set rows held in memory for the refit solve (0 = all).
+    #[arg(long, default_value_t = neat_ai_forests::refit::DEFAULT_REFIT_RECORDS)]
+    refit_records: u64,
+    /// Step multipliers tried on the refit's least-squares step (comma separated).
+    #[arg(long, value_delimiter = ',', default_values_t = neat_ai_forests::config::DEFAULT_REFIT_STEPS)]
+    refit_steps: Vec<f64>,
+    /// Ridge strengths tried, relative to each leaf's curvature (comma separated).
+    #[arg(long, value_delimiter = ',', default_values_t = neat_ai_forests::config::DEFAULT_REFIT_RIDGES)]
+    refit_ridges: Vec<f64>,
     /// Boosting rounds on the sample: re-search after subtracting the best patch's correction; prefixes of the bundle are verified in one scorer call (1 = off).
     #[arg(long, default_value_t = 1)]
     boost_rounds: usize,
@@ -397,6 +409,10 @@ fn main() -> ExitCode {
         oblique_candidates: cli.oblique_candidates,
         refine_leaves: cli.refine_leaves,
         refine_max_depth: cli.refine_max_depth,
+        refit_every: cli.refit_every,
+        refit_records: cli.refit_records,
+        refit_steps: cli.refit_steps.clone(),
+        refit_ridges: cli.refit_ridges.clone(),
         combo_candidates: cli.combo_candidates,
         boost_rounds: cli.boost_rounds,
         candidates: cli.candidates,

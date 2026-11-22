@@ -591,7 +591,7 @@ pub fn search_refinements(
 }
 
 /// Residual and weight of every search-set row, in set order.
-fn set_residuals(set: &SearchSet) -> (Vec<f32>, Vec<f32>) {
+pub(crate) fn set_residuals(set: &SearchSet) -> (Vec<f32>, Vec<f32>) {
     let mut residual = Vec::with_capacity(set.records() as usize);
     let mut weight = Vec::with_capacity(set.records() as usize);
     for c in &set.source.chunks {
