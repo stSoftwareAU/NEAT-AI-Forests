@@ -51,6 +51,9 @@ pub struct CandidateRecord {
     pub depth: usize,
     /// Features referenced.
     pub features: Vec<usize>,
+    /// Hidden neurons referenced by UUID (Issue #139), ascending.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_sources: Vec<String>,
     /// Predicted proxy gain.
     pub predicted_gain: f64,
     /// Rows the patch corrects. Under `--row-sampling residual-weighted` each

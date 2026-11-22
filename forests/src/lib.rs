@@ -39,6 +39,7 @@ pub mod config;
 pub mod corpus;
 pub mod enhancements;
 pub mod graft;
+pub mod hidden;
 pub mod histogram;
 pub mod incumbent;
 pub mod journal;

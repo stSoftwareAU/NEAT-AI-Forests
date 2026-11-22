@@ -22,7 +22,37 @@ candidate; the full-corpus scorer gate in `promote` is unconditional.
 | `--max-depth 2 or 3`, `--growth …` | trees (Issue #11) | `histogram-tree-depthD`, note `growth=…` |
 | `--oblique-candidates n` | 2–3 feature linear conditions (Issue #14) | `oblique-split`, note `origin=axis+1`, `random-sparse` or `jitter` |
 | `--refine-leaves n`, `--refine-max-depth d` | split `n` leaves already on the creature, read back from its structure, on the rows that reach each one (Issue #140) | `refine-stump` / `refine-tree-depthD`, notes `refine=<parent uuid>:<role> leaf-depth=…` and `leaf-records=…`; the patch carries `parent` |
+| `--hidden-features n` | the creature's own hidden neurons as extra split columns (Issue #139) | strategy suffix `+hidden`, note `hidden-sources=<uuid,…>`; search-set note `hidden-features=k/eligible`; the term carries `neuron` |
 | `--refit-every n`, `--refit-records`, `--refit-steps`, `--refit-ridges` | refit every leaf on the creature jointly (Issue #137) | strategy `refit`, backend `cpu-cg`, notes `ridge=… step=… leaves=… moved=… clamped-rows=… corpus=…`; the journalled patch is a placeholder bare leaf |
+
+## Splitting on hidden neurons (Issue #139)
+
+With `--hidden-features n` each iteration traces the incumbent on the search
+set and appends up to `n` of its hidden neurons as extra binned columns, after
+the inputs. Every search — stumps, trees, refinements — then sees them like
+any input, so a depth-3 tree can split on a neuron that already combines
+dozens of inputs.
+
+Eligible neurons are hidden neurons listed before the output's anchor, so the
+graft stays forward-only; the anchor and everything it feeds, the output
+included, would make a graft that feeds itself and are refused at graft time
+(`GraftError::DownstreamSource`). Forests' own `forest-…` neurons are skipped,
+and so is any neuron that is constant on the sample (no quantile edge); a
+two-valued neuron such as a STEP has one edge and is offered. The rest are
+ranked by the `error-ranked` proxy — between-bin variance of the mean residual
+— on a 4,096-row stride sample, which also places their quantile edges; then
+every row is traced again and the top `n` are binned. Memory is one `u8` per
+row per column: 200,000 rows × 1,500 columns is about 300 MB.
+
+A discovery that splits on one is written into the patch by UUID
+(`{"neuron": "<uuid>", "feature": 0, "weight": 1}`), as format v2, with
+`+hidden` appended to its strategy so `report` keeps hidden-source economics
+apart. The graft emits the condition edge from that neuron. A patch that names
+a neuron which no longer exists is refused at graft time
+(`GraftError::NoSuchSource`), so a replay onto another creature fails cleanly.
+Oblique search re-reads raw inputs and skips hidden columns. NEAT-AI-Rebase
+cannot replay a hidden-source term yet, so `--hidden-features` is refused with
+`--enhancements`.
 
 ## Refitting every leaf at once (Issue #137)
 

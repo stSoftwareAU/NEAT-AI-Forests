@@ -141,6 +141,8 @@ fn real_scorer_baseline_parity_and_if_graft_agree_with_local_forward_pass() {
     let refined = neat_ai_forests::refine::fixtures::refined_twice(&small_mlp(3));
     // Issue #137 — leaves moved through their constant edges, as a refit does.
     let refitted = neat_ai_forests::refit::fixtures::refitted(&small_mlp(3));
+    // Issue #139 — a tree whose conditions read an evolved hidden neuron.
+    let hidden_split = neat_ai_forests::hidden::fixtures::hidden_split(&small_mlp(3), "hidden-1");
     let dir = tmp.path().join("cohort");
     std::fs::create_dir_all(&dir).unwrap();
     for (name, c) in [
@@ -151,6 +153,7 @@ fn real_scorer_baseline_parity_and_if_graft_agree_with_local_forward_pass() {
         ("deep-per-patch", &deep_per_patch),
         ("refined", &refined),
         ("refitted", &refitted),
+        ("hidden-split", &hidden_split),
     ] {
         std::fs::write(
             dir.join(format!("{name}.json")),
@@ -169,6 +172,7 @@ fn real_scorer_baseline_parity_and_if_graft_agree_with_local_forward_pass() {
         ("deep-per-patch", &deep_per_patch),
         ("refined", &refined),
         ("refitted", &refitted),
+        ("hidden-split", &hidden_split),
     ] {
         let inc = Incumbent::from_creature(c.clone(), name).unwrap();
         let local = neat_ai_forests::residuals::compute_residuals(&inc, &train, &corpus, 128, 1)

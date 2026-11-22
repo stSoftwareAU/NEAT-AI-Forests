@@ -108,6 +108,17 @@ impl Candidate {
         f.dedup();
         f
     }
+
+    /// Union of member hidden-neuron sources, ascending (Issue #139).
+    pub fn hidden_sources(&self) -> Vec<String> {
+        let mut h: Vec<String> = self
+            .patches()
+            .flat_map(|p| p.root.hidden_sources())
+            .collect();
+        h.sort_unstable();
+        h.dedup();
+        h
+    }
 }
 
 /// A discovery waiting to become a candidate.
@@ -471,12 +482,14 @@ pub fn generate_combos(
 /// patches on **distinct features**, stacked cumulatively.
 pub fn top_k_groups(ranked: &[Patch], max: usize) -> Vec<Vec<Patch>> {
     let mut picked: Vec<Patch> = Vec::new();
-    let mut used: HashSet<Vec<usize>> = HashSet::new();
+    // Distinct on every source a tree reads: input features and hidden
+    // neurons (Issue #139), so stumps on two different neurons both count.
+    let mut used: HashSet<(Vec<usize>, Vec<String>)> = HashSet::new();
     for p in ranked {
         if picked.len() >= max {
             break;
         }
-        if used.insert(p.root.features()) {
+        if used.insert((p.root.features(), p.root.hidden_sources())) {
             picked.push(p.clone());
         }
     }
@@ -659,5 +672,36 @@ mod tests {
         assert_eq!(discarded[0].0, id, "the rejection names the candidate");
         assert!(discarded[0].1.contains("NEURON_ORDER"), "{discarded:?}");
         assert!(discarded[0].1.contains("neuron index"), "{discarded:?}");
+    }
+
+    /// Issue #139 — combination members are distinct on every source they
+    /// read: stumps on two different hidden neurons are both picked, two on
+    /// the same neuron only once.
+    #[test]
+    fn top_k_groups_tells_hidden_neurons_apart() {
+        use crate::patch::{Condition, Node, Provenance};
+        let stump = |uuid: &str, t: f32| {
+            Patch::new(
+                0,
+                Node::Split {
+                    condition: Condition::hidden(uuid, t),
+                    left: Box::new(Node::leaf(-0.1)),
+                    right: Box::new(Node::leaf(0.1)),
+                },
+                Provenance::default(),
+            )
+        };
+        let different = [stump("h1", 0.5), stump("h2", 0.5)];
+        assert_eq!(
+            top_k_groups(&different, 4).len(),
+            1,
+            "one pair: both picked"
+        );
+        assert_eq!(top_k_groups(&different, 4)[0].len(), 2);
+        let same = [stump("h1", 0.5), stump("h1", 0.7)];
+        assert!(
+            top_k_groups(&same, 4).is_empty(),
+            "the same neuron twice: one pick"
+        );
     }
 }

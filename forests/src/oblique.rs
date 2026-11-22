@@ -116,10 +116,7 @@ fn evaluate(
             terms: cols
                 .iter()
                 .zip(weights)
-                .map(|(&c, &w)| Term {
-                    feature: sample.features[c],
-                    weight: w,
-                })
+                .map(|(&c, &w)| Term::input(sample.features[c], w))
                 .collect(),
             threshold: t,
         },

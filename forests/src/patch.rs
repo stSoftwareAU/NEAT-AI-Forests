@@ -14,11 +14,16 @@ use serde::{Deserialize, Serialize};
 /// Current patch format version.
 pub const PATCH_FORMAT_VERSION: u32 = 1;
 
-/// Format version of a patch that refines a leaf already on the creature
-/// (Issue #140). It is a v1 patch plus [`Patch::parent`]; the version moves so
-/// a reader that does not know the field refuses the patch instead of grafting
-/// it at the anchor.
+/// Format version of a patch that uses a v2 field: [`Patch::parent`] for a
+/// refinement of a leaf already on the creature (Issue #140), or
+/// [`Term::neuron`] for a condition on a hidden neuron (Issue #139). The
+/// version moves so a reader that does not know the field refuses the patch
+/// instead of misreading it.
 pub const REFINE_PATCH_FORMAT_VERSION: u32 = 2;
+
+/// Format version of a patch whose condition reads a hidden neuron (Issue
+/// #139) — the same v2 as a refinement.
+pub const HIDDEN_SOURCE_PATCH_FORMAT_VERSION: u32 = REFINE_PATCH_FORMAT_VERSION;
 
 /// Which branch sum of an existing `IF` neuron a refinement feeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -52,13 +57,54 @@ pub struct Attach {
     pub role: BranchRole,
 }
 
-/// One weighted feature in a (possibly oblique) condition.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One weighted source in a (possibly oblique) condition.
+///
+/// A source is an input (`feature`) or, since Issue #139, a neuron already on
+/// the creature (`neuron`, by UUID) — one of its learned features. When
+/// `neuron` is set, `feature` is unused and kept at `0`.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Term {
-    /// Input observation index.
+    /// Hidden neuron read by this term (Issue #139); `None` for an input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neuron: Option<String>,
+    /// Input observation index (unused when `neuron` is set).
     pub feature: usize,
     /// Synapse weight (exactly `1.0` for axis-aligned splits).
     pub weight: f32,
+}
+
+/// An input term prints exactly as it did before `neuron` existed, so debug
+/// fingerprints of input-only trees are unchanged.
+impl std::fmt::Debug for Term {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut d = f.debug_struct("Term");
+        if let Some(neuron) = &self.neuron {
+            d.field("neuron", neuron);
+        }
+        d.field("feature", &self.feature)
+            .field("weight", &self.weight)
+            .finish()
+    }
+}
+
+impl Term {
+    /// A unit-or-weighted term on input `feature`.
+    pub fn input(feature: usize, weight: f32) -> Self {
+        Self {
+            neuron: None,
+            feature,
+            weight,
+        }
+    }
+
+    /// A term on the hidden neuron `uuid` (Issue #139).
+    pub fn hidden(uuid: impl Into<String>, weight: f32) -> Self {
+        Self {
+            neuron: Some(uuid.into()),
+            feature: 0,
+            weight,
+        }
+    }
 }
 
 /// `Σ weight·x > threshold` → right branch.
@@ -74,10 +120,16 @@ impl Condition {
     /// Axis-aligned `x[feature] > threshold`.
     pub fn axis(feature: usize, threshold: f32) -> Self {
         Self {
-            terms: vec![Term {
-                feature,
-                weight: 1.0,
-            }],
+            terms: vec![Term::input(feature, 1.0)],
+            threshold,
+        }
+    }
+
+    /// `hidden(uuid) > threshold` on a neuron already on the creature
+    /// (Issue #139).
+    pub fn hidden(uuid: impl Into<String>, threshold: f32) -> Self {
+        Self {
+            terms: vec![Term::hidden(uuid, 1.0)],
             threshold,
         }
     }
@@ -85,20 +137,31 @@ impl Condition {
     /// `true` when the record takes the right (positive) branch.
     ///
     /// Accumulates exactly like the `IF` kernel: `f32`, in term order, with the
-    /// constant term `1.0 * -threshold` added last.
+    /// constant term `1.0 * -threshold` added last. A hidden-source term reads
+    /// `NaN` here — so the record goes left — because inputs alone cannot say
+    /// what a neuron computes; use [`Condition::goes_right_with`].
     pub fn goes_right(&self, inputs: &[f32]) -> bool {
+        self.goes_right_with(inputs, &|_| f32::NAN)
+    }
+
+    /// [`Condition::goes_right`], with `hidden(uuid)` giving the activation of
+    /// each hidden source on this record (Issue #139).
+    pub fn goes_right_with(&self, inputs: &[f32], hidden: &dyn Fn(&str) -> f32) -> bool {
         let mut sum = 0.0f32;
         for t in &self.terms {
-            let x = inputs.get(t.feature).copied().unwrap_or(0.0);
+            let x = match &t.neuron {
+                Some(uuid) => hidden(uuid),
+                None => inputs.get(t.feature).copied().unwrap_or(0.0),
+            };
             sum += x * t.weight;
         }
         sum += 1.0 * -self.threshold;
         sum > 0.0
     }
 
-    /// `true` when every term is a single unit-weight feature.
+    /// `true` when the condition is a single unit-weight **input** term.
     pub fn is_axis_aligned(&self) -> bool {
-        self.terms.len() == 1 && self.terms[0].weight == 1.0
+        self.terms.len() == 1 && self.terms[0].weight == 1.0 && self.terms[0].neuron.is_none()
     }
 }
 
@@ -139,6 +202,12 @@ impl Node {
 
     /// Correction for one record.
     pub fn evaluate(&self, inputs: &[f32]) -> f32 {
+        self.evaluate_with(inputs, &|_| f32::NAN)
+    }
+
+    /// Correction for one record, with `hidden(uuid)` giving each hidden
+    /// source's activation (Issue #139).
+    pub fn evaluate_with(&self, inputs: &[f32], hidden: &dyn Fn(&str) -> f32) -> f32 {
         match self {
             Self::Leaf { correction } => *correction,
             Self::Split {
@@ -146,12 +215,53 @@ impl Node {
                 left,
                 right,
             } => {
-                if condition.goes_right(inputs) {
-                    right.evaluate(inputs)
+                if condition.goes_right_with(inputs, hidden) {
+                    right.evaluate_with(inputs, hidden)
                 } else {
-                    left.evaluate(inputs)
+                    left.evaluate_with(inputs, hidden)
                 }
             }
+        }
+    }
+
+    /// Distinct hidden neurons any condition reads (Issue #139), ascending.
+    pub fn hidden_sources(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        self.visit_terms(&mut |t| {
+            if let Some(u) = &t.neuron {
+                out.push(u.clone());
+            }
+        });
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Call `f` on every condition term, pre-order.
+    pub fn visit_terms(&self, f: &mut dyn FnMut(&Term)) {
+        if let Self::Split {
+            condition,
+            left,
+            right,
+        } = self
+        {
+            condition.terms.iter().for_each(&mut *f);
+            left.visit_terms(f);
+            right.visit_terms(f);
+        }
+    }
+
+    /// Call `f` on every condition term, pre-order, mutably.
+    pub fn visit_terms_mut(&mut self, f: &mut dyn FnMut(&mut Term)) {
+        if let Self::Split {
+            condition,
+            left,
+            right,
+        } = self
+        {
+            condition.terms.iter_mut().for_each(&mut *f);
+            left.visit_terms_mut(f);
+            right.visit_terms_mut(f);
         }
     }
 
@@ -189,7 +299,8 @@ impl Node {
         }
     }
 
-    /// Distinct features referenced by any condition, ascending.
+    /// Distinct input features referenced by any condition, ascending (hidden
+    /// sources are in [`Node::hidden_sources`]).
     pub fn features(&self) -> Vec<usize> {
         let mut out = Vec::new();
         self.collect_features(&mut out);
@@ -205,7 +316,13 @@ impl Node {
             right,
         } = self
         {
-            out.extend(condition.terms.iter().map(|t| t.feature));
+            out.extend(
+                condition
+                    .terms
+                    .iter()
+                    .filter(|t| t.neuron.is_none())
+                    .map(|t| t.feature),
+            );
             left.collect_features(out);
             right.collect_features(out);
         }
@@ -298,7 +415,11 @@ impl Patch {
     /// New v1 patch.
     pub fn new(output: usize, root: Node, provenance: Provenance) -> Self {
         Self {
-            version: PATCH_FORMAT_VERSION,
+            version: if root.hidden_sources().is_empty() {
+                PATCH_FORMAT_VERSION
+            } else {
+                HIDDEN_SOURCE_PATCH_FORMAT_VERSION
+            },
             output,
             root,
             parent: None,
@@ -318,18 +439,21 @@ impl Patch {
     }
 
     /// The lowest format version that can carry this patch, read from its
-    /// shape: version 2 for a refinement (`parent`), version 1 otherwise.
+    /// shape: version 2 for a refinement (`parent`) or a hidden-source term
+    /// (`Term.neuron`), version 1 otherwise. A reader that knows only
+    /// version 1 must refuse anything above it rather than graft it at the
+    /// anchor or on an input.
     pub fn required_version(&self) -> u32 {
-        if self.parent.is_some() {
-            REFINE_PATCH_FORMAT_VERSION
+        if self.parent.is_some() || !self.root.hidden_sources().is_empty() {
+            REFINE_PATCH_FORMAT_VERSION.max(HIDDEN_SOURCE_PATCH_FORMAT_VERSION)
         } else {
             PATCH_FORMAT_VERSION
         }
     }
 
     /// Whether NEAT-AI-Rebase can replay this patch: version-1 shapes only.
-    /// It has no `parent` yet, so it would mirror a refinement under a
-    /// different id and refuse the bundle.
+    /// It has no `parent` and no `Term.neuron` yet, so it would mirror a
+    /// refinement or a hidden-source patch under a different id.
     pub fn rebase_can_replay(&self) -> bool {
         self.required_version() == PATCH_FORMAT_VERSION
     }
@@ -350,6 +474,12 @@ impl Patch {
     /// Correction for one record.
     pub fn evaluate(&self, inputs: &[f32]) -> f32 {
         self.root.evaluate(inputs)
+    }
+
+    /// Correction for one record, with `hidden(uuid)` giving each hidden
+    /// source's activation (Issue #139).
+    pub fn evaluate_with(&self, inputs: &[f32], hidden: &dyn Fn(&str) -> f32) -> f32 {
+        self.root.evaluate_with(inputs, hidden)
     }
 }
 
@@ -413,18 +543,32 @@ mod tests {
     }
 
     #[test]
+    fn a_hidden_source_term_round_trips_and_reads_the_activation_it_is_given() {
+        let n = Node::Split {
+            condition: Condition::hidden("h-1", 0.5),
+            left: Box::new(Node::leaf(-1.0)),
+            right: Box::new(Node::leaf(1.0)),
+        };
+        let p = Patch::new(0, n.clone(), Provenance::default());
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains(r#"{"neuron":"h-1","feature":0,"weight":1.0}"#));
+        assert_eq!(serde_json::from_str::<Patch>(&json).unwrap(), p);
+        assert_eq!(n.evaluate_with(&[], &|_| 0.75), 1.0);
+        assert_eq!(n.evaluate_with(&[], &|_| 0.25), -1.0);
+        // Inputs alone cannot evaluate it: NaN goes left.
+        assert_eq!(n.evaluate(&[0.9]), -1.0);
+        assert_eq!(n.hidden_sources(), vec!["h-1".to_string()]);
+        assert!(n.features().is_empty());
+        assert!(!Condition::hidden("h-1", 0.5).is_axis_aligned());
+        // An input term serialises exactly as it always did.
+        let plain = serde_json::to_string(&Term::input(3, 1.0)).unwrap();
+        assert_eq!(plain, r#"{"feature":3,"weight":1.0}"#);
+    }
+
+    #[test]
     fn oblique_condition_accumulates_in_order() {
         let c = Condition {
-            terms: vec![
-                Term {
-                    feature: 0,
-                    weight: 0.5,
-                },
-                Term {
-                    feature: 1,
-                    weight: -1.0,
-                },
-            ],
+            terms: vec![Term::input(0, 0.5), Term::input(1, -1.0)],
             threshold: 0.0,
         };
         assert!(c.goes_right(&[2.0, 0.5]));

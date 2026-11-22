@@ -224,6 +224,10 @@ pub struct ForestsConfig {
     /// Largest total depth a refined path may reach (Issue #140).
     #[serde(default = "default_refine_max_depth")]
     pub refine_max_depth: usize,
+    /// Hidden neurons offered to the search as extra split columns per
+    /// iteration (Issue #139; 0 = off).
+    #[serde(default)]
+    pub hidden_features: usize,
     /// Refit every leaf on the creature in one solve every this many
     /// iterations on each output, counted per output (Issue #137; 0 = off).
     ///
@@ -336,6 +340,7 @@ impl Default for ForestsConfig {
             oblique_candidates: 0,
             refine_leaves: 0,
             refine_max_depth: DEFAULT_REFINE_MAX_DEPTH,
+            hidden_features: 0,
             refit_every: 0,
             refit_records: crate::refit::DEFAULT_REFIT_RECORDS,
             refit_steps: default_refit_steps(),
@@ -429,6 +434,14 @@ impl ForestsConfig {
         {
             return Err("--refit-ridges must be finite, non-negative and non-empty".into());
         }
+        if self.hidden_features > 0 && self.enhancements {
+            // A hidden-source term names a neuron by UUID; NEAT-AI-Rebase's
+            // adapter cannot replay that yet.
+            return Err(
+                "--hidden-features cannot be combined with --enhancements until NEAT-AI-Rebase can replay hidden-source patches"
+                    .into(),
+            );
+        }
         if self.refit_every > 0 && self.enhancements {
             // A refit changes weights, not structure, so there is no patch for
             // NEAT-AI-Rebase to carry; re-run it on the moved champion instead.
@@ -516,6 +529,12 @@ mod tests {
             ..c.clone()
         };
         assert!(bad.validate().unwrap_err().contains("--refit-every"));
+        let bad = ForestsConfig {
+            hidden_features: 8,
+            enhancements: true,
+            ..c.clone()
+        };
+        assert!(bad.validate().unwrap_err().contains("--hidden-features"));
         let bad = ForestsConfig { bins: 1, ..c };
         assert!(bad.validate().unwrap_err().contains("--bins"));
     }

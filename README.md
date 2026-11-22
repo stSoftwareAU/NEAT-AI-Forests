@@ -243,6 +243,7 @@ experiment back on the table.
 | `--oblique-candidates` | `0` | oblique 2–3 feature splits per iteration |
 | `--refine-leaves` | `0` | leaves already on the creature split per iteration, read back from its structure (#140); cannot be combined with `--enhancements` yet |
 | `--refine-max-depth` | `6` | largest total depth a refined path may reach |
+| `--hidden-features` | `0` | hidden neurons upstream of the anchor offered to the search as extra split columns each iteration, ranked by the residual they explain (#139); cannot be combined with `--enhancements` |
 | `--refit-every` | `0` | refit every leaf on the creature in one ridge least-squares solve every N iterations on each output (counted per output), and on each output's first iteration after a corpus change (#137); cannot be combined with `--enhancements` |
 | `--refit-records` | `20000` | search-set rows held in memory for the refit solve (0 = all) |
 | `--refit-steps` | `0.25,0.5,1.0` | step multipliers tried on the refit's least-squares step |
@@ -769,6 +770,7 @@ NEAT-AI-Forests/
 │   │   ├── corpus.rs          # corpus identity + bounded-memory streaming
 │   │   ├── enhancements.rs    # accepted patches filed for Rebase (Rebase#65)
 │   │   ├── graft.rs           # patch → IF structure on a clone (#7), validated (#39)
+│   │   ├── hidden.rs          # hidden neurons as split sources (#139)
 │   │   ├── histogram.rs       # CPU reference stump search (#5)
 │   │   ├── incumbent.rs       # immutable incumbent + checksum (#2)
 │   │   ├── journal.rs         # experiments.jsonl records (#10)

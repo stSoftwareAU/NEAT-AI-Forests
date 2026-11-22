@@ -21,6 +21,7 @@ use neat_ai_forests::config::GraftConstants;
 use neat_ai_forests::corpus::write_bin_file;
 use neat_ai_forests::graft::fixtures::{if_output_creature, min_clamped_if_creature, small_mlp};
 use neat_ai_forests::graft::{graft_patch, graft_patch_with, graft_patches_with};
+use neat_ai_forests::hidden::fixtures::hidden_split;
 use neat_ai_forests::patch::{Condition, Node, Patch, Provenance, Term};
 use neat_ai_forests::refine::fixtures::refined_twice;
 use neat_ai_forests::refit::fixtures::refitted;
@@ -99,16 +100,7 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
         left: Box::new(Node::stump(1, -0.5, -0.2, 0.0)),
         right: Box::new(Node::Split {
             condition: Condition {
-                terms: vec![
-                    Term {
-                        feature: 1,
-                        weight: 0.7,
-                    },
-                    Term {
-                        feature: 2,
-                        weight: -0.4,
-                    },
-                ],
+                terms: vec![Term::input(1, 0.7), Term::input(2, -0.4)],
                 threshold: 0.05,
             },
             left: Box::new(Node::leaf(0.3)),
@@ -218,6 +210,8 @@ fn grafted_fixtures_score_identically_under_rust_and_typescript() {
         // constant edge, as a refit moves it.
         ("if-refitted", refitted(&if_output_creature(4))),
         ("clamp-refitted", refitted(&min_clamped_if_creature(4))),
+        // Issue #139 — conditions on an evolved hidden neuron.
+        ("mlp-hidden-split", hidden_split(&small_mlp(4), "hidden-1")),
         (
             "mlp-two-per-patch",
             graft_patches_with(

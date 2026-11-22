@@ -350,4 +350,44 @@ mod tests {
             "never grafted at the anchor"
         );
     }
+
+    /// Issue #139 — a hidden-source patch is filed and replayed at version 2
+    /// under the same id; onto a creature carrying the neuron it grafts, onto
+    /// one without it the graft refuses with `NoSuchSource`.
+    #[test]
+    fn replay_keeps_a_hidden_source_patch_at_version_2() {
+        use crate::graft::fixtures::identity_creature;
+        use crate::graft::{GraftError, graft_patch};
+        use crate::hidden::fixtures::sum_creature;
+        use crate::patch::{Condition, HIDDEN_SOURCE_PATCH_FORMAT_VERSION, Node};
+
+        let root = Node::Split {
+            condition: Condition::hidden("sum", 1.0),
+            left: Box::new(Node::leaf(-0.1)),
+            right: Box::new(Node::leaf(0.2)),
+        };
+        let original = Patch::new(0, root, Provenance::default());
+        assert_eq!(
+            original.version, HIDDEN_SOURCE_PATCH_FORMAT_VERSION,
+            "Patch::new reads the version off the tree"
+        );
+        let mut under_labelled = original.clone();
+        under_labelled.version = 1;
+        for filed in [original.clone(), under_labelled] {
+            let l = learning(filed, Outcome::Accepted, 1e-4, 1, "host-a");
+            let r = &l.replay("creature-b")[0];
+            assert_eq!(r.version, HIDDEN_SOURCE_PATCH_FORMAT_VERSION);
+            assert_eq!(r.id(), l.id, "same id, so the verdict files where it was");
+            assert!(!r.rebase_can_replay());
+            graft_patch(&sum_creature(), r).expect("the neuron is there");
+            assert_eq!(
+                graft_patch(&identity_creature(3, 1), r).unwrap_err(),
+                GraftError::NoSuchSource("sum".into())
+            );
+        }
+        assert!(
+            patch(1, 0.1).rebase_can_replay(),
+            "a v1 shape stays replayable"
+        );
+    }
 }
