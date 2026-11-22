@@ -146,8 +146,14 @@ fn write_best(
     opening: f64,
     acceptances: u64,
     iterations: u64,
+    arms: &str,
 ) -> Result<(), String> {
     let mut meta = state.meta.clone();
+    // Only a creature this run changed reaches here (acceptance only), so the
+    // arms tag always describes the run that produced it (Issue #147). A run
+    // that accepts nothing leaves `best.json` as the source text, inherited
+    // `forests-arms` included.
+    meta.upsert(crate::arms::ARMS_TAG, arms.to_string());
     meta.upsert("score", format!("{}", state.baseline.score));
     meta.upsert("error", format!("{}", state.baseline.error));
     meta.upsert("forests", forests_tag(opening, state.baseline.score));
@@ -346,6 +352,20 @@ pub fn run_forests(
     log::info(&format!(
         "seed {seed} ({seed_source}); replay with --seed {seed}"
     ));
+    // Candidate-family arms (Issue #147): draw what the caller left unset,
+    // from the seed, before anything reads a family flag. The resolved config
+    // is what the rest of the run, and the journal, see.
+    let (resolved_cfg, arms) = crate::arms::resolve(cfg, seed);
+    let cfg = &resolved_cfg;
+    cfg.validate()?;
+    let arms_tag = arms.tag();
+    if arms
+        .0
+        .iter()
+        .any(|c| c.source != crate::arms::ArmSource::Set)
+    {
+        log::info(&format!("arms: {arms_tag}"));
+    }
     let mut rng = StdRng::seed_from_u64(seed);
 
     let cache_dir = cfg.cache_dir();
@@ -376,6 +396,7 @@ pub fn run_forests(
             corpus_identity: corpus.identity.clone(),
             bin_cache: format!("{}:{}", bins.meta.corpus_identity, bins.meta.requested_bins),
             config: serde_json::to_value(cfg).map_err(|e| e.to_string())?,
+            arms: arms_tag.clone(),
         },
     )?;
 
@@ -1320,8 +1341,22 @@ pub fn run_forests(
                 state.incumbent = new_incumbent;
                 state.baseline = new_baseline;
                 let winner_path = winners_dir.join(format!("winner-{acceptances:04}.json"));
-                write_best(&winner_path, &state, opening_score, acceptances, iterations)?;
-                write_best(&best_path, &state, opening_score, acceptances, iterations)?;
+                write_best(
+                    &winner_path,
+                    &state,
+                    opening_score,
+                    acceptances,
+                    iterations,
+                    &arms_tag,
+                )?;
+                write_best(
+                    &best_path,
+                    &state,
+                    opening_score,
+                    acceptances,
+                    iterations,
+                    &arms_tag,
+                )?;
                 // Incumbent changed: residual caches keyed by checksum are now stale by construction.
                 state.residuals = ensure_residual_cache(
                     &state.incumbent,
@@ -2733,6 +2768,82 @@ mod tests {
             w.patch.version,
             crate::patch::LINEAR_LEAF_PATCH_FORMAT_VERSION
         );
+    }
+
+    /// Issue #147 — every unset family flag is drawn from the seed; the run
+    /// header, the resolved config it journals and the `forests-arms` tag on
+    /// the accepted creature all agree, and the same seed draws the same.
+    #[test]
+    fn an_accepting_run_stamps_its_arms_on_the_creature() {
+        use crate::arms::{Arm, ArmPolicy, ArmSource};
+        let tags = |cfg: &ForestsConfig| {
+            let r = run_forests(cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
+            assert!(r.acceptances >= 1, "the fixture must accept something");
+            let best = std::fs::read_to_string(&r.best_path).unwrap();
+            let meta = crate::meta::CreatureMeta::from_json(&best);
+            let tag = meta
+                .tags
+                .iter()
+                .find(|t| t.name == crate::arms::ARMS_TAG)
+                .map(|t| t.value.clone())
+                .expect("forests-arms on the accepted creature");
+            let JournalLine::RunHeader { arms, config, .. } =
+                &read_journal(&r.journal_path).unwrap()[0]
+            else {
+                panic!("first line is the header")
+            };
+            assert_eq!(arms, &tag, "header and tag agree");
+            (tag, config.clone())
+        };
+        let (tmp, mut cfg) = fixture();
+        cfg.max_iterations = Some(1);
+        cfg.arm_policy = Arm::ALL.iter().map(|a| (*a, ArmPolicy::Draw)).collect();
+        let (tag, config) = tags(&cfg);
+        let (_, record) = crate::arms::resolve(&cfg, 5);
+        assert_eq!(tag, record.tag(), "the seed decides the draw");
+        assert!(record.0.iter().all(|c| c.source == ArmSource::Drawn));
+        for c in &record.0 {
+            let key = match c.arm {
+                Arm::HiddenFeatures => "hiddenFeatures",
+                Arm::LinearLeafConditions => "linearLeafConditions",
+                Arm::RefineLeaves => "refineLeaves",
+                Arm::RefitEvery => "refitEvery",
+            };
+            assert_eq!(
+                config[key].as_u64(),
+                Some(c.value),
+                "journalled config: {key}"
+            );
+        }
+        assert!(config.get("armPolicy").is_none(), "journalled resolved");
+
+        // An explicit flag is reported as set.
+        cfg.arm_policy.remove(&Arm::RefineLeaves);
+        cfg.refine_leaves = 0;
+        cfg.output_dir = tmp.path().join("out-set");
+        let (tag, _) = tags(&cfg);
+        assert!(tag.contains("refine-leaves=0:set"), "{tag}");
+    }
+
+    /// Issue #147 — a run that accepts nothing leaves `best.json` as the
+    /// source creature, its inherited `forests-arms` tag byte for byte.
+    #[test]
+    fn a_run_that_accepts_nothing_keeps_the_inherited_arms_tag() {
+        use crate::arms::{Arm, ArmPolicy};
+        let (_tmp, mut cfg) = fixture();
+        let mut json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg.creature).unwrap()).unwrap();
+        json["tags"] = serde_json::json!([
+            {"name": crate::arms::ARMS_TAG, "value": "refine-leaves=8:drawn"}
+        ]);
+        let source = serde_json::to_string(&json).unwrap();
+        std::fs::write(&cfg.creature, &source).unwrap();
+        cfg.arm_policy = Arm::ALL.iter().map(|a| (*a, ArmPolicy::Draw)).collect();
+        cfg.max_iterations = Some(1);
+        cfg.min_improvement = 1e9;
+        let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
+        assert_eq!(r.acceptances, 0);
+        assert_eq!(std::fs::read_to_string(&r.best_path).unwrap(), source);
     }
 
     #[test]

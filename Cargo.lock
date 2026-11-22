@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "neat_ai_forests"
-version = "0.1.48"
+version = "0.1.49"
 dependencies = [
  "clap",
  "neat-ai-rebase",

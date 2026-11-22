@@ -121,6 +121,10 @@ pub struct JournalReport {
     pub score_trajectory: Vec<f64>,
     /// Stop reason.
     pub stop_reason: Option<String>,
+    /// The run's candidate-family arms (`forests-arms`, Issue #147), from
+    /// the run header. Empty for journals from older builds.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub arms: String,
 }
 
 fn bump(map: &mut BTreeMap<String, StrategyStats>, key: &str, f: impl FnOnce(&mut StrategyStats)) {
@@ -137,8 +141,15 @@ pub fn report_from_lines(lines: &[JournalLine]) -> JournalReport {
     let mut deltas_depth: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     for line in lines {
         match line {
-            JournalLine::RunHeader { timestamp_unix, .. } => {
+            JournalLine::RunHeader {
+                timestamp_unix,
+                arms,
+                ..
+            } => {
                 start.get_or_insert(*timestamp_unix);
+                if r.arms.is_empty() {
+                    r.arms.clone_from(arms);
+                }
             }
             JournalLine::Baseline(b) => {
                 r.opening_score.get_or_insert(b.score);
@@ -380,6 +391,7 @@ mod tests {
                 corpus_identity: "c".into(),
                 bin_cache: "c:256".into(),
                 config: serde_json::json!({}),
+                arms: "refine-leaves=8:drawn,refit-every=0:set".into(),
             },
             JournalLine::Baseline(baseline.clone()),
             JournalLine::Experiment(Box::new(exp)),
@@ -401,6 +413,7 @@ mod tests {
         ];
         let r = report_from_lines(&lines);
         assert_eq!(r.iterations, 1);
+        assert_eq!(r.arms, "refine-leaves=8:drawn,refit-every=0:set");
         assert_eq!(r.acceptances, 1);
         assert!((r.cumulative_improvement.unwrap() - 0.02).abs() < 1e-12);
         assert!((r.improvement_per_wall_hour.unwrap() - 0.6).abs() < 1e-9);
