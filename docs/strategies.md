@@ -30,7 +30,8 @@ conditions deep, so the creature grows wider and never deeper. With
 `--refine-leaves n` each iteration reads every tree hanging off the output's
 anchor back from the creature's **structure** (`refine::ForestView`) — so
 patches from every host and every earlier run count, at the weights they
-carry now — and:
+carry now, whether they reach an `IF` anchor as a typed pair or through the
+`--if-correction relay` IDENTITY neuron — and:
 
 1. routes every search-set record through every readable tree, keeping
    per-leaf `Σw`, `Σw·r`, `Σw·r²`;

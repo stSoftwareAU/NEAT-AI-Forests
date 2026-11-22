@@ -99,6 +99,54 @@ pub struct ForestView {
 /// and its gain.
 type Visit<'a> = (&'a str, Option<(usize, bool)>, f64);
 
+/// The weight `w` a root grafted with `--if-correction relay` carries into
+/// an `IF` anchor: `root → anchor` `positive` at `w`, plus `root → relay` at
+/// `a` where the relay is a bias-0 IDENTITY neuron fed by the root alone whose
+/// only outward edge is `relay → anchor` `negative` at `w / a`. Both branch
+/// sums then see `w · root`, as with the typed pair. `None` for any other
+/// shape.
+fn relay_root_weight(
+    outs: &[&SynapseExport],
+    anchor: &str,
+    by_uuid: &HashMap<&str, &NeuronExport>,
+    inward: &HashMap<&str, Vec<&SynapseExport>>,
+    outward: &HashMap<&str, Vec<&SynapseExport>>,
+) -> Option<f64> {
+    let [a, b] = outs else { return None };
+    let (direct, via) = if a.to_uuid == anchor { (a, b) } else { (b, a) };
+    if direct.to_uuid != anchor
+        || direct.synapse_type.as_deref() != Some("positive")
+        || via.to_uuid == anchor
+        || via.synapse_type.is_some()
+    {
+        return None;
+    }
+    let relay = by_uuid.get(via.to_uuid.as_str())?;
+    let identity = relay
+        .squash
+        .as_deref()
+        .is_none_or(|s| matches!(neat_core::parse_squash_name(s), Ok(SquashType::Identity)));
+    let fed_by_root_alone = inward
+        .get(relay.uuid.as_str())
+        .is_some_and(|ins| ins.len() == 1);
+    let [out] = outward
+        .get(relay.uuid.as_str())
+        .map_or(&[][..], Vec::as_slice)
+    else {
+        return None;
+    };
+    let w = direct.weight;
+    let carried = via.weight * out.weight;
+    (relay.neuron_type == "hidden"
+        && identity
+        && relay.bias == 0.0
+        && fed_by_root_alone
+        && out.to_uuid == anchor
+        && out.synapse_type.as_deref() == Some("negative")
+        && (carried - w).abs() <= 1e-9 * w.abs().max(1.0))
+    .then_some(w)
+}
+
 fn role_of(s: &SynapseExport) -> Option<BranchRole> {
     match s.synapse_type.as_deref() {
         Some("positive") | None => Some(BranchRole::Positive),
@@ -161,6 +209,12 @@ impl ForestView {
                 continue;
             }
             let outs = outward.get(uuid).map_or(&[][..], Vec::as_slice);
+            if anchor_is_if
+                && let Some(w) = relay_root_weight(outs, &anchor.uuid, &by_uuid, &inward, &outward)
+            {
+                stack.push((uuid, None, w * anchor.gain));
+                continue;
+            }
             let weight = outs.first().map(|s| s.weight);
             let to_anchor = outs.iter().all(|s| s.to_uuid == anchor.uuid);
             let same_weight = outs.iter().all(|s| Some(s.weight) == weight);
@@ -879,6 +933,64 @@ mod tests {
                 );
             }
             assert!(hit > 50 && miss > 50, "fixture reaches both: {hit} {miss}");
+        }
+    }
+
+    /// Trees grafted with `--if-correction relay` (the only shape before
+    /// #68) are read back too: the root feeds the `IF` anchor's positive
+    /// branch directly and its negative branch through an IDENTITY relay.
+    /// They route like the evaluator, and a refinement of one of their leaves
+    /// moves the output by exactly its correction there and 0 elsewhere.
+    #[test]
+    fn relay_grafted_trees_are_read_back_and_refined() {
+        use crate::config::IfCorrection;
+        use crate::graft::fixtures::min_clamped_if_creature;
+        use crate::graft::{GraftOptions, graft_patch_options};
+        for base in [if_output_creature(4), min_clamped_if_creature(4)] {
+            let planted = Patch::new(0, depth2(), Provenance::default());
+            let c1 = graft_patch_options(
+                &base,
+                &planted,
+                GraftOptions::new(GraftConstants::Shared).with_if_correction(IfCorrection::Relay),
+            )
+            .unwrap()
+            .creature;
+            assert!(
+                c1.neurons.iter().any(|n| n.uuid.contains("-relay")),
+                "the fixture really is relay-shaped"
+            );
+            let view = ForestView::read(&c1, 0).unwrap();
+            assert_eq!(view.roots.len(), 1, "the relay-shaped root is read");
+            assert_eq!(view.leaves.len(), 4);
+            assert!(view.leaves.iter().all(|l| (l.gain - 1.0).abs() < 1e-9));
+            let leaf = view.leaves[1].clone();
+            let r = Patch::refinement(
+                0,
+                leaf.attach.clone(),
+                Node::stump(1, 0.6, 0.05, -0.15),
+                Provenance::default(),
+            );
+            let c2 = graft_patch(&c1, &r).unwrap().creature;
+            let mut net1 = compile_creature(&c1).unwrap();
+            let mut net2 = compile_creature(&c2).unwrap();
+            let mut reached = Vec::new();
+            let (mut hit, mut miss) = (0, 0);
+            for mut x in records(2000, 4) {
+                x[3] = 10.0; // keep the MIN clamp passing the anchor through
+                view.route(&x, &mut reached);
+                assert_eq!(reached.len(), 1);
+                assert_eq!(view.leaves[reached[0]].value as f32, planted.evaluate(&x));
+                let expected = if view.reaches(&leaf, &x) {
+                    hit += 1;
+                    r.evaluate(&x)
+                } else {
+                    miss += 1;
+                    0.0
+                };
+                let moved = net2.activate(&x, 1)[0] - net1.activate(&x, 1)[0];
+                assert!((moved - expected).abs() <= 1e-6, "{moved} vs {expected}");
+            }
+            assert!(hit > 50 && miss > 50, "{hit} {miss}");
         }
     }
 
