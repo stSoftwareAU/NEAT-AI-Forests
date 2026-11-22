@@ -133,7 +133,7 @@ struct Cli {
     /// Largest total depth a refined path may reach.
     #[arg(long, default_value_t = neat_ai_forests::config::DEFAULT_REFINE_MAX_DEPTH)]
     refine_max_depth: usize,
-    /// Refit every leaf on the creature in one solve every N iterations, and on each output's first iteration after a corpus change (0 = off; Issue #137).
+    /// Refit every leaf on the creature in one solve every N iterations on each output (counted per output), and on each output's first iteration after a corpus change (0 = off; Issue #137).
     #[arg(long, default_value_t = 0)]
     refit_every: u64,
     /// Search-set rows held in memory for the refit solve (0 = all).

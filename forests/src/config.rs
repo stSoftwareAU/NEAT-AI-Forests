@@ -225,7 +225,7 @@ pub struct ForestsConfig {
     #[serde(default = "default_refine_max_depth")]
     pub refine_max_depth: usize,
     /// Refit every leaf on the creature in one solve every this many
-    /// iterations (Issue #137; 0 = off).
+    /// iterations on each output, counted per output (Issue #137; 0 = off).
     ///
     /// Whatever the cadence, a refit also runs on each output's first
     /// iteration when the incumbent was last refitted on another corpus (or
