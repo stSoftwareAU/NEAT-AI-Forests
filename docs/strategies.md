@@ -24,7 +24,7 @@ candidate; the full-corpus scorer gate in `promote` is unconditional.
 | `--refine-leaves n`, `--refine-max-depth d` | split `n` leaves already on the creature, read back from its structure, on the rows that reach each one (Issue #140) | `refine-stump` / `refine-tree-depthD`, notes `refine=<parent uuid>:<role> leaf-depth=…` and `leaf-records=…`; the patch carries `parent` |
 | `--refit-every n`, `--refit-records`, `--refit-steps`, `--refit-ridges` | refit every leaf on the creature jointly (Issue #137) | strategy `refit`, backend `cpu-cg`, notes `ridge=… step=… leaves=… moved=… clamped-rows=… corpus=…`; the journalled patch is a placeholder bare leaf |
 
-### Refitting every leaf at once (Issue #137)
+## Refitting every leaf at once (Issue #137)
 
 With every split fixed, the output's correction-space sum is linear in the
 leaf values and each record selects one leaf per tree, so the least-squares
