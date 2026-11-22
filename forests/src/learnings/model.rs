@@ -84,10 +84,11 @@ impl Learning {
                 )];
                 notes.push(format!("origin strategy {}", p.provenance.strategy));
                 notes.extend(p.provenance.notes.iter().cloned());
-                Patch::new(
-                    p.output,
-                    p.root.clone(),
-                    Provenance {
+                // Struct update, not `Patch::new`: a refinement keeps its
+                // `parent` (and format version), so it grafts into the same
+                // leaf, or is refused with `NoSuchParent`, and keeps its id.
+                Patch {
+                    provenance: Provenance {
                         strategy: "replay".into(),
                         backend: "learnings".into(),
                         predicted_gain: p.provenance.predicted_gain,
@@ -97,7 +98,8 @@ impl Learning {
                         seed: p.provenance.seed,
                         notes,
                     },
-                )
+                    ..p.clone()
+                }
             })
             .collect()
     }
@@ -275,6 +277,74 @@ mod tests {
                 .iter()
                 .any(|n| n.contains("histogram-stump")),
             "and how it was found first time"
+        );
+    }
+
+    /// A refinement is filed with its parent leaf, and replay must keep that
+    /// attachment: onto a creature carrying the parent it grafts into the leaf
+    /// under the same id; onto one without it, it is refused rather than
+    /// grafted at the anchor where it would move every record.
+    #[test]
+    fn replay_keeps_a_refinements_parent_leaf() {
+        use crate::graft::fixtures::identity_creature;
+        use crate::graft::{GraftError, graft_patch};
+        use crate::patch::{Node, REFINE_PATCH_FORMAT_VERSION};
+        use crate::refine::{ForestView, fixtures::refined_twice};
+
+        let carrier = refined_twice(&identity_creature(3, 1));
+        let view = ForestView::read(&carrier, 0).unwrap();
+        let leaf = view.leaves.last().expect("a leaf to refine").attach.clone();
+        let original = Patch::refinement(
+            0,
+            leaf,
+            Node::stump(0, 0.4, 0.05, -0.1),
+            Provenance {
+                strategy: "refine-stump".into(),
+                ..Provenance::default()
+            },
+        );
+        let filed = file_verdicts(
+            &[Verdict {
+                id: &original.id(),
+                patches: vec![original.clone()],
+                outcome: Outcome::Rejected,
+                delta: -1e-6,
+            }],
+            &Context {
+                corpus: "abc123".into(),
+                inputs: 3,
+                outputs: 1,
+                incumbent: "creature-a".into(),
+                incumbent_score: 0.5,
+                host: "host-a".into(),
+                at_unix: 1,
+            },
+            &[],
+        );
+        let replayed = filed[0].replay("creature-b");
+        assert_eq!(replayed.len(), 1);
+        let r = &replayed[0];
+        assert_eq!(r.parent, original.parent, "the parent survives replay");
+        assert_eq!(r.version, REFINE_PATCH_FORMAT_VERSION);
+        assert_eq!(
+            r.id(),
+            filed[0].id,
+            "so the verdict files under the same id"
+        );
+
+        let grafted = graft_patch(&carrier, r).expect("grafts into the leaf");
+        let after = ForestView::read(&grafted.creature, 0).unwrap();
+        assert_eq!(
+            after.leaves.len(),
+            view.leaves.len() + 1,
+            "one leaf became two"
+        );
+
+        let parent = r.parent.as_ref().unwrap().uuid.clone();
+        assert_eq!(
+            graft_patch(&identity_creature(3, 1), r).unwrap_err(),
+            GraftError::NoSuchParent(parent),
+            "never grafted at the anchor"
         );
     }
 }

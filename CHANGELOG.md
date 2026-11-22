@@ -15,7 +15,9 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
   branch sum, so it stays additive and is addressed by parent UUID and role
   (patch format v2, `parent`). `--refine-max-depth` (default 6) caps the total
   depth. Not yet combinable with `--enhancements`: NEAT-AI-Rebase cannot replay
-  a refinement.
+  a refinement. Learnings replay keeps a refinement's parent and format
+  version, so a cached refinement grafts into the same leaf under the same id,
+  or is refused with `NoSuchParent` on a creature that lacks that leaf.
 
 ### Changed
 

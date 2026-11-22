@@ -807,6 +807,81 @@ mod tests {
         }
     }
 
+    /// Issue #140 — refinements graft at the weights a tree carries *now*.
+    /// Retune a planted tree so its root edge and one child edge are no longer
+    /// what the graft wrote, making the refined leaf's gain differ from 1 and
+    /// from the anchor's (0.5 on the MIN-clamped fixture); the refinement must still move the output by exactly
+    /// its own correction on the rows reaching the leaf, and by 0 elsewhere.
+    #[test]
+    fn refinements_graft_at_the_gain_a_retuned_tree_carries() {
+        use crate::graft::fixtures::min_clamped_if_creature;
+        for base in [
+            identity_creature(4, 1),
+            if_output_creature(4),
+            min_clamped_if_creature(4),
+        ] {
+            let anchor_gain = resolve_anchor(&base, &output_uuid(&base, 0).unwrap())
+                .unwrap()
+                .gain;
+            let planted = Patch::new(0, depth2(), Provenance::default());
+            let mut c1 = graft_patch(&base, &planted).unwrap().creature;
+            let view0 = ForestView::read(&c1, 0).unwrap();
+            let root = view0.nodes[view0.roots[0]].uuid.clone();
+            let right_child = view0
+                .nodes
+                .iter()
+                .find(|n| n.depth == 2 && n.parent == Some((0, true)))
+                .unwrap()
+                .uuid
+                .clone();
+            for s in &mut c1.synapses {
+                if s.from_uuid == root {
+                    s.weight *= 3.0;
+                } else if s.from_uuid == right_child && s.to_uuid == root {
+                    s.weight *= 0.5;
+                }
+            }
+            let view1 = ForestView::read(&c1, 0).unwrap();
+            let l1 = leaf_named(&view1, &right_child, BranchRole::Positive).clone();
+            assert!(
+                (l1.gain - 1.5).abs() < 1e-9,
+                "root gain 3, child edge 0.5: {}",
+                l1.gain
+            );
+            assert!((l1.gain - anchor_gain).abs() > 0.1, "and not the anchor's");
+            let r1 = Patch::refinement(
+                0,
+                l1.attach.clone(),
+                Node::stump(1, 0.6, 0.05, -0.15),
+                Provenance::default(),
+            );
+            let c2 = graft_patch(&c1, &r1).unwrap().creature;
+            let mut net1 = compile_creature(&c1).unwrap();
+            let mut net2 = compile_creature(&c2).unwrap();
+            let (mut hit, mut miss) = (0, 0);
+            for mut x in records(2000, 4) {
+                // Keep the MIN clamp's other source high, so the clamp passes
+                // the anchor through: on the clamped side nothing moves.
+                x[3] = 10.0;
+                let before = net1.activate(&x, 1)[0];
+                let after = net2.activate(&x, 1)[0];
+                let expected = if view1.reaches(&l1, &x) {
+                    hit += 1;
+                    r1.evaluate(&x)
+                } else {
+                    miss += 1;
+                    0.0
+                };
+                assert!(
+                    (after - before - expected).abs() <= 1e-6,
+                    "{} vs {expected} at {x:?}",
+                    after - before
+                );
+            }
+            assert!(hit > 50 && miss > 50, "fixture reaches both: {hit} {miss}");
+        }
+    }
+
     #[test]
     fn a_refinement_whose_parent_is_gone_is_refused() {
         let base = identity_creature(4, 1);
@@ -953,6 +1028,133 @@ mod tests {
         assert!(
             after_refine < after_tree * 0.25,
             "refining reached {after_refine} from {after_tree}"
+        );
+    }
+
+    /// Issue #140's two guards take effect at their boundaries: a leaf at the
+    /// depth cap is not searched, one level of room offers only a stump, a
+    /// subtree never takes a path past the cap, and a leaf with fewer records
+    /// than two new leaves need is skipped.
+    #[test]
+    fn the_depth_cap_and_the_leaf_record_floor_bound_the_search() {
+        use crate::bins::{BinBuildOptions, build_bin_cache};
+        use crate::corpus::{corpus_info, write_bin_file};
+        use crate::incumbent::Incumbent;
+        use crate::residuals::compute_residuals;
+        use crate::strategies::build_search_set;
+        use neat_core::training_data::TrainingDataConfig;
+
+        let tmp = tempfile::tempdir().unwrap();
+        // Structure under every depth-2 leaf, so each is worth refining.
+        let recs: Vec<(Vec<f32>, Vec<f32>)> = records(8000, 4)
+            .into_iter()
+            .map(|x| {
+                let y = if x[3] > 0.5 { 0.6 } else { -0.4 } + if x[1] > 0.3 { 0.2 } else { 0.0 };
+                (x, vec![y])
+            })
+            .collect();
+        write_bin_file(&tmp.path().join("0.bin"), &recs).unwrap();
+        let tcfg = TrainingDataConfig::new(4, 1);
+        let corpus = corpus_info(tmp.path(), &tcfg).unwrap();
+        let bins = build_bin_cache(
+            tmp.path(),
+            &tcfg,
+            &corpus,
+            &BinBuildOptions {
+                bins: 16,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let cfg = ForestsConfig {
+            search_records: 0,
+            min_leaf_records: 20.0,
+            ..Default::default()
+        };
+        let planted = graft_patch(
+            &identity_creature(4, 1),
+            &Patch::new(0, depth2(), Provenance::default()),
+        )
+        .unwrap()
+        .creature;
+        let inc = Incumbent::from_creature(planted.clone(), "t").unwrap();
+        let res = compute_residuals(&inc, tmp.path(), &corpus, 512, 1).unwrap();
+        let set = build_search_set(&cfg, &bins, &res, tmp.path(), 0, 1).unwrap();
+        let view = ForestView::read(&planted, 0).unwrap();
+        assert!(view.leaves.iter().all(|l| l.depth == 2));
+        let search = |max_total_depth: usize, max_depth: usize, min_leaf_records: f64| {
+            let mut stump = cfg.search_controls();
+            stump.min_leaf_records = min_leaf_records;
+            search_refinements(
+                &view,
+                &set,
+                &bins,
+                tmp.path(),
+                1,
+                512,
+                &RefineControls {
+                    leaves: 4,
+                    max_total_depth,
+                    max_depth,
+                    stump,
+                    growth: cfg.growth,
+                    threads: 1,
+                },
+            )
+            .unwrap()
+        };
+        let depth_of = |d: &Discovery| match d.strategy.strip_prefix("refine-tree-depth") {
+            Some(n) => n.parse::<usize>().unwrap(),
+            None => {
+                assert_eq!(d.strategy, "refine-stump");
+                1
+            }
+        };
+
+        let at_cap = search(2, 6, 20.0);
+        assert_eq!(at_cap.searched, 0, "a leaf at the cap is not searched");
+        assert!(at_cap.discoveries.is_empty());
+
+        let one_level = search(3, 6, 20.0);
+        assert_eq!(one_level.searched, 4);
+        assert!(!one_level.discoveries.is_empty());
+        assert!(
+            one_level
+                .discoveries
+                .iter()
+                .all(|d| d.strategy == "refine-stump"),
+            "one level of room offers only stumps: {:?}",
+            one_level
+                .discoveries
+                .iter()
+                .map(|d| &d.strategy)
+                .collect::<Vec<_>>()
+        );
+
+        for (cap, max_depth) in [(4, 6), (5, 2), (6, 3)] {
+            let found = search(cap, max_depth, 20.0);
+            assert!(
+                found.discoveries.iter().any(|d| depth_of(d) > 1),
+                "cap {cap} leaves room for a subtree"
+            );
+            for d in &found.discoveries {
+                assert!(
+                    2 + depth_of(d) <= cap && depth_of(d) <= max_depth,
+                    "{} under a depth-2 leaf breaks cap {cap} / max {max_depth}",
+                    d.strategy
+                );
+            }
+        }
+
+        // The largest leaves (x0 ≤ .5, x1 > .25 and x0 > .5, x2 ≤ .75) each
+        // hold about 3000 of the 8000 rows (½ · ¾), the others about 1000.
+        let floor = search(6, 3, 1600.0);
+        assert_eq!(floor.searched, 0, "no leaf holds 2 × 1600 records");
+        assert!(floor.discoveries.is_empty());
+        let enough = search(6, 3, 1400.0);
+        assert_eq!(
+            enough.searched, 2,
+            "only the two large leaves cover 2 × 1400"
         );
     }
 }
