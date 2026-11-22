@@ -1,5 +1,6 @@
 //! Run configuration — every knob the CLI exposes, with defaults.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -291,6 +292,13 @@ pub struct ForestsConfig {
     /// fetched champion rather than publishing this run's own descendant.
     #[serde(default)]
     pub enhancements: bool,
+    /// Candidate-family flags the caller left unset (Issue #147): drawn at
+    /// random from the run seed ([`crate::arms::ArmPolicy::Draw`]) or left
+    /// off under `--no-random-arms`. An arm missing here was given
+    /// explicitly. Empty — nothing drawn — for a programmatic config, and
+    /// emptied once [`crate::arms::resolve`] has run.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub arm_policy: BTreeMap<crate::arms::Arm, crate::arms::ArmPolicy>,
     /// Shared learnings cache root (`None` = the cache is off, Issue #60).
     ///
     /// What worked and what failed is written here as one append-only file per
@@ -365,6 +373,7 @@ impl Default for ForestsConfig {
             preserve_candidates: false,
             max_consecutive_scorer_failures: 3,
             enhancements: false,
+            arm_policy: BTreeMap::new(),
             learnings_dir: None,
             learnings_host: None,
             learnings_replay: 8,

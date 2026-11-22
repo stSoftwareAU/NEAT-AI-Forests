@@ -241,11 +241,12 @@ experiment back on the table.
 | `--threshold-jitter` | `0` | neighbouring bins tried per top stump |
 | `--random-candidates` | `4` | deliberately random stumps per iteration |
 | `--oblique-candidates` | `0` | oblique 2–3 feature splits per iteration |
-| `--refine-leaves` | `0` | leaves already on the creature split per iteration, read back from its structure (#140); cannot be combined with `--enhancements` yet |
+| `--refine-leaves` | drawn (#147) | leaves already on the creature split per iteration, read back from its structure (#140); cannot be combined with `--enhancements` yet |
 | `--refine-max-depth` | `6` | largest total depth a refined path may reach |
-| `--linear-leaf-conditions` | `0` | conditions in the linear-leaf pool per iteration: each side of the split gets an intercept and a slope on its best second input, so a signal whose slope flips sign between regimes can be found (#138); cannot be combined with `--enhancements` |
-| `--hidden-features` | `0` | hidden neurons upstream of the anchor offered to the search as extra split columns each iteration, ranked by the residual they explain (#139); cannot be combined with `--enhancements` |
-| `--refit-every` | `0` | refit every leaf on the creature in one ridge least-squares solve every N iterations on each output (counted per output), and on each output's first iteration after a corpus change (#137); cannot be combined with `--enhancements` |
+| `--linear-leaf-conditions` | drawn (#147) | conditions in the linear-leaf pool per iteration: each side of the split gets an intercept and a slope on its best second input, so a signal whose slope flips sign between regimes can be found (#138); cannot be combined with `--enhancements` |
+| `--hidden-features` | drawn (#147) | hidden neurons upstream of the anchor offered to the search as extra split columns each iteration, ranked by the residual they explain (#139); cannot be combined with `--enhancements` |
+| `--refit-every` | drawn (#147) | refit every leaf on the creature in one ridge least-squares solve every N iterations on each output (counted per output), and on each output's first iteration after a corpus change (#137); cannot be combined with `--enhancements` |
+| `--no-random-arms` | off | leave the four family flags above off when unset, instead of drawing them at random from the seed (#147) |
 | `--refit-records` | `20000` | search-set rows held in memory for the refit solve (0 = all) |
 | `--refit-steps` | `0.25,0.5,1.0` | step multipliers tried on the refit's least-squares step |
 | `--refit-ridges` | `1.0,0.1` | ridge strengths tried, relative to each leaf's curvature |
@@ -385,7 +386,7 @@ run that accepted nothing and a negative delta is reported rather than hidden.
 - `experiment` — per iteration: search backend/set/records/features/strategies, timings, every candidate's patch + provenance, its **screen** score and its **full** score recorded separately, promotion/bypass flags, winner, improvement, acceptance, new incumbent checksum, screen false-positive/false-negative counts, scorer error or baseline veto, and `discarded` — every rejected candidate with the verbatim graft/validation reason.
 - `summary` — stop reason, iterations, acceptances, opening/final score, wall time.
 
-`neat_ai_forests report` folds the journal into the economics metrics: cumulative improvement, **improvement per wall-clock hour**, time to first acceptance, candidates per minute, search vs scorer time, screen false-positive/negative rates, and per-strategy / per-backend / per-depth winner counts and accepted gain. `scripts/report-experiments.sh` compares several journals side by side.
+`neat_ai_forests report` folds the journal into the economics metrics: cumulative improvement, **improvement per wall-clock hour**, time to first acceptance, candidates per minute, search vs scorer time, screen false-positive/negative rates, and per-strategy / per-backend / per-depth winner counts and accepted gain. `scripts/report-experiments.sh` compares several journals side by side, and groups runs by their randomly drawn family arms (`forests-arms`, #147).
 
 ---
 
@@ -763,6 +764,7 @@ NEAT-AI-Forests/
 │   ├── src/
 │   │   ├── main.rs            # CLI
 │   │   ├── lib.rs
+│   │   ├── arms.rs            # unset family flags drawn per run, forests-arms tag (#147)
 │   │   ├── baseline.rs        # authoritative baseline + parity gate (#2)
 │   │   ├── bins.rs            # quantile-bin cache (#3)
 │   │   ├── cancel.rs          # SIGINT/SIGTERM cooperative cancellation

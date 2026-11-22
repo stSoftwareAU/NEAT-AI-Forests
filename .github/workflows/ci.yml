@@ -345,6 +345,9 @@ jobs:
       - name: Check the neat-core release-pin gate
         run: ./scripts/test-check-neat-core-version.sh
 
+      - name: Check the per-arm experiment report
+        run: ./scripts/test-report-experiments.sh
+
   spell-check:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Spell Check

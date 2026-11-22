@@ -162,6 +162,42 @@ Weights from stratified / residual-weighted sampling flow into the histogram
 statistics (`Σw`, `Σw·r`, `Σw·r²`), so gains estimate the full-corpus SSE
 reduction rather than the sample's.
 
+## Random arms (Issue #147)
+
+The four newest families (`--refine-leaves`, `--refit-every`,
+`--hidden-features`, `--linear-leaf-conditions`) are **arms**: a flag left
+unset is drawn on or off with probability ½ per run, from the run seed with a
+fixed salt, so `--seed` reproduces the draw. Drawn on, each takes its
+production-protocol value (`docs/benchmarks.md` lines G–J): refine 8, refit
+100000 (the opening refit only), hidden 256, linear 16.
+
+- An explicit value, `0` included, is always used as given.
+- Under `--enhancements` every unset arm is forced off: none of them is
+  something NEAT-AI-Rebase can replay yet.
+- `--no-random-arms` leaves every unset arm off (today's defaults).
+
+Every creature the run publishes carries the creature-level tag
+`forests-arms`, beside `score`, `forests` and `forests-detail`:
+
+```text
+hidden-features=256:drawn,linear-leaf-conditions=0:set,refine-leaves=8:drawn,refit-every=0:forced
+```
+
+Each arm is `flag=value:source`, sorted by flag name; the source is `drawn`,
+`set` (explicit), `forced` (off under `--enhancements`) or `default` (unset
+under `--no-random-arms`). The tag is written only on a creature the run
+changed — on acceptance — so a run that accepts nothing leaves an inherited
+tag untouched and a tag always describes the run that produced the creature.
+The journal's run header carries the same string (`arms`), and its `config` is
+the resolved one.
+
+`scripts/report-experiments.sh` adds a per-arm table over every journal that
+has arms: for each family, runs drawn on against runs drawn off, with
+acceptances, Δ per wall hour, Δ per full scorer call and how many accepted
+patches the family itself produced. Only `drawn` arms count. One run proves
+nothing: the champion and corpus move between runs, so expect a few dozen per
+arm before reading a verdict.
+
 ## Measuring them
 
 `neat_ai_forests report` aggregates per strategy: generated, promoted, fully

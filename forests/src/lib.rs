@@ -31,6 +31,7 @@
 
 #![warn(missing_docs)]
 
+pub mod arms;
 pub mod baseline;
 pub mod bins;
 pub mod cancel;

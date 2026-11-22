@@ -127,21 +127,24 @@ struct Cli {
     /// Oblique (multi-feature) split candidates per iteration (0 = off).
     #[arg(long, default_value_t = 0)]
     oblique_candidates: usize,
-    /// Leaves already on the creature to split per iteration, read back from its structure (0 = off; Issue #140).
-    #[arg(long, default_value_t = 0)]
-    refine_leaves: usize,
+    /// Leaves already on the creature to split per iteration, read back from its structure (0 = off; Issue #140). Unset: drawn at random per run (Issue #147).
+    #[arg(long)]
+    refine_leaves: Option<usize>,
     /// Largest total depth a refined path may reach.
     #[arg(long, default_value_t = neat_ai_forests::config::DEFAULT_REFINE_MAX_DEPTH)]
     refine_max_depth: usize,
-    /// Conditions in the linear-leaf pool per iteration: each side gets an intercept and a slope on a second input (0 = off; Issue #138).
-    #[arg(long, default_value_t = 0)]
-    linear_leaf_conditions: usize,
-    /// Hidden neurons offered to the search as extra split columns each iteration, ranked by how much residual they explain (0 = off; Issue #139).
-    #[arg(long, default_value_t = 0)]
-    hidden_features: usize,
-    /// Refit every leaf on the creature in one solve every N iterations on each output (counted per output), and on each output's first iteration after a corpus change (0 = off; Issue #137).
-    #[arg(long, default_value_t = 0)]
-    refit_every: u64,
+    /// Conditions in the linear-leaf pool per iteration: each side gets an intercept and a slope on a second input (0 = off; Issue #138). Unset: drawn at random per run (Issue #147).
+    #[arg(long)]
+    linear_leaf_conditions: Option<usize>,
+    /// Hidden neurons offered to the search as extra split columns each iteration, ranked by how much residual they explain (0 = off; Issue #139). Unset: drawn at random per run (Issue #147).
+    #[arg(long)]
+    hidden_features: Option<usize>,
+    /// Refit every leaf on the creature in one solve every N iterations on each output (counted per output), and on each output's first iteration after a corpus change (0 = off; Issue #137). Unset: drawn at random per run (Issue #147).
+    #[arg(long)]
+    refit_every: Option<u64>,
+    /// Leave every unset candidate-family flag (--refine-leaves, --refit-every, --hidden-features, --linear-leaf-conditions) off instead of drawing it at random from the seed (Issue #147).
+    #[arg(long)]
+    no_random_arms: bool,
     /// Search-set rows held in memory for the refit solve (0 = all).
     #[arg(long, default_value_t = neat_ai_forests::refit::DEFAULT_REFIT_RECORDS)]
     refit_records: u64,
@@ -413,11 +416,11 @@ fn main() -> ExitCode {
         threshold_jitter: cli.threshold_jitter,
         random_candidates: cli.random_candidates,
         oblique_candidates: cli.oblique_candidates,
-        refine_leaves: cli.refine_leaves,
+        refine_leaves: cli.refine_leaves.unwrap_or(0),
         refine_max_depth: cli.refine_max_depth,
-        linear_leaf_conditions: cli.linear_leaf_conditions,
-        hidden_features: cli.hidden_features,
-        refit_every: cli.refit_every,
+        linear_leaf_conditions: cli.linear_leaf_conditions.unwrap_or(0),
+        hidden_features: cli.hidden_features.unwrap_or(0),
+        refit_every: cli.refit_every.unwrap_or(0),
         refit_records: cli.refit_records,
         refit_steps: cli.refit_steps.clone(),
         refit_ridges: cli.refit_ridges.clone(),
@@ -443,6 +446,27 @@ fn main() -> ExitCode {
         preserve_candidates: cli.preserve_candidates,
         max_consecutive_scorer_failures: cli.max_consecutive_scorer_failures,
         enhancements: cli.enhancements,
+        arm_policy: {
+            use neat_ai_forests::arms::{Arm, ArmPolicy};
+            let policy = if cli.no_random_arms {
+                ArmPolicy::Default
+            } else {
+                ArmPolicy::Draw
+            };
+            [
+                (Arm::HiddenFeatures, cli.hidden_features.is_none()),
+                (
+                    Arm::LinearLeafConditions,
+                    cli.linear_leaf_conditions.is_none(),
+                ),
+                (Arm::RefineLeaves, cli.refine_leaves.is_none()),
+                (Arm::RefitEvery, cli.refit_every.is_none()),
+            ]
+            .into_iter()
+            .filter(|(_, unset)| *unset)
+            .map(|(arm, _)| (arm, policy))
+            .collect()
+        },
         learnings_dir: cli.learnings_dir.clone(),
         learnings_host: cli.learnings_host.clone(),
         learnings_replay: cli.learnings_replay,

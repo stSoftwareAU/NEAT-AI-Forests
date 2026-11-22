@@ -247,6 +247,11 @@ neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/
 scripts/report-experiments.sh runs/*/experiments.jsonl
 ```
 
+Lines G–J are optional controlled checks: ordinary runs already draw those
+four families at random and stamp the draw in `forests-arms` (Issue #147), so
+`scripts/report-experiments.sh` over the fleet's journals gives the on/off
+comparison without hand-run A/Bs.
+
 Record for each run: opening/final authoritative score, acceptances,
 `improvementPerWallHour`, `timeToFirstAcceptanceMs`, `searchTimeFraction`,
 screen FP/FN rates, and the `affectedFraction` of every accepted gain (a

@@ -243,6 +243,10 @@ pub enum JournalLine {
         bin_cache: String,
         /// Effective configuration.
         config: serde_json::Value,
+        /// How each candidate-family arm was decided (Issue #147): the
+        /// `forests-arms` tag value. Empty in journals from older builds.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        arms: String,
     },
     /// Authoritative baseline (also written after each acceptance).
     Baseline(AuthoritativeBaseline),
@@ -319,6 +323,7 @@ mod tests {
             corpus_identity: "def".into(),
             bin_cache: "def:256".into(),
             config: serde_json::json!({"a": 1}),
+            arms: "refine-leaves=8:drawn".into(),
         };
         append_journal_line(&p, &header).unwrap();
         let summary = JournalLine::Summary(SummaryRecord {

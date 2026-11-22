@@ -44,6 +44,9 @@ echo "Checking the neat-core release-pin gate (Issue #105)..."
 echo "Checking the neat-core pin hold (PR #111)..."
 ./scripts/test-hold-core-pin.sh
 
+echo "Checking the per-arm experiment report (Issue #147)..."
+./scripts/test-report-experiments.sh
+
 # No sibling checkout to look for any more: the pin the gate reads lives in this
 # repository's own Cargo.lock (Issue #105), so the gate always runs.
 echo "Gating on unhandled breaking neat-core bump..."

@@ -7,6 +7,16 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Added
 
+- **Random arms (Issue #147).** `--refine-leaves`, `--refit-every`,
+  `--hidden-features` and `--linear-leaf-conditions` are now optional: left
+  unset, each is drawn on (at its protocol G–J value) or off with probability
+  ½, deterministically from the run seed. An explicit value, `0` included,
+  wins; `--enhancements` forces unset arms off; `--no-random-arms` restores
+  the old all-off defaults. The draw is recorded as the creature-level tag
+  `forests-arms` (`flag=value:drawn|set|forced|default`, sorted) on every
+  creature the run accepts, and as `arms` in the journal's run header, whose
+  `config` is now the resolved one. `scripts/report-experiments.sh` prints a
+  per-arm on/off table over drawn runs (`scripts/test-report-experiments.sh`).
 - **Linear leaves (Issue #138).** `--linear-leaf-conditions R` (off by
   default) fits, for a pool of `R` conditions mixed from the best stumps,
   conditions already on the creature and seeded median/zero splits, an
