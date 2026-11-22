@@ -21,6 +21,9 @@ pub const PATCH_FORMAT_VERSION: u32 = 1;
 /// instead of misreading it.
 pub const REFINE_PATCH_FORMAT_VERSION: u32 = 2;
 
+/// Format version of a patch with a linear leaf (Issue #138) — the same v2.
+pub const LINEAR_LEAF_PATCH_FORMAT_VERSION: u32 = REFINE_PATCH_FORMAT_VERSION;
+
 /// Format version of a patch whose condition reads a hidden neuron (Issue
 /// #139) — the same v2 as a refinement.
 pub const HIDDEN_SOURCE_PATCH_FORMAT_VERSION: u32 = REFINE_PATCH_FORMAT_VERSION;
@@ -166,13 +169,20 @@ impl Condition {
 }
 
 /// Tree node.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Node {
-    /// Constant correction.
+    /// Constant correction, plus — for a linear leaf (Issue #138) — a slope
+    /// on one or more inputs.
     Leaf {
         /// Added to the pre-squash sum of the target output neuron.
         correction: f32,
+        /// Linear terms (Issue #138): the leaf's value is
+        /// `Σ weight · x[feature] + correction`, summed in this order (inputs
+        /// ascending, as the `IF` kernel sums its branch synapses). Empty for
+        /// an ordinary constant leaf, which then serialises exactly as v1.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        slopes: Vec<Term>,
     },
     /// Binary split.
     Split {
@@ -185,10 +195,59 @@ pub enum Node {
     },
 }
 
+/// A constant leaf prints exactly as it did before linear leaves existed, so
+/// debug fingerprints of constant-leaf trees are unchanged.
+impl std::fmt::Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Leaf { correction, slopes } => {
+                let mut d = f.debug_struct("Leaf");
+                d.field("correction", correction);
+                if !slopes.is_empty() {
+                    d.field("slopes", slopes);
+                }
+                d.finish()
+            }
+            Self::Split {
+                condition,
+                left,
+                right,
+            } => f
+                .debug_struct("Split")
+                .field("condition", condition)
+                .field("left", left)
+                .field("right", right)
+                .finish(),
+        }
+    }
+}
+
 impl Node {
     /// Leaf helper.
     pub fn leaf(correction: f32) -> Self {
-        Self::Leaf { correction }
+        Self::Leaf {
+            correction,
+            slopes: Vec::new(),
+        }
+    }
+
+    /// Linear leaf (Issue #138): `correction + Σ slope · x[feature]`. Slopes
+    /// are kept in ascending feature order — the order the `IF` kernel sums
+    /// them in.
+    pub fn linear_leaf(correction: f32, mut slopes: Vec<(usize, f32)>) -> Self {
+        slopes.sort_by_key(|s| s.0);
+        Self::Leaf {
+            correction,
+            slopes: slopes.into_iter().map(|(f, w)| Term::input(f, w)).collect(),
+        }
+    }
+
+    /// `true` when any leaf carries a slope (Issue #138).
+    pub fn has_slopes(&self) -> bool {
+        match self {
+            Self::Leaf { slopes, .. } => !slopes.is_empty(),
+            Self::Split { left, right, .. } => left.has_slopes() || right.has_slopes(),
+        }
     }
 
     /// Axis-aligned split helper.
@@ -209,7 +268,19 @@ impl Node {
     /// source's activation (Issue #139).
     pub fn evaluate_with(&self, inputs: &[f32], hidden: &dyn Fn(&str) -> f32) -> f32 {
         match self {
-            Self::Leaf { correction } => *correction,
+            Self::Leaf { correction, slopes } => {
+                // Inputs first, then the bias-1 constant: the order the `IF`
+                // kernel sums a branch's synapses in.
+                let mut sum = 0.0f32;
+                for t in slopes {
+                    sum += inputs.get(t.feature).copied().unwrap_or(0.0) * t.weight;
+                }
+                if slopes.is_empty() {
+                    *correction
+                } else {
+                    sum + 1.0 * *correction
+                }
+            }
             Self::Split {
                 condition,
                 left,
@@ -284,7 +355,9 @@ impl Node {
     /// Number of leaves whose correction is exactly zero.
     pub fn zero_leaves(&self) -> usize {
         match self {
-            Self::Leaf { correction } => usize::from(*correction == 0.0),
+            Self::Leaf { correction, slopes } => {
+                usize::from(*correction == 0.0 && slopes.iter().all(|t| t.weight == 0.0))
+            }
             Self::Split { left, right, .. } => left.zero_leaves() + right.zero_leaves(),
         }
     }
@@ -292,7 +365,10 @@ impl Node {
     /// Largest absolute leaf correction.
     pub fn max_abs_correction(&self) -> f32 {
         match self {
-            Self::Leaf { correction } => correction.abs(),
+            Self::Leaf { correction, slopes } => slopes
+                .iter()
+                .map(|t| t.weight.abs())
+                .fold(correction.abs(), f32::max),
             Self::Split { left, right, .. } => {
                 left.max_abs_correction().max(right.max_abs_correction())
             }
@@ -310,6 +386,14 @@ impl Node {
     }
 
     fn collect_features(&self, out: &mut Vec<usize>) {
+        if let Self::Leaf { slopes, .. } = self {
+            out.extend(
+                slopes
+                    .iter()
+                    .filter(|t| t.neuron.is_none())
+                    .map(|t| t.feature),
+            );
+        }
         if let Self::Split {
             condition,
             left,
@@ -331,8 +415,15 @@ impl Node {
     /// Multiply every leaf by `scale` (used for magnitude variants).
     pub fn scaled(&self, scale: f32) -> Self {
         match self {
-            Self::Leaf { correction } => Self::Leaf {
+            Self::Leaf { correction, slopes } => Self::Leaf {
                 correction: correction * scale,
+                slopes: slopes
+                    .iter()
+                    .map(|t| Term {
+                        weight: t.weight * scale,
+                        ..t.clone()
+                    })
+                    .collect(),
             },
             Self::Split {
                 condition,
@@ -349,7 +440,9 @@ impl Node {
     /// `true` if every value is finite.
     pub fn is_finite(&self) -> bool {
         match self {
-            Self::Leaf { correction } => correction.is_finite(),
+            Self::Leaf { correction, slopes } => {
+                correction.is_finite() && slopes.iter().all(|t| t.weight.is_finite())
+            }
             Self::Split {
                 condition,
                 left,
@@ -415,10 +508,10 @@ impl Patch {
     /// New v1 patch.
     pub fn new(output: usize, root: Node, provenance: Provenance) -> Self {
         Self {
-            version: if root.hidden_sources().is_empty() {
+            version: if root.hidden_sources().is_empty() && !root.has_slopes() {
                 PATCH_FORMAT_VERSION
             } else {
-                HIDDEN_SOURCE_PATCH_FORMAT_VERSION
+                HIDDEN_SOURCE_PATCH_FORMAT_VERSION.max(LINEAR_LEAF_PATCH_FORMAT_VERSION)
             },
             output,
             root,
@@ -439,20 +532,23 @@ impl Patch {
     }
 
     /// The lowest format version that can carry this patch, read from its
-    /// shape: version 2 for a refinement (`parent`) or a hidden-source term
-    /// (`Term.neuron`), version 1 otherwise. A reader that knows only
+    /// shape: version 2 for a refinement (`parent`), a hidden-source term
+    /// (`Term.neuron`) or a linear leaf (`Leaf.slopes`), version 1 otherwise. A reader that knows only
     /// version 1 must refuse anything above it rather than graft it at the
     /// anchor or on an input.
     pub fn required_version(&self) -> u32 {
-        if self.parent.is_some() || !self.root.hidden_sources().is_empty() {
-            REFINE_PATCH_FORMAT_VERSION.max(HIDDEN_SOURCE_PATCH_FORMAT_VERSION)
+        if self.parent.is_some() || !self.root.hidden_sources().is_empty() || self.root.has_slopes()
+        {
+            REFINE_PATCH_FORMAT_VERSION
+                .max(HIDDEN_SOURCE_PATCH_FORMAT_VERSION)
+                .max(LINEAR_LEAF_PATCH_FORMAT_VERSION)
         } else {
             PATCH_FORMAT_VERSION
         }
     }
 
     /// Whether NEAT-AI-Rebase can replay this patch: version-1 shapes only.
-    /// It has no `parent` and no `Term.neuron` yet, so it would mirror a
+    /// It has no `parent`, `Term.neuron` or `Leaf.slopes` yet, so it would mirror a
     /// refinement or a hidden-source patch under a different id.
     pub fn rebase_can_replay(&self) -> bool {
         self.required_version() == PATCH_FORMAT_VERSION
@@ -563,6 +659,31 @@ mod tests {
         // An input term serialises exactly as it always did.
         let plain = serde_json::to_string(&Term::input(3, 1.0)).unwrap();
         assert_eq!(plain, r#"{"feature":3,"weight":1.0}"#);
+    }
+
+    #[test]
+    fn a_linear_leaf_round_trips_and_evaluates_like_the_kernel() {
+        let n = Node::Split {
+            condition: Condition::axis(0, 0.0),
+            left: Box::new(Node::linear_leaf(0.1, vec![(1, -2.0)])),
+            right: Box::new(Node::linear_leaf(-0.1, vec![(1, 2.0)])),
+        };
+        assert!(n.has_slopes());
+        assert_eq!(n.features(), vec![0, 1]);
+        assert_eq!(n.evaluate(&[1.0, 0.5]), 2.0 * 0.5 - 0.1);
+        assert_eq!(n.evaluate(&[-1.0, 0.5]), -2.0 * 0.5 + 0.1);
+        assert_eq!(n.scaled(0.5).evaluate(&[1.0, 0.5]), 0.5 * (2.0 * 0.5 - 0.1));
+        let p = Patch::new(0, n, Provenance::default());
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains(r#""slopes":[{"feature":1,"weight":2.0}]"#));
+        assert_eq!(serde_json::from_str::<Patch>(&json).unwrap(), p);
+        // A constant leaf serialises and prints as it always did.
+        assert_eq!(
+            serde_json::to_string(&Node::leaf(0.5)).unwrap(),
+            r#"{"kind":"leaf","correction":0.5}"#
+        );
+        assert_eq!(format!("{:?}", Node::leaf(0.5)), "Leaf { correction: 0.5 }");
+        assert!(!Node::stump(0, 0.0, 0.0, 1.0).has_slopes());
     }
 
     #[test]

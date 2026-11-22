@@ -243,6 +243,7 @@ experiment back on the table.
 | `--oblique-candidates` | `0` | oblique 2–3 feature splits per iteration |
 | `--refine-leaves` | `0` | leaves already on the creature split per iteration, read back from its structure (#140); cannot be combined with `--enhancements` yet |
 | `--refine-max-depth` | `6` | largest total depth a refined path may reach |
+| `--linear-leaf-conditions` | `0` | conditions in the linear-leaf pool per iteration: each side of the split gets an intercept and a slope on its best second input, so a signal whose slope flips sign between regimes can be found (#138); cannot be combined with `--enhancements` |
 | `--hidden-features` | `0` | hidden neurons upstream of the anchor offered to the search as extra split columns each iteration, ranked by the residual they explain (#139); cannot be combined with `--enhancements` |
 | `--refit-every` | `0` | refit every leaf on the creature in one ridge least-squares solve every N iterations on each output (counted per output), and on each output's first iteration after a corpus change (#137); cannot be combined with `--enhancements` |
 | `--refit-records` | `20000` | search-set rows held in memory for the refit solve (0 = all) |
@@ -780,6 +781,7 @@ NEAT-AI-Forests/
 │   │   │   ├── replay.rs      # what to replay, known failures
 │   │   │   ├── prune.rs       # retention planning (#61)
 │   │   │   └── store.rs       # per-host JSON Lines I/O
+│   │   ├── linear.rs          # linear leaves: intercept + slope per side (#138)
 │   │   ├── log.rs             # stderr logging
 │   │   ├── meta.rs            # creature tag preservation
 │   │   ├── oblique.rs         # multi-feature linear splits (#14)

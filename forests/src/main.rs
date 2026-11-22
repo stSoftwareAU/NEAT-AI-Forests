@@ -133,6 +133,9 @@ struct Cli {
     /// Largest total depth a refined path may reach.
     #[arg(long, default_value_t = neat_ai_forests::config::DEFAULT_REFINE_MAX_DEPTH)]
     refine_max_depth: usize,
+    /// Conditions in the linear-leaf pool per iteration: each side gets an intercept and a slope on a second input (0 = off; Issue #138).
+    #[arg(long, default_value_t = 0)]
+    linear_leaf_conditions: usize,
     /// Hidden neurons offered to the search as extra split columns each iteration, ranked by how much residual they explain (0 = off; Issue #139).
     #[arg(long, default_value_t = 0)]
     hidden_features: usize,
@@ -412,6 +415,7 @@ fn main() -> ExitCode {
         oblique_candidates: cli.oblique_candidates,
         refine_leaves: cli.refine_leaves,
         refine_max_depth: cli.refine_max_depth,
+        linear_leaf_conditions: cli.linear_leaf_conditions,
         hidden_features: cli.hidden_features,
         refit_every: cli.refit_every,
         refit_records: cli.refit_records,

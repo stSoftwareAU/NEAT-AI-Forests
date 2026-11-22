@@ -303,7 +303,8 @@ pub fn evaluate_on_bins(
     set_index_of: &dyn Fn(usize) -> Option<usize>,
 ) -> Option<f32> {
     match node {
-        crate::patch::Node::Leaf { correction } => Some(*correction),
+        // A linear leaf needs the raw input, which bins do not carry.
+        crate::patch::Node::Leaf { correction, slopes } => slopes.is_empty().then_some(*correction),
         crate::patch::Node::Split {
             condition,
             left,

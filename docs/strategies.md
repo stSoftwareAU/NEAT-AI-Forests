@@ -22,8 +22,48 @@ candidate; the full-corpus scorer gate in `promote` is unconditional.
 | `--max-depth 2 or 3`, `--growth …` | trees (Issue #11) | `histogram-tree-depthD`, note `growth=…` |
 | `--oblique-candidates n` | 2–3 feature linear conditions (Issue #14) | `oblique-split`, note `origin=axis+1`, `random-sparse` or `jitter` |
 | `--refine-leaves n`, `--refine-max-depth d` | split `n` leaves already on the creature, read back from its structure, on the rows that reach each one (Issue #140) | `refine-stump` / `refine-tree-depthD`, notes `refine=<parent uuid>:<role> leaf-depth=…` and `leaf-records=…`; the patch carries `parent` |
+| `--linear-leaf-conditions R` | split + intercept and slope on a second input per side (Issue #138) | `linear-leaf`, `linear-leaf/half-slope`, `/right-slope`, `/left-slope`, `/shared-intercept`; notes `condition-origin=stump\|creature\|median\|zero slope-input=k`, `constant-gain=…`; leaves carry `slopes` |
 | `--hidden-features n` | the creature's own hidden neurons as extra split columns (Issue #139) | strategy suffix `+hidden`, note `hidden-sources=<uuid,…>`; search-set note `hidden-features=k/eligible`; the term carries `neuron` |
 | `--refit-every n`, `--refit-records`, `--refit-steps`, `--refit-ridges` | refit every leaf on the creature jointly (Issue #137) | strategy `refit`, backend `cpu-cg`, notes `ridge=… step=… leaves=… moved=… clamped-rows=… corpus=…`; the journalled patch is a placeholder bare leaf |
+
+## Linear leaves (Issue #138)
+
+Every other leaf is a constant. A linear leaf also carries a slope on a second
+input, so one split can say "the same signal helps in one regime and hurts in
+the other":
+
+```text
+IF  condition:  x_j − t
+    positive:   a_R · 1  +  b_R · x_k
+    negative:   a_L · 1  +  b_L · x_k
+```
+
+Averaged over both regimes such a signal has almost no correlation with the
+residual, and a split on the regime alone with constant leaves has almost no
+gain, so the constant-leaf search never finds it. With
+`--linear-leaf-conditions R` each iteration builds a pool of `R` conditions —
+a third from the iteration's best ordinary stumps, a third from axis
+conditions already on the creature, the rest seeded median and zero splits on
+random features, so the pool is never ranked by constant-leaf gain alone. One
+masked histogram pass per condition gives, per side and per bin of every
+feature `k`, `Σw` and `Σw·r`; with the bin's midpoint `v_b` that is `Σw·x`,
+`Σw·x²` and `Σw·r·x`, and so the closed-form weighted least-squares intercept,
+slope and SSE gain of every `(condition, k)` pair. Each condition keeps its best
+`k` if it beats constant leaves on the same condition; the best `R` pairs become
+discoveries, and the top two also get half-slope, one-sided-slope and
+shared-intercept variants. Magnitude variants scale slopes and intercepts
+together.
+
+A slope is one extra synapse from `input-k` into the branch, a tenth of a
+neuron in the scorer's growth cost. A sign flip puts one input in both branch
+roles, which NEAT-AI-core keys by `(from, to, type)` and allows for an `IF`
+target (#68). Slopes read inputs only, never hidden columns. A refinement
+(#140) and a refit (#137) treat a branch with a slope as not a constant leaf
+and leave it alone. A linear leaf never seeds a boosting bundle, since the
+residual update works in bin space and cannot apply a slope. Slopes are not
+capped by `--max-correction` (intercepts are); a steep slope is judged by the
+full-corpus scorer like any other candidate. NEAT-AI-Rebase
+cannot replay a slope yet, so the flag is refused with `--enhancements`.
 
 ## Splitting on hidden neurons (Issue #139)
 

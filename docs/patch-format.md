@@ -63,6 +63,20 @@ two patches; a patch without `parent` keeps its v1 id. NEAT-AI-Rebase cannot
 replay a refinement yet, so `--refine-leaves` is refused together with
 `--enhancements`.
 
+## Linear leaves (version 2, Issue #138)
+
+A leaf may carry slopes on inputs:
+
+```json
+{ "kind": "leaf", "correction": -0.02, "slopes": [{ "feature": 7, "weight": 0.4 }] }
+```
+
+Its value is `Σ weight · x[feature] + correction`, summed inputs-first in
+ascending feature order, as the `IF` kernel sums the branch's synapses. The
+graft adds one `input-k → IF` synapse per slope to that branch's role, beside
+the constant edge that carries `correction`. A leaf without slopes serialises
+exactly as v1; a patch with any slope is version 2.
+
 ## Hidden-source terms (version 2, Issue #139)
 
 A condition term may read a neuron already on the creature instead of an

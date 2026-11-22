@@ -240,9 +240,18 @@ pub fn expand_discoveries(
             .collect(),
     };
     // A refinement (Issue #140) keeps its parent through every variant.
-    let make = |d: &Discovery, root: Node, provenance: Provenance| match &d.parent {
-        Some(parent) => Patch::refinement(output, parent.clone(), root, provenance),
-        None => Patch::new(output, root, provenance),
+    let make = |d: &Discovery, root: Node, provenance: Provenance| {
+        let mut p = match &d.parent {
+            Some(parent) => Patch::refinement(output, parent.clone(), root, provenance),
+            None => Patch::new(output, root, provenance),
+        };
+        // A linear leaf is a v2 field (Issue #138).
+        if p.root.has_slopes() {
+            p.version = p
+                .version
+                .max(crate::patch::LINEAR_LEAF_PATCH_FORMAT_VERSION);
+        }
+        p
     };
     // Pass 1: the analytical optimum of every discovery, in rank order.
     for d in discoveries {

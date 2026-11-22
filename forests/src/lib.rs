@@ -44,6 +44,7 @@ pub mod histogram;
 pub mod incumbent;
 pub mod journal;
 pub mod learnings;
+pub mod linear;
 pub mod log;
 pub mod meta;
 pub mod oblique;

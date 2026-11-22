@@ -7,6 +7,15 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Added
 
+- **Linear leaves (Issue #138).** `--linear-leaf-conditions R` (off by
+  default) fits, for a pool of `R` conditions mixed from the best stumps,
+  conditions already on the creature and seeded median/zero splits, an
+  intercept and a slope on the best second input per side, in closed form
+  from one masked histogram pass per condition. A leaf can carry `slopes`
+  (patch format v2); the graft wires each as an `input-k` synapse into the
+  branch, so the same signal can carry opposite slopes in the two regimes.
+  Variants: half slope, one-sided slope, shared intercept. Refused with
+  `--enhancements` until NEAT-AI-Rebase can replay linear leaves.
 - **Split on hidden neurons (Issue #139).** `--hidden-features n` (off by
   default) traces the incumbent on the search set and appends up to `n` hidden
   neurons upstream of the anchor as extra binned split columns, ranked by the

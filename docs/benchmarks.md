@@ -235,6 +235,10 @@ neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/
 #    accepted patches whose strategy ends in `+hidden` and their score gained per scorer call
 neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/hidden --seed 1 --hidden-features 256
 
+# J. linear leaves (Issue #138) — compare against A at equal budget; add a `linear-leaf` row to
+#    "What a scorer call is worth" from this run's report
+neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/linear --seed 1 --linear-leaf-conditions 16
+
 # E. random-only control (no histogram guidance)
 neat_ai_forests $C $D --scorer $SCORER --scorer-arg=--gpu=off --output-dir runs/random --seed 1 --top-k 0 --random-candidates 48
 
