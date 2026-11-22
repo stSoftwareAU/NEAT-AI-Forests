@@ -49,7 +49,6 @@ pub mod oblique;
 pub mod patch;
 pub mod promote;
 pub mod refine;
-pub mod refit;
 pub mod report;
 pub mod residuals;
 pub mod run;

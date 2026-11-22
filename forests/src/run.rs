@@ -166,14 +166,6 @@ fn write_best(
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Whether output's refit is due on its `visit`-th iteration (1-based, counted
-/// per output, Issue #137): on its first visit when the incumbent was last
-/// refitted on another corpus (`stale`), then every `every` visits. `every`
-/// of 0 turns refits off.
-fn refit_due(every: u64, stale: bool, visit: u64) -> bool {
-    every > 0 && ((stale && visit == 1) || visit.is_multiple_of(every))
-}
-
 /// File this iteration's full-corpus verdicts in the shared cache (Issue #60).
 ///
 /// Only candidates a full scorer call actually judged are filed: a screen
@@ -192,8 +184,6 @@ fn file_learnings(
     let verdicts: Vec<crate::learnings::Verdict<'_>> = record
         .candidates
         .iter()
-        // A refit is not a patch: nothing to replay elsewhere (Issue #137).
-        .filter(|c| !crate::refit::is_refit_patch(&c.patch))
         .filter_map(|c| {
             let delta = c.full_delta?;
             let accepted = record.winner.as_deref() == Some(c.id.as_str());
@@ -421,19 +411,6 @@ pub fn run_forests(
         runner_ups: Vec::new(),
     };
 
-    // Refit (Issue #137): due on each output's first iteration when the
-    // incumbent was last refitted on another corpus, then every
-    // `--refit-every` iterations.
-    let stale_refit = state
-        .meta
-        .tags
-        .iter()
-        .find(|t| t.name == crate::refit::REFIT_CORPUS_TAG)
-        .is_none_or(|t| t.value != corpus.identity);
-    // Each output's own visit count: the cadence is per output, so a
-    // `--refit-every` that is a multiple of the output count cannot land on
-    // the same output every time.
-    let mut output_visits: Vec<u64> = vec![0; state.incumbent.creature.output];
     let mut iterations = 0u64;
     let mut acceptances = 0u64;
     let mut scorer_failures = 0u64;
@@ -459,7 +436,6 @@ pub fn run_forests(
         iterations += 1;
         let iteration_seed = seed ^ iterations.wrapping_mul(0x9e37_79b9_7f4a_7c15);
         let output = ((iterations - 1) % state.incumbent.creature.output as u64) as usize;
-        output_visits[output] += 1;
         log::info(&format!(
             "iteration {iterations}: incumbent {} output {output} (score {:.9})",
             state.incumbent.short_checksum(),
@@ -837,49 +813,6 @@ pub fn run_forests(
         candidates = singles;
         candidates.extend(combos);
         discarded.extend(single_discarded);
-        if refit_due(cfg.refit_every, stale_refit, output_visits[output]) {
-            let refit_started = Instant::now();
-            match crate::refit::refit_candidates(
-                &state.incumbent.creature,
-                &state.incumbent.checksum,
-                output,
-                &set,
-                &cfg.training_data,
-                cfg.chunk_records,
-                &crate::refit::RefitControls {
-                    records: cfg.refit_records,
-                    steps: cfg.refit_steps.clone(),
-                    ridges: cfg.refit_ridges.clone(),
-                    max_iterations: 200,
-                },
-                &corpus.identity,
-            ) {
-                Ok(crate::refit::RefitBatch {
-                    candidates: refits,
-                    discarded: refit_discarded,
-                    summary,
-                }) => {
-                    log::detail(&format!(
-                        "refit: {} leaves on {} rows ({} clamped) → {} candidate(s) in {} ms",
-                        summary.leaves,
-                        summary.rows,
-                        summary.clamped_rows,
-                        refits.len(),
-                        refit_started.elapsed().as_millis()
-                    ));
-                    if !refits.is_empty() {
-                        strategies.push("refit".into());
-                    }
-                    // Ahead of the grafts: few, and nothing else reaches every
-                    // leaf at once.
-                    let mut ordered = refits;
-                    ordered.append(&mut candidates);
-                    candidates = ordered;
-                    discarded.extend(refit_discarded);
-                }
-                Err(e) => log::warn(&format!("refit: {e}")),
-            }
-        }
         for (id, why) in &discarded {
             log::detail(&format!("discarded {id}: {why}"));
         }
@@ -1172,18 +1105,12 @@ pub fn run_forests(
                         );
                     }
                 }
-                if crate::refit::is_refit(winner) {
-                    state
-                        .meta
-                        .upsert(crate::refit::REFIT_CORPUS_TAG, corpus.identity.clone());
-                }
                 state.last_strategy = winner.strategy();
                 state.last_target = target_uuid;
                 // Near-winners: fully scored, positive Δ, not the winner → carry forward.
                 state.runner_ups = candidates
                     .iter()
                     .filter(|c| &c.id != id && c.combo.is_empty())
-                    .filter(|c| !crate::refit::is_refit(c))
                     .filter(|c| {
                         full.scores
                             .get(&c.id)
@@ -1216,7 +1143,6 @@ pub fn run_forests(
                         candidates
                             .iter()
                             .filter(|c| c.combo.is_empty())
-                            .filter(|c| !crate::refit::is_refit(c))
                             .filter(|c| {
                                 f.scores
                                     .get(&c.id)
@@ -2133,168 +2059,6 @@ mod tests {
                 .iter()
                 .all(|c| c.strategy.starts_with("refine-") && c.full_score.is_some()),
             "refinements are scored like everything else"
-        );
-    }
-
-    /// Issue #137 — with `--refit-every` on, once the loop has accepted a tree
-    /// it offers joint refits of every leaf, scored like everything else and
-    /// never carried forward as a patch.
-    #[test]
-    fn the_loop_offers_refits_of_the_leaves_it_accepted() {
-        let (_tmp, mut cfg) = fixture();
-        cfg.refit_every = 1;
-        cfg.screen_sample_rate = None;
-        let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
-        let lines = read_journal(&r.journal_path).unwrap();
-        let experiments: Vec<&ExperimentRecord> = lines
-            .iter()
-            .filter_map(|l| match l {
-                JournalLine::Experiment(e) => Some(&**e),
-                _ => None,
-            })
-            .collect();
-        let refits: Vec<&CandidateRecord> = experiments
-            .iter()
-            .flat_map(|e| e.candidates.iter())
-            .filter(|c| c.strategy == "refit")
-            .collect();
-        assert!(r.acceptances >= 1);
-        assert!(!refits.is_empty(), "no refit was offered");
-        assert!(refits.iter().all(|c| c.full_score.is_some()));
-        // A refit's placeholder patch is a bare leaf. Were it carried
-        // forward, the next iteration would try to graft it, alone or in a
-        // combination, and discard it as a split-free graft — the one shape
-        // no search produces.
-        assert!(
-            experiments
-                .iter()
-                .flat_map(|e| e.discarded.iter())
-                .all(|d| !d.reason.contains("root is a leaf")),
-            "a refit placeholder was carried forward: {:?}",
-            experiments
-                .iter()
-                .flat_map(|e| e.discarded.iter())
-                .collect::<Vec<_>>()
-        );
-    }
-
-    /// Issue #137 — the cadence is counted per output: on a 2-output creature
-    /// with an even `--refit-every`, both outputs are refitted on the cadence,
-    /// not just the one the global counter keeps landing on.
-    #[test]
-    fn the_refit_cadence_reaches_every_output() {
-        for (outputs, every) in [(2usize, 10u64), (2, 4), (3, 6), (1, 5)] {
-            let mut visits = vec![0u64; outputs];
-            let mut refits = vec![0u32; outputs];
-            for iteration in 1..=(every * outputs as u64 * 3) {
-                let output = ((iteration - 1) % outputs as u64) as usize;
-                visits[output] += 1;
-                if refit_due(every, false, visits[output]) {
-                    refits[output] += 1;
-                }
-            }
-            assert_eq!(refits, vec![3; outputs], "{outputs} outputs, every {every}");
-        }
-        // Stale: each output's first visit too, once.
-        assert!(refit_due(1000, true, 1));
-        assert!(!refit_due(1000, true, 2));
-        assert!(!refit_due(1000, false, 1));
-        assert!(!refit_due(0, true, 1), "0 turns refits off");
-    }
-
-    /// A fixture whose creature already carries trees, so a refit has leaves
-    /// to move on the first iteration; `tag` is written as the creature's
-    /// `forests-refit-corpus` tag when given.
-    fn planted_fixture(tag: Option<&str>) -> (tempfile::TempDir, ForestsConfig) {
-        let (tmp, mut cfg) = fixture();
-        let planted =
-            crate::refit::fixtures::planted(&crate::graft::fixtures::identity_creature(3, 1), 0.5);
-        let mut json = serde_json::to_value(&planted).unwrap();
-        if let Some(value) = tag {
-            json["tags"] = serde_json::json!([
-                {"name": crate::refit::REFIT_CORPUS_TAG, "value": value}
-            ]);
-        }
-        std::fs::write(&cfg.creature, serde_json::to_string(&json).unwrap()).unwrap();
-        cfg.refit_every = 1000;
-        cfg.screen_sample_rate = None;
-        cfg.max_iterations = Some(1);
-        (tmp, cfg)
-    }
-
-    fn experiments_of(r: &RunResult) -> Vec<ExperimentRecord> {
-        read_journal(&r.journal_path)
-            .unwrap()
-            .into_iter()
-            .filter_map(|l| match l {
-                JournalLine::Experiment(e) => Some(*e),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Issue #137 — the schedule: with no refit tag, or another corpus's, the
-    /// first iteration offers refits even though `--refit-every` is far off;
-    /// with the tag naming this corpus it offers none; and a refit that wins
-    /// writes the tag naming this corpus into `best.json`.
-    #[test]
-    fn the_refit_tag_decides_the_opening_refit() {
-        let offered = |r: &RunResult| {
-            experiments_of(r)[0]
-                .candidates
-                .iter()
-                .filter(|c| c.strategy == "refit")
-                .count()
-        };
-        let corpus = {
-            let (_tmp, cfg) = planted_fixture(None);
-            let tcfg = neat_core::training_data::TrainingDataConfig::new(3, 1);
-            corpus_info(&cfg.training_data, &tcfg).unwrap().identity
-        };
-
-        let (_a, cfg) = planted_fixture(None);
-        let untagged = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
-        assert!(offered(&untagged) > 0, "no tag: the opening refit runs");
-
-        let (_b, cfg) = planted_fixture(Some("another-corpus"));
-        let elsewhere = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
-        assert!(offered(&elsewhere) > 0, "another corpus's tag: it runs");
-
-        let (_c, cfg) = planted_fixture(Some(&corpus));
-        let here = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
-        assert_eq!(offered(&here), 0, "this corpus's tag: no opening refit");
-        assert!(
-            !experiments_of(&here)[0]
-                .strategies
-                .iter()
-                .any(|s| s == "refit"),
-            "and the strategy is not run"
-        );
-
-        // A refit that wins tags the incumbent with this corpus.
-        let (_d, mut cfg) = planted_fixture(Some("another-corpus"));
-        cfg.candidates = 1;
-        cfg.random_candidates = 0;
-        cfg.combo_candidates = 0;
-        let won = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
-        let first = &experiments_of(&won)[0];
-        let winner = first.winner.as_ref().expect("a refit wins on its own");
-        assert!(
-            first
-                .candidates
-                .iter()
-                .any(|c| &c.id == winner && c.strategy == "refit"),
-            "the winner is a refit"
-        );
-        let best = std::fs::read_to_string(&won.best_path).unwrap();
-        let meta = crate::meta::CreatureMeta::from_json(&best);
-        assert!(
-            meta.tags
-                .iter()
-                .any(|t| t.name == crate::refit::REFIT_CORPUS_TAG && t.value == corpus),
-            "best.json carries {}={corpus}: {:?}",
-            crate::refit::REFIT_CORPUS_TAG,
-            meta.tags
         );
     }
 

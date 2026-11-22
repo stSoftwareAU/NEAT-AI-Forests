@@ -22,42 +22,6 @@ candidate; the full-corpus scorer gate in `promote` is unconditional.
 | `--max-depth 2 or 3`, `--growth …` | trees (Issue #11) | `histogram-tree-depthD`, note `growth=…` |
 | `--oblique-candidates n` | 2–3 feature linear conditions (Issue #14) | `oblique-split`, note `origin=axis+1`, `random-sparse` or `jitter` |
 | `--refine-leaves n`, `--refine-max-depth d` | split `n` leaves already on the creature, read back from its structure, on the rows that reach each one (Issue #140) | `refine-stump` / `refine-tree-depthD`, notes `refine=<parent uuid>:<role> leaf-depth=…` and `leaf-records=…`; the patch carries `parent` |
-| `--refit-every n`, `--refit-records`, `--refit-steps`, `--refit-ridges` | refit every leaf on the creature jointly (Issue #137) | strategy `refit`, backend `cpu-cg`, notes `ridge=… step=… leaves=… moved=… clamped-rows=… corpus=…`; the journalled patch is a placeholder bare leaf |
-
-## Refitting every leaf at once (Issue #137)
-
-With every split fixed, the output's correction-space sum is linear in the
-leaf values and each record selects one leaf per tree, so the least-squares
-step for **all** leaves is a sparse problem with a closed form. `refit` reads
-the trees back from structure (the same `refine::ForestView`), so leaves other
-tools changed and patches from other hosts are included at their current
-values, and solves
-
-```text
-(AᵀWA + ρ·diag(AᵀWA)) δ = AᵀW r,   A_il = m_i · g_l · [record i reaches leaf l]
-```
-
-by Jacobi-preconditioned conjugate gradient on a stride sample of the search
-set (`--refit-records`, default 20,000 rows held as a compressed row list).
-`g_l` is the leaf's gain to the output, so the solve works in correction space
-with the anchor's gain (#58), and `m_i` is zero where an output clamp binds —
-found by probing the anchor with a small bias step and checking the output
-follows at the walk's gain — because no leaf can move those records. The
-ridge is relative to each leaf's own curvature, so `δ = 0` (the incumbent) is
-the limit of a large ridge and the knobs are scale-free. Every `(ridge, step)`
-pair is one candidate; a leaf moves by changing the weight of one of its
-constant edges, so a refit changes weights and never structure.
-
-A refit runs on each output's first iteration whenever the incumbent's
-`forests-refit-corpus` tag names a different corpus (or is missing), and then
-every `--refit-every` iterations on that output — the cadence is counted per
-output, so on a multi-output creature each output's anchor gets its turn. An
-accepted refit writes the tag. Candidates
-are judged by the full-corpus scorer like everything else; they are never
-carried forward, filed in the learnings cache or replayed, and
-`--refit-every` is refused with `--enhancements`: a refit is not a patch
-NEAT-AI-Rebase could carry, and it is cheap enough to re-run on the moved
-champion instead.
 
 ## Refining existing leaves (Issue #140)
 

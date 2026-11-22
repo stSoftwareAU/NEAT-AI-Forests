@@ -358,16 +358,6 @@ fn assert_valid(creature: &CreatureExport) -> Result<(), GraftError> {
         .map_err(|failure| GraftError::Invalid(Box::new(failure)))
 }
 
-/// The whole gate a candidate creature clears before it can escape: the
-/// validation gate, NEAT-AI-core compilation and the structural validator.
-/// Shared with candidates that change weights rather than graft structure
-/// (Issue #137).
-pub(crate) fn gate_candidate(creature: &CreatureExport) -> Result<(), GraftError> {
-    assert_valid(creature)?;
-    let network = compile_creature(creature).map_err(|e| GraftError::Compile(e.to_string()))?;
-    validate_compiled(&network, creature)
-}
-
 /// Reject any repeated (from, to) synapse pair — NEAT-AI's TypeScript loader
 /// keys synapses by that pair, so a creature with duplicates scores
 /// differently there than under `rust_scorer`.
