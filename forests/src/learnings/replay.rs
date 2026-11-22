@@ -78,6 +78,47 @@ pub fn grafted_patch_ids(
         .collect()
 }
 
+/// Whether `learning` could graft onto a creature whose neuron UUIDs are
+/// `neurons`: every refinement in it names a parent that is on the creature,
+/// or that an earlier member of the same combination grafts
+/// (`forest-<that member's id>-…`). A refinement whose parent is gone would
+/// be refused at graft time on every iteration, never scored and so never
+/// filed as tried here, and would hold a replay slot for good.
+pub fn graftable(learning: &Learning, neurons: &std::collections::HashSet<&str>) -> bool {
+    let mut earlier: Vec<String> = Vec::new();
+    for p in learning.patches() {
+        if let Some(parent) = &p.parent {
+            let here = neurons.contains(parent.uuid.as_str())
+                || earlier
+                    .iter()
+                    .any(|id| parent.uuid.starts_with(&format!("forest-{id}-")));
+            if !here {
+                return false;
+            }
+        }
+        earlier.push(p.id());
+    }
+    true
+}
+
+/// The learnings worth offering to [`choose`] for `creature`: only what can
+/// graft there ([`graftable`]), and under `rebase_only` (an `--enhancements`
+/// run) only what NEAT-AI-Rebase can replay, so a refinement from a shared
+/// cache cannot reach a run whose bundle Rebase would then refuse.
+pub fn replayable(
+    all: &[Learning],
+    creature: &neat_core::CreatureExport,
+    rebase_only: bool,
+) -> Vec<Learning> {
+    let neurons: std::collections::HashSet<&str> =
+        creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
+    all.iter()
+        .filter(|l| !rebase_only || l.patches().all(crate::patch::Patch::rebase_can_replay))
+        .filter(|l| graftable(l, &neurons))
+        .cloned()
+        .collect()
+}
+
 /// Choose what to replay onto `incumbent`.
 ///
 /// Ordering is by what the fleet knows, best evidence first:
@@ -387,6 +428,76 @@ mod tests {
             )
             .len(),
             1
+        );
+    }
+
+    /// Issue #140 — a refinement whose parent leaf is not on the creature is
+    /// never offered, so it cannot hold a slot ahead of a plain win; once the
+    /// parent is there (on the creature, or grafted by an earlier member of
+    /// the same combination) it is.
+    #[test]
+    fn a_refinement_is_offered_only_where_its_parent_is() {
+        use crate::graft::fixtures::identity_creature;
+        use crate::graft::graft_patch;
+        use crate::patch::{Attach, BranchRole};
+        let base = identity_creature(8, 1);
+        let tree = patch(1, 0.1);
+        let planted = graft_patch(&base, &tree).unwrap().creature;
+        let parent = planted
+            .neurons
+            .iter()
+            .find(|n| {
+                n.uuid.starts_with(&format!("forest-{}-", tree.id()))
+                    && n.squash.as_deref() == Some("IF")
+            })
+            .unwrap()
+            .uuid
+            .clone();
+        let refinement = Patch::refinement(
+            0,
+            Attach {
+                uuid: parent,
+                role: BranchRole::Positive,
+            },
+            Node::stump(2, 0.5, 0.0, 0.05),
+            Provenance::default(),
+        );
+        let big = learning(refinement.clone(), Outcome::Accepted, 1e-2, 1, "host-a");
+        let plain = learning(patch(3, 0.2), Outcome::Accepted, 1e-4, 1, "host-a");
+        let all = vec![big.clone(), plain.clone()];
+
+        let offered = |c: &neat_core::CreatureExport| {
+            choose(
+                &replayable(&all, c, false),
+                "elsewhere",
+                8,
+                1,
+                &nothing_carried(),
+                &config(1, 1000),
+            )
+        };
+        let without = offered(&base);
+        assert_eq!(without.len(), 1);
+        assert_eq!(without[0].id, plain.id, "the plain win keeps the one slot");
+        let with = offered(&planted);
+        assert_eq!(
+            with[0].id, big.id,
+            "the refinement is offered where its leaf is"
+        );
+
+        // Combined with the tree that grafts its parent, it is graftable too.
+        let mut combo = learning(tree.clone(), Outcome::Accepted, 1e-2, 1, "host-a");
+        combo.combo = Some(vec![refinement.clone()]);
+        let neurons: std::collections::HashSet<&str> =
+            base.neurons.iter().map(|n| n.uuid.as_str()).collect();
+        assert!(graftable(&combo, &neurons));
+        assert!(!graftable(&big, &neurons));
+
+        // `--enhancements`: never a refinement, wherever its parent is.
+        assert!(
+            replayable(&all, &planted, true)
+                .iter()
+                .all(|l| l.id != big.id)
         );
     }
 }

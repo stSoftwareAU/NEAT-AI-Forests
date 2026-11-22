@@ -636,8 +636,15 @@ pub fn run_forests(
         // better evidence than a proxy gain, and it is the only way a win
         // survives the fittest creature moving on before we could re-apply it.
         if !known.is_empty() {
+            // Only what can graft here, and under `--enhancements` only what
+            // NEAT-AI-Rebase can replay: `--refine-leaves` is refused there,
+            // and the shared cache must not bring refinements in by the back
+            // door, where Rebase would mirror them under another id and fail
+            // the bundle.
+            let replayable =
+                crate::learnings::replayable(&known, &state.incumbent.creature, cfg.enhancements);
             let chosen = crate::learnings::choose(
-                &known,
+                &replayable,
                 &state.incumbent.checksum,
                 state.incumbent.creature.input,
                 state.incumbent.creature.output,
@@ -2060,6 +2067,81 @@ mod tests {
                 .all(|c| c.strategy.starts_with("refine-") && c.full_score.is_some()),
             "refinements are scored like everything else"
         );
+    }
+
+    /// Issue #140 — `--refine-leaves` is refused with `--enhancements`, and
+    /// the shared cache must not bring a refinement in anyway: with an
+    /// accepted refinement of a leaf the opening creature carries on file, an
+    /// `--enhancements` run never offers it and still writes its bundle.
+    #[test]
+    fn an_enhancements_run_does_not_replay_a_refinement() {
+        use crate::learnings::{CorpusId, HostName, Learning, LearningsStore, Outcome};
+        use crate::patch::{Attach, BranchRole, Node, Provenance};
+        let (tmp, mut cfg) = fixture();
+        let planted = crate::graft::graft_patch(
+            &crate::graft::fixtures::identity_creature(3, 1),
+            &Patch::new(0, Node::stump(0, 0.5, 0.0, 0.1), Provenance::default()),
+        )
+        .unwrap()
+        .creature;
+        std::fs::write(&cfg.creature, serde_json::to_string(&planted).unwrap()).unwrap();
+        let view = crate::refine::ForestView::read(&planted, 0).unwrap();
+        let leaf = view.leaves[0].attach.clone();
+        let refinement = Patch::refinement(
+            0,
+            Attach {
+                uuid: leaf.uuid,
+                role: BranchRole::Negative,
+            },
+            Node::stump(1, 0.0, 0.0, 0.3),
+            Provenance {
+                strategy: "refine-stump".into(),
+                ..Provenance::default()
+            },
+        );
+        let shared = tmp.path().join("shared/learnings");
+        cfg.learnings_dir = Some(shared.clone());
+        cfg.learnings_host = Some("host-b".into());
+        cfg.enhancements = true;
+        cfg.max_iterations = Some(2);
+        let identity = corpus_info(&cfg.training_data, &TrainingDataConfig::new(3, 1))
+            .unwrap()
+            .identity;
+        let filed = Learning {
+            version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+            id: refinement.id(),
+            patch: refinement.clone(),
+            combo: None,
+            outcome: Outcome::Accepted,
+            delta: 1e-2,
+            corpus: identity.clone(),
+            inputs: 3,
+            outputs: 1,
+            incumbent: "another-creature".into(),
+            incumbent_score: 0.5,
+            host: "host-a".into(),
+            at_unix: 1,
+            tool_version: "test".into(),
+            notes: Vec::new(),
+        };
+        LearningsStore::new(&shared, CorpusId::new(identity), HostName::new("host-a"))
+            .append(&[filed])
+            .unwrap();
+
+        let r = run_forests(&cfg, &LocalMseScorer::new(), &CancelToken::new()).unwrap();
+        for l in &read_journal(&r.journal_path).unwrap() {
+            if let JournalLine::Experiment(e) = l {
+                assert!(
+                    e.candidates
+                        .iter()
+                        .all(|c| c.patch.parent.is_none()
+                            && c.combo.iter().all(|p| p.parent.is_none())),
+                    "a refinement was replayed under --enhancements"
+                );
+            }
+        }
+        assert!(r.acceptances >= 1, "the fixture must accept something");
+        assert!(r.enhancements_path.is_some(), "and the bundle is written");
     }
 
     #[test]

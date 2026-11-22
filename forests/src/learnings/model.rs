@@ -98,6 +98,9 @@ impl Learning {
                         seed: p.provenance.seed,
                         notes,
                     },
+                    // A line filed by a build that under-labelled the
+                    // version still replays at the version its shape needs.
+                    version: p.version.max(p.required_version()),
                     ..p.clone()
                 }
             })

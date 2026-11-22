@@ -17,7 +17,9 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
   depth. Not yet combinable with `--enhancements`: NEAT-AI-Rebase cannot replay
   a refinement. Learnings replay keeps a refinement's parent and format
   version, so a cached refinement grafts into the same leaf under the same id,
-  or is refused with `NoSuchParent` on a creature that lacks that leaf.
+  or is refused with `NoSuchParent` on a creature that lacks that leaf. A
+  cached refinement is only offered where its parent leaf is, and never to an
+  `--enhancements` run.
 
 ### Changed
 

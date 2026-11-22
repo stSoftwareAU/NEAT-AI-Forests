@@ -317,6 +317,23 @@ impl Patch {
         }
     }
 
+    /// The lowest format version that can carry this patch, read from its
+    /// shape: version 2 for a refinement (`parent`), version 1 otherwise.
+    pub fn required_version(&self) -> u32 {
+        if self.parent.is_some() {
+            REFINE_PATCH_FORMAT_VERSION
+        } else {
+            PATCH_FORMAT_VERSION
+        }
+    }
+
+    /// Whether NEAT-AI-Rebase can replay this patch: version-1 shapes only.
+    /// It has no `parent` yet, so it would mirror a refinement under a
+    /// different id and refuse the bundle.
+    pub fn rebase_can_replay(&self) -> bool {
+        self.required_version() == PATCH_FORMAT_VERSION
+    }
+
     /// Deterministic identity: SHA-256 of `output` + canonical root JSON
     /// (provenance excluded). A refinement also hashes where it attaches, so
     /// one split under two different leaves is two patches; a patch without a
