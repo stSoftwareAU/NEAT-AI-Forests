@@ -508,10 +508,10 @@ impl Patch {
     /// New v1 patch.
     pub fn new(output: usize, root: Node, provenance: Provenance) -> Self {
         Self {
-            version: if root.hidden_sources().is_empty() {
+            version: if root.hidden_sources().is_empty() && !root.has_slopes() {
                 PATCH_FORMAT_VERSION
             } else {
-                HIDDEN_SOURCE_PATCH_FORMAT_VERSION
+                HIDDEN_SOURCE_PATCH_FORMAT_VERSION.max(LINEAR_LEAF_PATCH_FORMAT_VERSION)
             },
             output,
             root,
@@ -532,20 +532,23 @@ impl Patch {
     }
 
     /// The lowest format version that can carry this patch, read from its
-    /// shape: version 2 for a refinement (`parent`) or a hidden-source term
-    /// (`Term.neuron`), version 1 otherwise. A reader that knows only
+    /// shape: version 2 for a refinement (`parent`), a hidden-source term
+    /// (`Term.neuron`) or a linear leaf (`Leaf.slopes`), version 1 otherwise. A reader that knows only
     /// version 1 must refuse anything above it rather than graft it at the
     /// anchor or on an input.
     pub fn required_version(&self) -> u32 {
-        if self.parent.is_some() || !self.root.hidden_sources().is_empty() {
-            REFINE_PATCH_FORMAT_VERSION.max(HIDDEN_SOURCE_PATCH_FORMAT_VERSION)
+        if self.parent.is_some() || !self.root.hidden_sources().is_empty() || self.root.has_slopes()
+        {
+            REFINE_PATCH_FORMAT_VERSION
+                .max(HIDDEN_SOURCE_PATCH_FORMAT_VERSION)
+                .max(LINEAR_LEAF_PATCH_FORMAT_VERSION)
         } else {
             PATCH_FORMAT_VERSION
         }
     }
 
     /// Whether NEAT-AI-Rebase can replay this patch: version-1 shapes only.
-    /// It has no `parent` and no `Term.neuron` yet, so it would mirror a
+    /// It has no `parent`, `Term.neuron` or `Leaf.slopes` yet, so it would mirror a
     /// refinement or a hidden-source patch under a different id.
     pub fn rebase_can_replay(&self) -> bool {
         self.required_version() == PATCH_FORMAT_VERSION

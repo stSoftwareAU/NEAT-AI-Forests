@@ -2683,6 +2683,8 @@ mod tests {
         assert_eq!(
             describe_tree(&Node::stump(2, 0.5, 0.0, 0.1)),
             "depth 1 tree over inputs [2]"
+        );
+    }
 
     /// Issue #138 — with `--linear-leaf-conditions` on, the loop accepts a
     /// linear leaf where the residual's slope on one input flips sign with

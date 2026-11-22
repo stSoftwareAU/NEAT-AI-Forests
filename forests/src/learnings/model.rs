@@ -390,4 +390,23 @@ mod tests {
             "a v1 shape stays replayable"
         );
     }
+
+    /// Issue #138 — a linear leaf is version 2 from `Patch::new` on, so
+    /// replay keeps it there and `--enhancements` never replays it.
+    #[test]
+    fn a_linear_leaf_is_version_2_and_not_for_rebase() {
+        use crate::patch::{Condition, LINEAR_LEAF_PATCH_FORMAT_VERSION, Node};
+        let root = Node::Split {
+            condition: Condition::axis(1, 0.0),
+            left: Box::new(Node::linear_leaf(0.1, vec![(2, -0.5)])),
+            right: Box::new(Node::linear_leaf(-0.1, vec![(2, 0.5)])),
+        };
+        let p = Patch::new(0, root, Provenance::default());
+        assert_eq!(p.version, LINEAR_LEAF_PATCH_FORMAT_VERSION);
+        assert!(!p.rebase_can_replay());
+        let l = learning(p.clone(), Outcome::Accepted, 1e-4, 1, "host-a");
+        let r = &l.replay("creature-b")[0];
+        assert_eq!(r.version, LINEAR_LEAF_PATCH_FORMAT_VERSION);
+        assert_eq!(r.id(), p.id());
+    }
 }
