@@ -23,7 +23,7 @@ candidate; the full-corpus scorer gate in `promote` is unconditional.
 | `--oblique-candidates n` | 2–3 feature linear conditions (Issue #14) | `oblique-split`, note `origin=axis+1`, `random-sparse` or `jitter` |
 | `--refine-leaves n`, `--refine-max-depth d` | split `n` leaves already on the creature, read back from its structure, on the rows that reach each one (Issue #140) | `refine-stump` / `refine-tree-depthD`, notes `refine=<parent uuid>:<role> leaf-depth=…` and `leaf-records=…`; the patch carries `parent` |
 
-### Refining existing leaves (Issue #140)
+## Refining existing leaves (Issue #140)
 
 Forests otherwise only plants new trees at the anchor, at most three
 conditions deep, so the creature grows wider and never deeper. With
