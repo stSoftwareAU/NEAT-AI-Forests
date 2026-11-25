@@ -18,8 +18,9 @@ scripts/xgboost-control.py matrix.csv --depth 1 --rounds 8 --out dump.json
 #    → dump.json (booster.get_dump(dump_format="json")) + dump.json.meta.json (params, train RMSE, seed)
 
 # 3. convert trees to patches, graft, rank and verify — same policies as native candidates
-neat_ai_forests creature.json training/ import-xgboost --dump dump.json \
-  --scorer ../NEAT-AI-scorer/target/release/rust_scorer --output-dir runs/xgb
+neat_ai_forests creature.json training/ \
+  --scorer ../NEAT-AI-scorer/target/release/rust_scorer --output-dir runs/xgb \
+  import-xgboost --dump dump.json
 #    → runs/xgb/experiments.jsonl (strategy "xgboost-import"), best.json only if the scorer agrees
 ```
 

@@ -6,7 +6,7 @@
 //! checks out NEAT-AI-core but not a built scorer.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use neat_ai_forests::baseline::ParityPolicy;
@@ -509,4 +509,97 @@ fn external_arguments_cannot_turn_full_verification_into_a_different_protocol() 
     assert_eq!(valid["baseline"].record_count, 37);
     assert_eq!(valid["baseline"].sample_rate, None);
     assert!(valid["baseline"].error > 0.0);
+}
+
+#[test]
+fn cli_selects_exact_ranking_for_evolution_and_import_and_keeps_the_legacy_default() {
+    let bin = require_scorer!();
+    let tmp = tempfile::tempdir().unwrap();
+    let (creature, train) = fixture(tmp.path(), 517);
+    let original = std::fs::read(&creature).unwrap();
+    let dump = tmp.path().join("dump.json");
+    std::fs::write(
+        &dump,
+        r#"[{"nodeid":0,"split":"f1","split_condition":0.0,
+        "yes":1,"no":2,"missing":1,"children":[{"nodeid":1,"leaf":0.0},{"nodeid":2,"leaf":0.3}]}]"#,
+    )
+    .unwrap();
+    for (name, mode, import) in [
+        ("default", None, false),
+        ("exact", Some("exact"), false),
+        ("import", Some("exact"), true),
+    ] {
+        let out_dir = tmp.path().join(name);
+        let mut command = Command::new(env!("CARGO_BIN_EXE_neat_ai_forests"));
+        command
+            .arg(&creature)
+            .arg(&train)
+            .arg("--scorer")
+            .arg(&bin)
+            .arg("--output-dir")
+            .arg(&out_dir)
+            .args([
+                "--scorer-arg=--gpu=off",
+                "--max-iterations",
+                "1",
+                "--seed",
+                "11",
+                "--min-leaf-records",
+                "10",
+                "--bins",
+                "32",
+                "--search-records",
+                "0",
+                "--no-random-arms",
+            ]);
+        if let Some(mode) = mode {
+            command.args(["--ranking-mode", mode]);
+        }
+        if import {
+            command.args(["import-xgboost", "--dump"]).arg(&dump);
+        }
+        let result = command.stdin(Stdio::null()).output().unwrap();
+        assert!(
+            result.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let lines = read_journal(&out_dir.join("experiments.jsonl")).unwrap();
+        let experiment = lines
+            .iter()
+            .find_map(|line| match line {
+                JournalLine::Experiment(e) => Some(e),
+                _ => None,
+            })
+            .unwrap();
+        assert!(experiment.accepted, "{name}: {:?}", experiment.scorer_error);
+        assert!(experiment.improvement.unwrap() > 1e-6);
+        assert_eq!(
+            experiment.ranking_mode.as_deref(),
+            Some(mode.unwrap_or("legacy"))
+        );
+        if mode.is_some() {
+            assert_eq!(
+                experiment.ranking.as_ref().unwrap().scored,
+                experiment.candidates.len() as u64
+            );
+            assert_eq!(experiment.full.as_ref().unwrap().scored, 1);
+        } else {
+            assert!(experiment.ranking.is_none());
+            assert!(
+                experiment
+                    .candidates
+                    .iter()
+                    .all(|c| c.exact_score.is_none())
+            );
+        }
+        let best = neat_ai_forests::load_incumbent(&out_dir.join("best.json")).unwrap();
+        assert!(
+            best.creature
+                .neurons
+                .iter()
+                .any(|n| n.squash.as_deref() == Some("IF"))
+        );
+        assert_eq!(std::fs::read(&creature).unwrap(), original);
+    }
 }
