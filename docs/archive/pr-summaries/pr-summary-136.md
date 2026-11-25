@@ -53,9 +53,11 @@ review marker is emitted. `CODING-STANDARDS.md` is absent from this repository.
 
 - No tests were added, modified or removed; no concrete gap was found in the inspected ranking, verification and reporting coverage. These checks are expected green against the merged implementation; no new failing regression is claimed.
 - `cargo test --locked --lib exact < /dev/null`: passed all 14 selected tests, including legacy defaults, older-scorer fallback, verification failures and reporting.
-- `NEAT_SCORER_BIN=<identified binary> cargo test --locked --test real_scorer -- --nocapture < /dev/null`: passed all 7 integration tests, with no scorer-availability skip.
+- `cargo test --locked --test real_scorer -- --nocapture < /dev/null` with `NEAT_SCORER_BIN` set to the identified binary: passed all 7 integration tests, with no scorer-availability skip.
 - Markdownlint, codespell and `git diff --check`: passed for the benchmark documentation.
-- Full quality gate has not yet run.
+- `./quality.sh < /dev/null` with `NEAT_SCORER_BIN` set to the identified binary: passed the full gate, including shell contracts, Markdown/spelling checks, actionlint, cargo-deny, formatting, Clippy, all 209 unit tests, integration/contract tests (including the 7 real-scorer tests) and rustdoc.
+- TypeScript parity was not exercised: `NEAT_AI_TS_ROOT` is unset, so its harness returns without running the external engine.
+- Graft lookup returned no matching nodes; `graft check` failed with `NO GRAPH`. Direct source reads supplied the code evidence; no code graph was rebuilt or claimed fresh.
 
 Delivery checklist:
 
@@ -63,7 +65,7 @@ Delivery checklist:
 - [x] Record source/binary identities and production-input search results.
 - [ ] Locate and verify the production champion and corpus.
 - [ ] Tune widths, run sequential production A/B trials and apply the 1.5× rule.
-- [ ] Complete the repository quality gate.
+- [x] Complete the repository quality gate.
 
 ## Merge verification
 
