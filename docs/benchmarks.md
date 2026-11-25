@@ -376,6 +376,50 @@ fixture. This supports keeping widths experimental; it does not establish a
 production negative result or change the legacy defaults. Zero scorer failures,
 zero baseline vetoes and zero cohort fallbacks were observed in this sweep.
 
+### Production-input recheck (25 November 2026)
+
+This recheck is local to the Linux aarch64 container assigned host label
+`GRQ-23`; it does not inspect the training host's filesystem. Forests is
+commit `5df8cb0db7411082ddaf7cd64888b20e2e1b333c` (version `0.1.51`, merged
+PR #150). No ranking implementation or defaults were changed by this recheck.
+
+| Required input | Observed identity or availability |
+|---|---|
+| Production champion | Not located; no source checksum can be verified |
+| Production corpus | Not located; no corpus identity, record count or file count can be verified |
+| Scorer source | `Develop` commit `a164969ac4d96ff39eace7086ad22c0538d95705`, manifest version `1.1.110`, pinned to neat-core `v0.23.7` |
+| Published scorer release | GitHub release and tag queries returned empty lists; the source version is not evidence of a published release or a production-installed binary |
+
+The scorer was built from that commit with `cargo build --locked --release
+--bin rust_scorer`, using `rustc 1.99.1`. Its binary SHA-256 is
+`8e6e46de1faf4ed46867e55e5ac2422c149932a5124d605c28a6e1099f77e26a`.
+The CLI rejects `--version`, so `1.1.110` above comes from its manifest.
+With `NEAT_SCORER_BIN` pointing at this build,
+`cargo test --locked --test real_scorer -- --nocapture` passed all seven tests
+without a scorer-availability skip. This includes bit-identical cohort versus
+standalone scores and ordering for identity, MLP, IF and clamped grafts,
+documented directory fallback, ordinary verification and CLI selection.
+`cargo test --locked --lib exact` also passed all 14 selected tests, including
+legacy defaults, unsupported-scorer fallback, verification vetoes and reporting.
+These are correctness checks using generated fixtures, not production trials.
+
+The bounded search covered workspace directories under `/home/vibe`, `/tmp`
+and `/var/tmp`, plus `/workspace`, `/opt`, `/mnt`, `/media` and `/srv`.
+It found the scorer's checked-in `identity_data.bin` fixture, which is not a
+production corpus. There is no `/data` mount in this container. No production
+paths were supplied to this run.
+
+Consequently, production cohort-width tuning and the sequential seed-1,
+2700-second control/treatment trials were **not run**. Production improvement
+per wall hour, acceptances, exact candidates per iteration, screen-versus-exact
+ranks and the complete wall split remain **unmeasured**. Production scorer
+failures, fallback executions and baseline vetoes are also **unmeasured**, not
+zero. Generated-fixture validation cannot fill any of these entries.
+
+The 1.5× decision rule therefore remains unevaluated. This is neither a
+measured negative result nor a zero-gain control; there was no production
+control trial. Legacy ranking and the existing cohort defaults remain in place.
+
 ## What to do with the answer
 
 - **Stumps win repeatedly:** keep going; measure saturation via
