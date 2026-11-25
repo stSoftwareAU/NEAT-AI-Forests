@@ -277,9 +277,10 @@ alone neither file learnings nor qualify a near-winner for combination carry-for
 
 ### Production A/B status and decision rule
 
-**Not run on production.** No production creature/corpus paths were supplied,
-and the available checkout and data directories contain no production corpus.
-The generated fixtures below cannot measure production improvement per wall
+**Not run on production.** No production creature/corpus paths were supplied.
+A bounded search of the workspace areas, `/data`, `/mnt` and `/tmp` found only
+the scorer's checked-in fixture. The generated fixtures below cannot measure
+production improvement per wall
 hour. There is no production ratio or production negative result to report.
 The default remains `--ranking-mode legacy`, with 64 candidates, 8 tree roots,
 scales `1.0,0.5,0.25` and 4 combinations.
