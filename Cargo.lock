@@ -241,8 +241,8 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "neat-ai-rebase"
-version = "0.1.12"
-source = "git+https://github.com/stSoftwareAU/NEAT-AI-Rebase?tag=v0.1.12#c80f28a162013e71afbafe298d2429722e004772"
+version = "0.1.13"
+source = "git+https://github.com/stSoftwareAU/NEAT-AI-Rebase?tag=v0.1.13#b2e1e983d2597647406c26acc5be43a8a3da2f40"
 dependencies = [
  "clap",
  "neat-core",

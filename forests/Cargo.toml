@@ -42,7 +42,7 @@ neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v0.23
 # Producer side of population re-entry: `PatchLog` files each accepted patch as
 # a v1 enhancement so Rebase can graft it onto a freshly fetched champion
 # (stSoftwareAU/NEAT-AI-Rebase#65).
-neat-ai-rebase = { git = "https://github.com/stSoftwareAU/NEAT-AI-Rebase", tag = "v0.1.12" }
+neat-ai-rebase = { git = "https://github.com/stSoftwareAU/NEAT-AI-Rebase", tag = "v0.1.13" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
