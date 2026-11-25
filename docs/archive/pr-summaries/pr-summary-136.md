@@ -20,7 +20,7 @@ merged PR #150 and its legacy defaults. Part of #136.
 
 - The bounded local filesystem search found no production champion or corpus. This container has the host label `GRQ-23`; no training-host filesystem was inspected.
 - GitHub lists no scorer releases or tags. Validation used a local release-profile build of `Develop` commit `a164969ac4d96ff39eace7086ad22c0538d95705`, manifest version `1.1.110`; its CLI rejects `--version`.
-- The executor instruction explicitly prohibits delegation. No independent reviewers were dispatched, and no reviewer provenance or verdict is claimed here.
+- Independent Spec and Standards reviewers were dispatched for this repair. The Spec reviewer received only the branch diff against `origin/Develop` and the issue body; the Standards reviewer received only that diff and the requested `CODING-STANDARDS.md` location. Their verdicts are recorded separately below. The standards file is absent.
 
 ## Evidence
 
@@ -33,29 +33,49 @@ merged PR #150 and its legacy defaults. Part of #136.
 
 ## Acceptance Criteria
 
-These are local assessments of the preserved implementation and remaining work,
-not independent reviewer verdicts. Independent review was prohibited by the
-executor's no-delegation instruction.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **missing** — A/B on the production protocol in `docs/benchmarks.md` (same creature, seed and budget; control is today's defaults). Report Δscore per wall hour, acceptances, candidates scored exactly per iteration, and the wall split. — evidence: `docs/benchmarks.md::Production-input recheck (25 November 2026)` — reason: no production champion or corpus was located; production width tuning and both 2700-second trials were not run.
-- **met** — Journal fields for the new path, and a `report` row comparing exact rank with what the 5 % screen would have ranked. — evidence: existing `forests/src/report.rs::tests::exact_rank_report_keeps_ranking_verification_and_diagnostics_separate`, rerun successfully; implemented in merged PR #150, with no new implementation claimed by this diff.
-- **partial** — Predeclared success: Δscore per wall hour at least 1.5× control. Otherwise record the negative result in `docs/benchmarks.md` and keep the old path as the default. — evidence: `docs/benchmarks.md::Production-input recheck (25 November 2026)` and existing `forests/src/config.rs::tests::old_configurations_keep_legacy_ranking_and_exact_mode_requires_an_explicit_choice` — reason: legacy defaults are retained, but production economics and the ratio remain unmeasured; no production negative result can be declared.
+- **missing** — A/B on the production protocol in `docs/benchmarks.md` (same creature, seed and budget; control is today's defaults). Report Δscore per wall hour, acceptances, candidates scored exactly per iteration, and the wall split. — evidence: `docs/benchmarks.md::Production-input recheck (25 November 2026)` — reviewer: missing — reason: production inputs were not located, both 2700-second trials were not run, and all required production metrics remain unmeasured.
+- **partial** — Journal fields for the new path, and a `report` row comparing exact rank with what the 5 % screen would have ranked. — evidence: `docs/benchmarks.md::Production-input recheck (25 November 2026)` — reviewer: partial — reason: this documentation-only diff reports successful reporting tests and preserves the merged implementation, but contains neither journal/report implementation nor actual report output establishing the comparison. This evidence limit does not establish that the preserved implementation is absent. The author's earlier met assessment is replaced with the reviewer's partial verdict.
+- **partial** — Predeclared success: Δscore per wall hour at least 1.5× control. Otherwise record the negative result in `docs/benchmarks.md` and keep the old path as the default. — evidence: `docs/benchmarks.md::Production-input recheck (25 November 2026)` — reviewer: partial — reason: the documentation retains the rule and legacy defaults, but no production ratio or measured negative result is supplied; preservation of runtime defaults is asserted rather than demonstrated by implementation changes in this diff.
+- **partial** — Widen the cohort (`--candidates`, `--tree-roots`, magnitude variants, combinations) until the call costs about what promotion costs today. — evidence: `docs/benchmarks.md::Production-input recheck (25 November 2026)` — reviewer: partial — reason: production width tuning was not run. This establishes outstanding production tuning, without establishing any defect in the preserved candidate-generation controls.
+
+The permitted diff does not independently establish completion or failure of
+the preserved whole-cohort ranking, ordinary winner/parent verification,
+`--explore-quota` or legacy fallback implementations. No author status departs
+from the independent reviewer's verdicts.
 
 ## Standards Review
 
-Independent review was not run: delegation is explicitly prohibited for this
-executor. Local self-check found that the diff changes only documentation,
-retains the existing implementation and defaults, and distinguishes unrun
-production measurements from observed correctness results. No independent
-review marker is emitted. `CODING-STANDARDS.md` is absent from this repository.
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+`CODING-STANDARDS.md` is absent at the requested repository path, so compliance
+with that named standard cannot be certified. The independent reviewer found
+no actionable violation from the permitted inputs:
+
+- **clean** — Scope: the diff changes only two Markdown documents; no runtime code, configuration, dependencies or tests change.
+- **clean** — Evidence boundaries: the benchmark addition distinguishes reported fixture correctness checks from unrun production trials and labels missing production measurements as unmeasured.
+- **clean** — Decision reporting: the documentation leaves the production 1.5× criterion unevaluated and does not present absent results as a measured failure, zero counts or grounds to change defaults.
+- **clean** — Provenance consistency: stale no-delegation claims are removed; the Standards review marker, recorded findings and stated review inputs agree with the review. Independent documentation review remains distinct from unverified implementation, test-execution and production claims.
+
+These findings concern this documentation-only diff. They do not certify
+implementation correctness, reported test execution, production performance
+or compliance with the missing standards file.
+
+## Outstanding completion findings
+
+- Required item 1: independent reviewer provenance and verdicts are recorded above, replacing the stale no-delegation statements.
+- Required item 2, `docs/benchmarks.md:412`: reproduced and unresolved. The executor rechecked production-input availability and found no usable champion or corpus. The required production width tuning and A/B cannot be performed with the available inputs; generated fixtures cannot close this finding.
+- Required item 3 and unmet criteria 1 and 2: production A/B remains missing and the 1.5× success rule remains unevaluated. Legacy defaults remain. These findings are not disputed or claimed closed by this summary repair.
 
 ## Test Plan
 
 - No tests were added, modified or removed; no concrete gap was found in the inspected ranking, verification and reporting coverage. These checks are expected green against the merged implementation; no new failing regression is claimed.
 - `cargo test --locked --lib exact < /dev/null`: passed all 14 selected tests, including legacy defaults, older-scorer fallback, verification failures and reporting.
 - `cargo test --locked --test real_scorer -- --nocapture < /dev/null` with `NEAT_SCORER_BIN` set to the identified binary: passed all 7 integration tests, with no scorer-availability skip.
-- Markdownlint, codespell and `git diff --check`: passed for the benchmark documentation.
-- `./quality.sh < /dev/null` with `NEAT_SCORER_BIN` set to the identified binary: passed the full gate, including shell contracts, Markdown/spelling checks, actionlint, cargo-deny, formatting, Clippy, all 209 unit tests, integration/contract tests (including the 7 real-scorer tests) and rustdoc.
+- Completion-repair rerun: the same 14 selected unit tests and all 7 real-scorer integration tests passed with stdin from `/dev/null`; the scorer binary checksum still matches the identity above. No production benchmark was run.
+- Markdownlint, codespell and `git diff --check`: passed for the changed documentation.
+- Earlier in this run, `./quality.sh < /dev/null` with `NEAT_SCORER_BIN` set to the identified binary: passed the full gate, including shell contracts, Markdown/spelling checks, actionlint, cargo-deny, formatting, Clippy, all 209 unit tests, integration/contract tests (including the 7 real-scorer tests) and rustdoc.
 - TypeScript parity was not exercised: `NEAT_AI_TS_ROOT` is unset, so its harness returns without running the external engine.
 - Graft lookup returned no matching nodes; `graft check` failed with `NO GRAPH`. Direct source reads supplied the code evidence; no code graph was rebuilt or claimed fresh.
 
@@ -69,8 +89,8 @@ Delivery checklist:
 
 ## Merge verification
 
-CI is not yet verified. Independent reviews were not run under the explicit
-no-delegation instruction.
+CI is not yet verified. Independent Spec and Standards reviews are recorded
+above; their production-evidence limitations remain open.
 
 Not checked: production cohort economics, production-installed scorer identity,
 the production 1.5× threshold and TypeScript cross-engine parity. Risk: the
