@@ -290,6 +290,7 @@ report that explicitly rather than dividing by zero or treating it as a pass.
 A measured miss is recorded here with its production numbers and retains the
 legacy default. Missing production data also retains that default.
 
+Use fresh output directories; do not append another run to an earlier journal.
 Run both arms from the identical source creature and corpus, at seed 1 and the
 same 2700-second budget; pin the candidate families and CPU backend identically.
 The treatment widens only the search/cohort knobs being evaluated:
@@ -340,6 +341,39 @@ production speed or default-selection criterion.
 cargo run --release --example cohort_ranking_bench -- \
   --scorer "$SCORER" --records 20000 --repeats 3
 ```
+
+Measured on 25 November 2026 on shared aarch64 Linux host `vibe-coder-55874`,
+release builds of Forests and scorer commit `a164969ac4d96ff39eace7086ad22c0538d95705`.
+Three alternating-order repeats, 20 000 records, one iteration per profile,
+cold caches, diagnostics enabled. Times are **indicative on a shared, parallel
+host**, not test thresholds. Each profile found the same planted winner; the
+ordinary multi-candidate control differed from pair verification by less than
+6e-14 in score. This tiny fixture supplies no production-economics evidence.
+
+| Profile | Exact candidates / iteration | Acceptances across 3 repeats | Total wall (ms) | Total verified gain | Gain / wall hour |
+|---|---:|---:|---:|---:|---:|
+| legacy-64 | 9 | 3 | 1094 | 0.002257920549 | 7.4301 |
+| exact-64 | 64 | 3 | 1155 | 0.002257920549 | 7.0377 |
+| exact-128 | 128 | 3 | 1646 | 0.002257920549 | 4.9383 |
+| exact-256 | 256 | 3 | 2546 | 0.002257920549 | 3.1927 |
+
+Complete wall split, totals over the same three repeats (ms); every row sums
+to its wall total. Ordinary full scoring includes the separate verification
+in exact mode:
+
+| Profile | Opening baseline | Search | Graft | Diagnostic/legacy screen | Ranking | Ordinary full | Promotion overhead | Setup/other |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| legacy-64 | 32 | 473 | 42 | 76 | 0 | 118 | 14 | 339 |
+| exact-64 | 33 | 421 | 42 | 75 | 116 | 53 | 21 | 394 |
+| exact-128 | 23 | 731 | 93 | 114 | 221 | 50 | 43 | 371 |
+| exact-256 | 57 | 1325 | 207 | 149 | 308 | 48 | 75 | 377 |
+
+The 128-wide ranking call averaged 74 ms versus 69 ms for the control's whole
+promotion stage (screen + full + overhead). Verification, diagnostic screening
+and wider search still add cost, and widening found no additional gain on this
+fixture. This supports keeping widths experimental; it does not establish a
+production negative result or change the legacy defaults. Zero scorer failures,
+zero baseline vetoes and zero cohort fallbacks were observed in this sweep.
 
 ## What to do with the answer
 

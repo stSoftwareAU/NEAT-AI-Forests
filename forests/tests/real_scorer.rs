@@ -20,7 +20,9 @@ use neat_ai_forests::graft::{graft_patch, graft_patches_with};
 use neat_ai_forests::incumbent::Incumbent;
 use neat_ai_forests::journal::{JournalLine, read_journal};
 use neat_ai_forests::patch::{Node, Patch, Provenance};
-use neat_ai_forests::scorer::{CohortExecution, DirectoryScorer, ExternalScorer, ScorerMode};
+use neat_ai_forests::scorer::{
+    CohortExecution, DirectoryScorer, ExternalScorer, ScorerError, ScorerMode,
+};
 use neat_ai_forests::{CancelToken, establish_baseline, run_forests};
 use neat_core::training_data::TrainingDataConfig;
 
@@ -467,4 +469,44 @@ fn real_exact_loop_accepts_only_a_standalone_verified_winner() {
         .score_directory(&verify, &cfg.training_data, ScorerMode::Full)
         .unwrap();
     assert!((score["baseline"].score - result.best_score).abs() < 1e-9);
+}
+
+#[test]
+fn external_arguments_cannot_turn_full_verification_into_a_different_protocol() {
+    let bin = require_scorer!();
+    let tmp = tempfile::tempdir().unwrap();
+    let (creature, train) = fixture(tmp.path(), 37);
+    let dir = tmp.path().join("verify");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::copy(creature, dir.join("baseline.json")).unwrap();
+    for flag in [
+        "--sample-rate",
+        "--sample-phase",
+        "--cohort",
+        "--race-stdio",
+        "--creature-stdin",
+        "--ensemble",
+        "--perturb-sigma",
+    ] {
+        for arg in [flag.to_string(), format!("{flag}=0.05")] {
+            let scorer = ExternalScorer {
+                binary: bin.clone(),
+                extra_args: vec![arg],
+            };
+            assert!(
+                matches!(scorer.score_directory(&dir, &train, ScorerMode::Full),
+                Err(ScorerError::Malformed(ref m)) if m.contains(flag) && m.contains("controlled by Forests"))
+            );
+        }
+    }
+    let scorer = ExternalScorer {
+        binary: bin,
+        extra_args: vec!["--gpu=off".into()],
+    };
+    let valid = scorer
+        .score_directory(&dir, &train, ScorerMode::Full)
+        .unwrap();
+    assert_eq!(valid["baseline"].record_count, 37);
+    assert_eq!(valid["baseline"].sample_rate, None);
+    assert!(valid["baseline"].error > 0.0);
 }

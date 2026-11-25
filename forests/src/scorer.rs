@@ -163,7 +163,7 @@ pub trait DirectoryScorer {
 pub struct ExternalScorer {
     /// Path (or `$PATH` name) of the scorer binary.
     pub binary: PathBuf,
-    /// Extra arguments appended verbatim (e.g. `--cost MSE`, `--gpu off`).
+    /// Backend/cost arguments passed verbatim; cohort, sampling and protocol flags are reserved.
     pub extra_args: Vec<String>,
 }
 
@@ -469,6 +469,53 @@ mod tests {
     }
 
     #[test]
+    fn complete_full_results_require_the_expected_stems_and_unsampled_record_counts() {
+        let valid = parse_scorer_output(
+            r#"{
+            "baseline":{"score":0.9,"error":0.1,"recordCount":4},
+            "candidate":{"score":0.95,"error":0.05,"recordCount":4}}
+        "#,
+        )
+        .unwrap();
+        validate_scores(&valid, ["candidate"], Some(4)).unwrap();
+        let mut missing = valid.clone();
+        missing.remove("candidate");
+        assert!(matches!(validate_scores(&missing, ["candidate"], Some(4)),
+            Err(ScorerError::Malformed(ref m)) if m.contains("missing result for `candidate`")));
+        let mut unexpected = valid.clone();
+        unexpected.insert("other".into(), valid["candidate"].clone());
+        assert!(
+            matches!(validate_scores(&unexpected, ["candidate"], Some(4)),
+            Err(ScorerError::Malformed(ref m)) if m.contains("unexpected result for `other`"))
+        );
+        let mut missing_baseline = valid.clone();
+        missing_baseline.remove("baseline");
+        assert_eq!(
+            validate_scores(&missing_baseline, ["candidate"], Some(4)),
+            Err(ScorerError::MissingBaseline)
+        );
+        for sample_rate in [None, Some(0.05)] {
+            let mut partial = valid.clone();
+            let candidate = partial.get_mut("candidate").unwrap();
+            candidate.sample_rate = sample_rate;
+            candidate.record_count = if sample_rate.is_some() { 4 } else { 3 };
+            assert!(matches!(validate_scores(&partial, ["candidate"], Some(4)),
+                Err(ScorerError::Malformed(ref m)) if m.contains("did not score the full corpus")));
+            validate_scores(&partial, ["candidate"], None).unwrap();
+        }
+        assert!(matches!(
+            validate_scores(&valid, ["candidate"], Some(0)),
+            Err(ScorerError::Malformed(_))
+        ));
+        let mut non_finite = valid.clone();
+        non_finite.get_mut("candidate").unwrap().error = f64::INFINITY;
+        assert_eq!(
+            validate_scores(&non_finite, ["candidate"], Some(4)),
+            Err(ScorerError::NonFinite("candidate".into()))
+        );
+    }
+
+    #[test]
     fn cohort_execution_notes_distinguish_hosting_fallback_and_unknown_output() {
         assert_eq!(
             cohort_execution(
@@ -499,38 +546,5 @@ mod tests {
                 "{stderr}"
             );
         }
-    }
-
-    #[test]
-    fn extra_arguments_cannot_change_the_scoring_protocol() {
-        let tmp = tempfile::tempdir().unwrap();
-        for flag in [
-            "--sample-rate",
-            "--sample-phase",
-            "--cohort",
-            "--race-stdio",
-            "--creature-stdin",
-            "--ensemble",
-            "--perturb-sigma",
-        ] {
-            for arg in [flag.to_string(), format!("{flag}=0.05")] {
-                let scorer = ExternalScorer {
-                    binary: "/missing/scorer".into(),
-                    extra_args: vec![arg],
-                };
-                assert!(
-                    matches!(scorer.score_directory(tmp.path(), tmp.path(), ScorerMode::Full),
-                    Err(ScorerError::Malformed(ref m)) if m.contains(flag) && m.contains("controlled by Forests"))
-                );
-            }
-        }
-        let allowed = ExternalScorer {
-            binary: "/missing/scorer".into(),
-            extra_args: vec!["--gpu=off".into()],
-        };
-        assert!(matches!(
-            allowed.score_directory(tmp.path(), tmp.path(), ScorerMode::Full),
-            Err(ScorerError::Spawn(_))
-        ));
     }
 }

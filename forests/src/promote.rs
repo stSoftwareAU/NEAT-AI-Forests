@@ -83,7 +83,7 @@ pub struct RankingOutcome {
     pub execution: CohortExecution,
     /// Ranking scorer wall time.
     pub scorer_ms: u64,
-    /// Hypothetically promoted candidates below the exact threshold.
+    /// Hypothetical screen promotes that did not clear the exact threshold.
     pub screen_false_positives: u64,
     /// Seeded bypass candidates above the exact threshold.
     pub screen_false_negatives: u64,
@@ -593,7 +593,7 @@ mod tests {
     fn an_incomplete_cohort_is_an_error_instead_of_silently_dropping_candidates() {
         let (tmp, inc, cands) = setup();
         let scorer = LocalMseScorer {
-            raw_output: Some(r#"{"baseline":{"score":0.9,"error":0.1}}"#.into()),
+            raw_output: Some(r#"{"baseline":{"score":0.9,"error":0.1,"recordCount":400}}"#.into()),
             ..Default::default()
         };
         let result = screen_and_promote(
@@ -875,13 +875,13 @@ mod tests {
         assert_eq!(scorer.probes.get(), 0);
         assert!(!resolve_exact_ranking(RankingMode::Exact, &scorer).unwrap());
         assert_eq!(scorer.probes.get(), 1);
-        assert!(
+        assert!(matches!(
             resolve_exact_ranking(
                 RankingMode::Exact,
                 &crate::scorer::ExternalScorer::new("/missing/scorer")
-            )
-            .is_err()
-        );
+            ),
+            Err(ScorerError::Spawn(_))
+        ));
         let supported = CohortScorer::default();
         assert!(resolve_exact_ranking(RankingMode::Exact, &supported).unwrap());
     }

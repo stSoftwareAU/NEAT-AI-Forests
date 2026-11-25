@@ -401,12 +401,17 @@ pub mod fake {
                             stderr: "verification fixture failure".into(),
                         });
                     }
-                    Verification::Drift => scores.get_mut("baseline").unwrap().score -= 0.1,
+                    Verification::Drift => {
+                        let base = scores.get_mut("baseline").unwrap();
+                        base.score -= 0.1;
+                        base.error += 0.1;
+                    }
                     Verification::Regression => {
                         let base = scores["baseline"].score;
                         for (id, result) in &mut scores {
                             if id != "baseline" {
                                 result.score = base - 0.01;
+                                result.error = 1.0 - result.score - result.complexity_penalty;
                             }
                         }
                     }
