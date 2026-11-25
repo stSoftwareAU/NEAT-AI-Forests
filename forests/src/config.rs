@@ -527,6 +527,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn old_configurations_keep_legacy_ranking_and_exact_mode_requires_an_explicit_choice() {
+        let mut value = serde_json::to_value(ForestsConfig::default()).unwrap();
+        value.as_object_mut().unwrap().remove("rankingMode");
+        let old: ForestsConfig = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(old.ranking_mode, RankingMode::Legacy);
+        assert_eq!(
+            (old.candidates, old.tree_roots, old.combo_candidates),
+            (64, 8, 4)
+        );
+        assert_eq!(old.magnitude_scales, vec![1.0, 0.5, 0.25]);
+        value["rankingMode"] = serde_json::json!("exact");
+        assert_eq!(
+            serde_json::from_value::<ForestsConfig>(value.clone())
+                .unwrap()
+                .ranking_mode,
+            RankingMode::Exact
+        );
+        value["rankingMode"] = serde_json::json!("unknown");
+        assert!(
+            serde_json::from_value::<ForestsConfig>(value)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown variant")
+        );
+    }
+
+    #[test]
     fn defaults_validate_and_bad_values_name_the_flag() {
         let c = ForestsConfig::default();
         c.validate().unwrap();

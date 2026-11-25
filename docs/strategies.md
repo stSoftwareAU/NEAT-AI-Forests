@@ -18,7 +18,7 @@ candidate; the full-corpus scorer gate in `promote` is unconditional.
 | `--threshold-jitter j` | neighbouring bin edges ±1..j around each top stump | strategy `threshold-jitter` |
 | `--random-candidates n` | uniformly random feature/edge/kind, magnitude ~ residual σ | strategy `random-stump`, backend `random` |
 | `--max-per-feature m` | diversity cap in the top-K | — |
-| `--explore-quota q` | screen rejects fully scored anyway to measure false negatives | `bypass: true` in the journal |
+| `--explore-quota q` | legacy screen rejects fully scored; in exact mode enables diagnostic sampling and seeded bypass comparisons | legacy `bypass`; exact `screenRank`, `screenPromoted`, `screenBypass` |
 | `--max-depth 2 or 3`, `--growth …` | trees (Issue #11) | `histogram-tree-depthD`, note `growth=…` |
 | `--oblique-candidates n` | 2–3 feature linear conditions (Issue #14) | `oblique-split`, note `origin=axis+1`, `random-sparse` or `jitter` |
 | `--refine-leaves n`, `--refine-max-depth d` | split `n` leaves already on the creature, read back from its structure, on the rows that reach each one (Issue #140) | `refine-stump` / `refine-tree-depthD`, notes `refine=<parent uuid>:<role> leaf-depth=…` and `leaf-records=…`; the patch carries `parent` |
@@ -201,9 +201,11 @@ arm before reading a verdict.
 ## Measuring them
 
 `neat_ai_forests report` aggregates per strategy: generated, promoted, fully
-scored, winners, accepted gain and mean full Δ; plus screen false-positive and
+scored, exactly ranked, winners, accepted gain and mean ordinary full Δ; plus screen false-positive and
 false-negative rates, time to first winner and improvement per wall-clock hour.
-Run the same creature/corpus with different flags (same `--seed`), then
+Exact ranking also reports candidate rank comparisons and exact candidates per
+iteration; diagnostic FP/FN counts are separate from ordinary verified screen
+counts. Run the same creature/corpus with different flags (same `--seed`), then
 `scripts/report-experiments.sh run-a/experiments.jsonl run-b/experiments.jsonl`.
 
 `examples/stump_search_bench.rs` compares exhaustive accumulation against

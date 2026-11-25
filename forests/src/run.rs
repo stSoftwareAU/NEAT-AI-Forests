@@ -32,8 +32,7 @@ use crate::enhancements::EnhancementLog;
 use crate::histogram::{HistogramSet, search_stumps};
 use crate::incumbent::{Incumbent, load_incumbent, now_unix};
 use crate::journal::{
-    CandidateRecord, ExperimentRecord, JournalLine, SummaryRecord,
-    append_journal_line,
+    CandidateRecord, ExperimentRecord, JournalLine, SummaryRecord, append_journal_line,
 };
 use crate::log;
 use crate::meta::{CreatureMeta, Tag};
@@ -286,7 +285,8 @@ pub fn run_forests(
 ) -> Result<RunResult, String> {
     cfg.validate()?;
     let started = Instant::now();
-    let exact_ranking = resolve_exact_ranking(cfg.ranking_mode, scorer).map_err(|e| e.to_string())?;
+    let exact_ranking =
+        resolve_exact_ranking(cfg.ranking_mode, scorer).map_err(|e| e.to_string())?;
     // Load before anything is written: a bad creature produces no output dir.
     let incumbent = load_incumbent(&cfg.creature).map_err(|e| e.to_string())?;
     let creature_cfg = TrainingDataConfig::new(incumbent.creature.input, incumbent.creature.output);
@@ -1541,29 +1541,60 @@ mod tests {
             assert_eq!(e.ranking_mode.as_deref(), Some("exact"));
             assert_eq!(ranking.scored, e.candidates.len() as u64);
             assert_eq!(ranking.cohort_size, e.candidates.len() as u64 + 1);
-            assert!(e.candidates.iter().all(|c| c.exact_score.is_some() && c.exact_rank.is_some()));
-            assert_eq!(e.candidates.iter().filter(|c| c.full_score.is_some()).count(), 1);
+            assert!(
+                e.candidates
+                    .iter()
+                    .all(|c| c.exact_score.is_some() && c.exact_rank.is_some())
+            );
+            assert_eq!(
+                e.candidates
+                    .iter()
+                    .filter(|c| c.full_score.is_some())
+                    .count(),
+                1
+            );
             assert!(e.screen.as_ref().unwrap().diagnostic_only);
-            let winner = e.candidates.iter().find(|c| Some(&c.id) == e.winner.as_ref()).unwrap();
+            let winner = e
+                .candidates
+                .iter()
+                .find(|c| Some(&c.id) == e.winner.as_ref())
+                .unwrap();
             assert_eq!(winner.exact_rank, Some(1));
             assert_eq!(winner.full_delta, e.improvement);
             ranked_only_positive |= e.candidates.iter().any(|c| {
-                c.combo.is_empty() && c.exact_delta.is_some_and(|d| d > 0.0) && c.full_score.is_none()
+                c.combo.is_empty()
+                    && c.exact_delta.is_some_and(|d| d > 0.0)
+                    && c.full_score.is_none()
             });
-            assert!(e.candidates.iter().flat_map(|c| std::iter::once(&c.patch).chain(&c.combo))
-                .all(|p| !p.provenance.strategy.starts_with("carry-forward:")));
+            assert!(
+                e.candidates
+                    .iter()
+                    .flat_map(|c| std::iter::once(&c.patch).chain(&c.combo))
+                    .all(|p| !p.provenance.strategy.starts_with("carry-forward:"))
+            );
         }
-        assert!(ranked_only_positive, "fixture must offer positive ranking-only near-winners");
+        assert!(
+            ranked_only_positive,
+            "fixture must offer positive ranking-only near-winners"
+        );
         let corpus = corpus_info(&cfg.training_data, &TrainingDataConfig::new(3, 1)).unwrap();
         let store = crate::learnings::LearningsStore::new(
-            cfg.learnings_dir.unwrap(), crate::learnings::CorpusId::new(corpus.identity),
+            cfg.learnings_dir.unwrap(),
+            crate::learnings::CorpusId::new(corpus.identity),
             crate::learnings::HostName::new("exact-test"),
         );
         let filed = store.load().unwrap();
         assert!(!filed.is_empty());
         for learning in filed {
-            let experiment = experiments.iter().find(|e| e.incumbent_checksum == learning.incumbent).unwrap();
-            let verified = experiment.candidates.iter().find(|c| c.id == learning.id).unwrap();
+            let experiment = experiments
+                .iter()
+                .find(|e| e.incumbent_checksum == learning.incumbent)
+                .unwrap();
+            let verified = experiment
+                .candidates
+                .iter()
+                .find(|c| c.id == learning.id)
+                .unwrap();
             assert_eq!(verified.full_delta, Some(learning.delta));
             assert_eq!(experiment.winner.as_deref(), Some(learning.id.as_str()));
         }
@@ -1571,7 +1602,11 @@ mod tests {
 
     #[test]
     fn exact_loop_never_replaces_best_or_files_rankings_when_verification_fails() {
-        for verification in [Verification::Failed, Verification::Drift, Verification::Regression] {
+        for verification in [
+            Verification::Failed,
+            Verification::Drift,
+            Verification::Regression,
+        ] {
             let (tmp, mut cfg) = fixture();
             cfg.ranking_mode = RankingMode::Exact;
             cfg.max_iterations = Some(2);
@@ -1579,37 +1614,67 @@ mod tests {
             cfg.learnings_dir = Some(tmp.path().join("learnings"));
             cfg.learnings_host = Some("exact-test".into());
             let original = std::fs::read(&cfg.creature).unwrap();
-            let scorer = CohortScorer { verification, ..Default::default() };
+            let scorer = CohortScorer {
+                verification,
+                ..Default::default()
+            };
             let result = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
             assert_eq!(result.acceptances, 0);
             assert_eq!(std::fs::read(&result.best_path).unwrap(), original);
             if matches!(verification, Verification::Regression) {
-                let corpus = corpus_info(&cfg.training_data, &TrainingDataConfig::new(3, 1)).unwrap();
+                let corpus =
+                    corpus_info(&cfg.training_data, &TrainingDataConfig::new(3, 1)).unwrap();
                 let store = crate::learnings::LearningsStore::new(
-                    cfg.learnings_dir.clone().unwrap(), crate::learnings::CorpusId::new(corpus.identity),
+                    cfg.learnings_dir.clone().unwrap(),
+                    crate::learnings::CorpusId::new(corpus.identity),
                     crate::learnings::HostName::new("exact-test"),
                 );
                 let filed = store.load().unwrap();
                 assert_eq!(filed.len(), result.iterations as usize);
-                assert!(filed.iter().all(|l| l.outcome == crate::learnings::Outcome::Rejected && l.delta < 0.0));
+                assert!(
+                    filed
+                        .iter()
+                        .all(|l| l.outcome == crate::learnings::Outcome::Rejected && l.delta < 0.0)
+                );
             } else {
                 assert!(!cfg.learnings_dir.as_ref().unwrap().exists());
             }
             let experiments = experiments_of(&result);
             assert!(experiments[0].ranking.is_some());
             assert!(experiments.iter().all(|e| !e.accepted));
-            assert!(experiments.iter().flat_map(|e| &e.candidates)
-                .all(|c| !c.strategy.starts_with("carry-forward:")));
+            assert!(
+                experiments
+                    .iter()
+                    .flat_map(|e| &e.candidates)
+                    .all(|c| !c.strategy.starts_with("carry-forward:"))
+            );
             match verification {
                 Verification::Failed => {
                     assert_eq!(result.stop_reason, StopReason::ScorerFailures);
                     assert_eq!(result.scorer_failures, 1);
-                    assert!(experiments[0].scorer_error.as_ref().unwrap().contains("verification fixture failure"));
+                    assert!(
+                        experiments[0]
+                            .scorer_error
+                            .as_ref()
+                            .unwrap()
+                            .contains("verification fixture failure")
+                    );
                     assert!(experiments[0].verification_ms.is_some());
                     assert!(experiments[0].full.is_none());
                 }
-                Verification::Drift => assert!(experiments[0].scorer_error.as_ref().unwrap().contains("disagrees")),
-                Verification::Regression => assert!(experiments[0].candidates.iter().any(|c| c.full_delta.is_some_and(|d| d < 0.0))),
+                Verification::Drift => assert!(
+                    experiments[0]
+                        .scorer_error
+                        .as_ref()
+                        .unwrap()
+                        .contains("disagrees")
+                ),
+                Verification::Regression => assert!(
+                    experiments[0]
+                        .candidates
+                        .iter()
+                        .any(|c| c.full_delta.is_some_and(|d| d < 0.0))
+                ),
                 _ => unreachable!(),
             }
         }
@@ -1620,14 +1685,25 @@ mod tests {
         let (_tmp, mut cfg) = fixture();
         cfg.ranking_mode = RankingMode::Exact;
         cfg.max_iterations = Some(2);
-        let scorer = CohortScorer { supported: false, ..Default::default() };
+        let scorer = CohortScorer {
+            supported: false,
+            ..Default::default()
+        };
         let result = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
         assert!(result.acceptances > 0);
         assert_eq!(scorer.probes.get(), 1);
         assert_eq!(scorer.cohorts.get(), 0);
         let experiments = experiments_of(&result);
-        assert!(experiments.iter().all(|e| e.ranking_mode.as_deref() == Some("legacy") && e.ranking.is_none()));
-        assert!(experiments.iter().any(|e| e.screen.as_ref().is_some_and(|s| !s.diagnostic_only)));
+        assert!(
+            experiments
+                .iter()
+                .all(|e| e.ranking_mode.as_deref() == Some("legacy") && e.ranking.is_none())
+        );
+        assert!(
+            experiments
+                .iter()
+                .any(|e| e.screen.as_ref().is_some_and(|s| !s.diagnostic_only))
+        );
     }
 
     /// Issue #56 — end to end under `--graft-constants per-patch`: the accepted

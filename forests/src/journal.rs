@@ -307,7 +307,10 @@ impl ExperimentRecord {
         }
         self.screen_false_positives = outcome.false_positives;
         self.screen_false_negatives = outcome.false_negatives;
-        self.scorer_error = outcome.verification_error.as_ref().map(ToString::to_string)
+        self.scorer_error = outcome
+            .verification_error
+            .as_ref()
+            .map(ToString::to_string)
             .or_else(|| outcome.veto.clone());
     }
 }

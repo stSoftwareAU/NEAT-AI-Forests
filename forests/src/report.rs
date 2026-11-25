@@ -88,9 +88,12 @@ pub struct JournalReport {
     /// Exact candidates ranked, separate from authoritative full scores.
     #[serde(default)]
     pub candidates_exact_ranked: u64,
-    /// Exact candidates scored in each iteration that ran cohort ranking.
+    /// Exact candidates scored per iteration: cohort ranking, or legacy full scoring.
     #[serde(default)]
     pub exact_candidates_per_iteration: Vec<ExactIteration>,
+    /// Cohort calls the scorer executed through its documented directory fallback.
+    #[serde(default)]
+    pub cohort_fallbacks: u64,
     /// Rows comparing exact rank with the screen's hypothetical rank.
     #[serde(default)]
     pub rank_comparisons: Vec<RankComparison>,
@@ -240,13 +243,21 @@ pub fn report_from_lines(lines: &[JournalLine]) -> JournalReport {
                 }
                 if let Some(ranking) = &e.ranking {
                     r.candidates_exact_ranked += ranking.scored;
-                    r.exact_candidates_per_iteration.push(ExactIteration {
-                        iteration: e.iteration, scored: ranking.scored,
-                    });
+                    r.cohort_fallbacks += u64::from(matches!(
+                        ranking.execution,
+                        crate::scorer::CohortExecution::DirectoryFallback { .. }
+                    ));
                     r.ranking_scorer_ms += ranking.scorer_ms;
                     r.diagnostic_screen_false_positives += ranking.screen_false_positives;
                     r.diagnostic_screen_false_negatives += ranking.screen_false_negatives;
                 }
+                r.exact_candidates_per_iteration.push(ExactIteration {
+                    iteration: e.iteration,
+                    scored: e
+                        .ranking
+                        .as_ref()
+                        .map_or_else(|| e.full.as_ref().map_or(0, |f| f.scored), |r| r.scored),
+                });
                 if let Some(f) = &e.full {
                     r.candidates_full_scored += f.scored;
                     r.full_scorer_ms += f.scorer_ms;
@@ -256,7 +267,8 @@ pub fn report_from_lines(lines: &[JournalLine]) -> JournalReport {
                 r.verification_scorer_ms += e.verification_ms.unwrap_or(0);
                 let measured_calls = e.screen.as_ref().map_or(0, |s| s.scorer_ms)
                     + e.ranking.as_ref().map_or(0, |r| r.scorer_ms)
-                    + e.verification_ms.unwrap_or_else(|| e.full.as_ref().map_or(0, |f| f.scorer_ms));
+                    + e.verification_ms
+                        .unwrap_or_else(|| e.full.as_ref().map_or(0, |f| f.scorer_ms));
                 let promotion_wall = e.scoring_ms.unwrap_or(measured_calls);
                 r.promotion_wall_ms += promotion_wall;
                 r.promotion_overhead_ms += promotion_wall.saturating_sub(measured_calls);
@@ -275,9 +287,12 @@ pub fn report_from_lines(lines: &[JournalLine]) -> JournalReport {
                     }
                     if let Some(exact_rank) = c.exact_rank {
                         r.rank_comparisons.push(RankComparison {
-                            iteration: e.iteration, id: c.id.clone(), exact_rank,
+                            iteration: e.iteration,
+                            id: c.id.clone(),
+                            exact_rank,
                             screen_rank: c.screen_rank,
-                            screen_promoted: c.screen_promoted, screen_bypass: c.screen_bypass,
+                            screen_promoted: c.screen_promoted,
+                            screen_bypass: c.screen_bypass,
                         });
                     }
                     let depth_key = format!("depth{}", c.depth);
@@ -368,16 +383,23 @@ pub fn report_from_lines(lines: &[JournalLine]) -> JournalReport {
         r.candidates_per_minute = Some(r.candidates_generated as f64 / minutes);
     }
     let scorer = r.screen_scorer_ms + r.full_scorer_ms + r.ranking_scorer_ms;
-    r.setup_and_other_ms = r.wall_ms.saturating_sub(
-        r.search_ms + r.graft_ms + r.promotion_wall_ms + r.opening_baseline_ms,
-    );
+    r.setup_and_other_ms = r
+        .wall_ms
+        .saturating_sub(r.search_ms + r.graft_ms + r.promotion_wall_ms + r.opening_baseline_ms);
     if r.search_ms + scorer > 0 {
         r.search_time_fraction = Some(r.search_ms as f64 / (r.search_ms + scorer) as f64);
     }
-    let screen_promoted: u64 = lines.iter().filter_map(|line| match line {
-        JournalLine::Experiment(e) => e.screen.as_ref().filter(|s| !s.diagnostic_only).map(|s| s.promoted),
-        _ => None,
-    }).sum();
+    let screen_promoted: u64 = lines
+        .iter()
+        .filter_map(|line| match line {
+            JournalLine::Experiment(e) => e
+                .screen
+                .as_ref()
+                .filter(|s| !s.diagnostic_only)
+                .map(|s| s.promoted),
+            _ => None,
+        })
+        .sum();
     if screen_promoted > 0 {
         r.screen_false_positive_rate =
             Some(r.screen_false_positives as f64 / screen_promoted as f64);
@@ -450,30 +472,63 @@ mod tests {
         let experiment = ExperimentRecord {
             ranking_mode: Some("exact".into()),
             ranking: Some(RankingSummary {
-                baseline_score: 0.5, scored: 2, cohort_size: 3,
+                baseline_score: 0.5,
+                scored: 2,
+                cohort_size: 3,
                 execution: crate::scorer::CohortExecution::Hosted,
-                scorer_ms: 100, screen_false_positives: 1, screen_false_negatives: 1,
+                scorer_ms: 100,
+                screen_false_positives: 1,
+                screen_false_negatives: 1,
             }),
-            verification_ms: Some(40), scoring_ms: Some(200),
-            iteration: 1, timestamp_unix: 1, incumbent_checksum: "a".into(),
-            baseline_score: 0.5, search_backend: "cpu".into(), search_set: "memory-full".into(),
-            search_records: 400, search_features: 2, strategies: vec![],
-            search_ms: 20, graft_ms: 10, candidates_generated: 2, candidates_discarded: 0,
-            discarded: vec![], candidates: vec![winner, loser],
+            verification_ms: Some(40),
+            scoring_ms: Some(200),
+            iteration: 1,
+            timestamp_unix: 1,
+            incumbent_checksum: "a".into(),
+            baseline_score: 0.5,
+            search_backend: "cpu".into(),
+            search_set: "memory-full".into(),
+            search_records: 400,
+            search_features: 2,
+            strategies: vec![],
+            search_ms: 20,
+            graft_ms: 10,
+            candidates_generated: 2,
+            candidates_discarded: 0,
+            discarded: vec![],
+            candidates: vec![winner, loser],
             screen: Some(ScreenSummary {
-                diagnostic_only: true, sample_rate: 0.05, sample_phase: 0,
-                baseline_score: 0.5, screened: 2, promoted: 1, bypass: 1, scorer_ms: 30,
+                diagnostic_only: true,
+                sample_rate: 0.05,
+                sample_phase: 0,
+                baseline_score: 0.5,
+                screened: 2,
+                promoted: 1,
+                bypass: 1,
+                scorer_ms: 30,
             }),
-            full: Some(FullSummary { baseline_score: 0.5, baseline_drift: 0.0, scored: 1, scorer_ms: 40 }),
-            winner: Some("winner".into()), improvement: Some(0.02), accepted: true,
-            new_incumbent_checksum: Some("b".into()), screen_false_positives: 0,
-            screen_false_negatives: 0, scorer_error: None,
+            full: Some(FullSummary {
+                baseline_score: 0.5,
+                baseline_drift: 0.0,
+                scored: 1,
+                scorer_ms: 40,
+            }),
+            winner: Some("winner".into()),
+            improvement: Some(0.02),
+            accepted: true,
+            new_incumbent_checksum: Some("b".into()),
+            screen_false_positives: 0,
+            screen_false_negatives: 0,
+            scorer_error: None,
         };
         let line = JournalLine::Experiment(Box::new(experiment));
         let report = report_from_lines(std::slice::from_ref(&line));
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["candidatesExactRanked"], 2);
-        assert_eq!(json["exactCandidatesPerIteration"], serde_json::json!([{ "iteration": 1, "scored": 2 }]));
+        assert_eq!(
+            json["exactCandidatesPerIteration"],
+            serde_json::json!([{ "iteration": 1, "scored": 2 }])
+        );
         assert_eq!(json["rankComparisons"][0]["exactRank"], 1);
         assert_eq!(json["rankComparisons"][0]["screenRank"], 2);
         assert_eq!(json["rankComparisons"][1]["screenRank"], 1);
@@ -484,16 +539,58 @@ mod tests {
         assert_eq!(report.candidates_full_scored, 1);
         assert_eq!(report.bypass_scored, 0);
         assert_eq!(report.screen_false_negative_rate, None);
-        assert_eq!(report.by_strategy["histogram-stump"].mean_full_delta, Some(0.02));
+        assert_eq!(
+            report.by_strategy["histogram-stump"].mean_full_delta,
+            Some(0.02)
+        );
+        let mut fallback_line = line.clone();
+        let JournalLine::Experiment(e) = &mut fallback_line else {
+            panic!("experiment")
+        };
+        e.ranking.as_mut().unwrap().execution = crate::scorer::CohortExecution::DirectoryFallback {
+            reason: "MAE".into(),
+        };
+        assert_eq!(report_from_lines(&[fallback_line]).cohort_fallbacks, 1);
+        assert_eq!(report.cohort_fallbacks, 0);
+        let mut failed_line = line.clone();
+        let JournalLine::Experiment(e) = &mut failed_line else {
+            panic!("experiment")
+        };
+        e.full = None;
+        e.accepted = false;
+        e.winner = None;
+        e.improvement = None;
+        e.scorer_error = Some("verification failed".into());
+        for candidate in &mut e.candidates {
+            candidate.full_score = None;
+            candidate.full_delta = None;
+        }
+        let failed_report = report_from_lines(&[failed_line]);
+        assert_eq!(failed_report.candidates_full_scored, 0);
+        assert_eq!(failed_report.candidates_exact_ranked, 2);
+        assert_eq!(failed_report.verification_scorer_ms, 40);
+        assert_eq!(failed_report.full_scorer_ms, 40);
+        assert_eq!(failed_report.promotion_overhead_ms, 30);
+        assert_eq!(failed_report.scorer_failures, 1);
 
         // A body written by the previous release has none of the new fields.
         let mut older = serde_json::to_value(line).unwrap();
         for key in ["rankingMode", "ranking", "verificationMs", "scoringMs"] {
             older.as_object_mut().unwrap().remove(key);
         }
-        older["screen"].as_object_mut().unwrap().remove("diagnosticOnly");
+        older["screen"]
+            .as_object_mut()
+            .unwrap()
+            .remove("diagnosticOnly");
         for c in older["candidates"].as_array_mut().unwrap() {
-            for key in ["exactScore", "exactDelta", "exactRank", "screenRank", "screenPromoted", "screenBypass"] {
+            for key in [
+                "exactScore",
+                "exactDelta",
+                "exactRank",
+                "screenRank",
+                "screenPromoted",
+                "screenBypass",
+            ] {
                 c.as_object_mut().unwrap().remove(key);
             }
         }
@@ -502,7 +599,11 @@ mod tests {
         assert_eq!(old_report.candidates_full_scored, 1);
         assert_eq!(old_report.screen_scorer_ms, 30);
         assert_eq!(old_report.full_scorer_ms, 40);
-        assert_eq!(old_report.by_strategy["histogram-stump"].mean_full_delta, Some(0.02));
+        assert_eq!(old_report.exact_candidates_per_iteration[0].scored, 1);
+        assert_eq!(
+            old_report.by_strategy["histogram-stump"].mean_full_delta,
+            Some(0.02)
+        );
     }
 
     #[test]

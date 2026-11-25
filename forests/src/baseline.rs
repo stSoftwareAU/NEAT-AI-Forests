@@ -217,7 +217,10 @@ pub mod fake {
             } else {
                 calls.last_mut().unwrap().0 = "cohort".into();
             }
-            Ok(CohortScores { scores, execution: CohortExecution::Hosted })
+            Ok(CohortScores {
+                scores,
+                execution: CohortExecution::Hosted,
+            })
         }
 
         fn score_directory(
@@ -351,7 +354,10 @@ pub mod fake {
     impl Default for CohortScorer {
         fn default() -> Self {
             Self {
-                local: LocalMseScorer { cohort_supported: true, ..Default::default() },
+                local: LocalMseScorer {
+                    cohort_supported: true,
+                    ..Default::default()
+                },
                 supported: true,
                 probes: Cell::new(0),
                 cohorts: Cell::new(0),
@@ -372,44 +378,64 @@ pub mod fake {
             self.cohorts.set(self.cohorts.get() + 1);
             let mut result = self.local.score_cohort(dir, training)?;
             if let Some(reason) = &self.fallback_reason {
-                result.execution = CohortExecution::DirectoryFallback { reason: reason.clone() };
+                result.execution = CohortExecution::DirectoryFallback {
+                    reason: reason.clone(),
+                };
             }
             Ok(result)
         }
 
-        fn score_directory(&self, dir: &Path, training: &Path, mode: ScorerMode)
-            -> Result<BTreeMap<String, ScoreResult>, ScorerError>
-        {
+        fn score_directory(
+            &self,
+            dir: &Path,
+            training: &Path,
+            mode: ScorerMode,
+        ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
             let mut scores = self.local.score_directory(dir, training, mode)?;
             if mode == ScorerMode::Full && self.cohorts.get() > 0 && scores.len() > 1 {
                 match self.verification {
                     Verification::Normal => {}
-                    Verification::Failed => return Err(ScorerError::Failed {
-                        status: "exit 1".into(), stderr: "verification fixture failure".into(),
-                    }),
+                    Verification::Failed => {
+                        return Err(ScorerError::Failed {
+                            status: "exit 1".into(),
+                            stderr: "verification fixture failure".into(),
+                        });
+                    }
                     Verification::Drift => scores.get_mut("baseline").unwrap().score -= 0.1,
                     Verification::Regression => {
                         let base = scores["baseline"].score;
                         for (id, result) in &mut scores {
-                            if id != "baseline" { result.score = base - 0.01; }
+                            if id != "baseline" {
+                                result.score = base - 0.01;
+                            }
                         }
                     }
                     Verification::MissingCandidate => {
-                        let id = scores.keys().find(|id| id.as_str() != "baseline").unwrap().clone();
+                        let id = scores
+                            .keys()
+                            .find(|id| id.as_str() != "baseline")
+                            .unwrap()
+                            .clone();
                         scores.remove(&id);
                     }
                     Verification::Sampled => {
-                        for result in scores.values_mut() { result.sample_rate = Some(0.05); }
+                        for result in scores.values_mut() {
+                            result.sample_rate = Some(0.05);
+                        }
                     }
                     Verification::WrongCount => {
-                        for result in scores.values_mut() { result.record_count -= 1; }
+                        for result in scores.values_mut() {
+                            result.record_count -= 1;
+                        }
                     }
                 }
             }
             Ok(scores)
         }
 
-        fn identity(&self) -> String { self.local.identity() }
+        fn identity(&self) -> String {
+            self.local.identity()
+        }
     }
 }
 

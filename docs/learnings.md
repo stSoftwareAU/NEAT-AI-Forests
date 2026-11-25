@@ -34,10 +34,10 @@ in this repository runs git — the caller pulls before a run and pushes after i
 
 ## What is cached, and what is deliberately not
 
-Cached: **full-corpus verdicts**, accepted and rejected alike, each with the
+Cached: **ordinary full-corpus verdicts**, accepted and rejected alike, each with the
 Δscore, the creature it was tried against, and the host that tried it.
 
-Not cached, because sharing them would cost more than it saves:
+Rankings and unverified outcomes are not cached:
 
 - **a candidate the graft refused.** That is a property of the creature it was
   tried on — an output squash the correction cannot enter, a uuid already taken
@@ -46,6 +46,11 @@ Not cached, because sharing them would cost more than it saves:
 - **a candidate the sampled screen dropped.** The screen ranks, it does not
   judge. Issue #17 measured a 52 % false-negative rate at a 0.05 sample rate;
   recording that as a fleet-wide failure would bury good patches for a week.
+- **a cohort ranking without ordinary verification.** In exact mode only the
+  selected candidate receives an ordinary winner/parent full call. Other exact
+  scores stay in the journal; they are not filed as rejections or carried into
+  combinations as verified near-winners. A scorer error or baseline drift veto
+  files no verdict, including a ranking that looked positive.
 
 Run-local provenance (sampling rates, jitter offsets, the shape of the search
 set) is stripped before filing. It describes the run, not the patch, and it is

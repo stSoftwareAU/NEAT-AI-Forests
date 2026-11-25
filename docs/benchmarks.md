@@ -259,6 +259,88 @@ winner that touches 0.1 % of records is suspicious and should be inspected
 with the journal's patch before anyone trusts it). Compare with a Lamarck run
 of the same budget on the same champion rather than assuming either dominates.
 
+## Exact cohort ranking experiment (Issue #136)
+
+The scorer prerequisite is delivered: [scorer PR #684](https://github.com/stSoftwareAU/NEAT-AI-scorer/pull/684)
+merged on 22 November 2026 with cohort-versus-standalone parity tests. Forests
+probes the binary's help once for an exact run. `--ranking-mode exact` uses
+full-corpus cohort scores to rank the whole valid generated population, with
+candidate-id tie breaking, then gives the highest-ranked eligible candidate
+an ordinary full-corpus call with its parent. The scorer's documented directory
+fallback is recorded rather than silently treated as hosted execution.
+
+`--explore-quota 1` retains a diagnostic 5 % screen and seeded bypass selection.
+Its hypothetical decisions do not remove candidates from exact ranking; the
+extra call counts against the same wall budget. Use quota 0 to turn diagnostics
+off. `fullScore` and `fullDelta` still mean ordinary verification; exact scores
+alone neither file learnings nor qualify a near-winner for combination carry-forward.
+
+### Production A/B status and decision rule
+
+**Not run on production.** No production creature/corpus paths were supplied,
+and the available checkout and data directories contain no production corpus.
+The generated fixtures below cannot measure production improvement per wall
+hour. There is no production ratio or production negative result to report.
+The default remains `--ranking-mode legacy`, with 64 candidates, 8 tree roots,
+scales `1.0,0.5,0.25` and 4 combinations.
+
+The predeclared switch condition remains **at least 1.5× control improvement
+per wall hour**. A ratio cannot be measured when control improvement is zero;
+report that explicitly rather than dividing by zero or treating it as a pass.
+A measured miss is recorded here with its production numbers and retains the
+legacy default. Missing production data also retains that default.
+
+Run both arms from the identical source creature and corpus, at seed 1 and the
+same 2700-second budget; pin the candidate families and CPU backend identically.
+The treatment widens only the search/cohort knobs being evaluated:
+
+```bash
+COMMON=("$C" "$D" --scorer "$SCORER" --scorer-arg=--gpu=off
+  --seed 1 --timeout-seconds 2700 --no-random-arms --explore-quota 1)
+
+# Control: current legacy defaults, made explicit.
+neat_ai_forests "${COMMON[@]}" --ranking-mode legacy --output-dir runs/cohort-control \
+  --candidates 64 --tree-roots 8 --top-k 16 --magnitude-scales 1.0,0.5,0.25 --combo-candidates 4
+
+# Treatment: wider exact cohort; preserve all other control settings.
+neat_ai_forests "${COMMON[@]}" --ranking-mode exact --output-dir runs/cohort-exact \
+  --candidates 256 --tree-roots 32 --top-k 64 \
+  --magnitude-scales 1.0,0.875,0.75,0.5,0.25,0.125 --combo-candidates 16
+
+scripts/report-experiments.sh runs/cohort-control/experiments.jsonl runs/cohort-exact/experiments.jsonl
+```
+
+Keep the source/corpus identities and resolved family settings from the journals.
+Report `improvementPerWallHour`, acceptances and `exactCandidatesPerIteration`
+for both arms. `rankComparisons` lists each exact candidate's exact rank beside
+its hypothetical screen rank and promotion/bypass decisions. Diagnostic FP/FN
+counts are separate from ordinary verified screen counts.
+
+The complete wall split is opening baseline + search + graft + screen scorer +
+ranking scorer + ordinary full scorer + promotion overhead + setup/other.
+`verificationScorerMs` is the exact winner/parent subset of `fullScorerMs`, not
+an extra term. `promotionOverheadMs` includes cohort file I/O and failed
+screen/ranking calls without separately recorded results. `setupAndOtherMs`
+covers bin/residual work, identity hashing, accepted-creature output and the
+remaining wall time. Failures and baseline vetoes invalidate a clean performance
+comparison; record them separately. Runs can finish their in-flight iteration
+after the budget expires, so compare actual `wallMs`, not the requested timeout.
+
+### Generated-fixture width sweep
+
+`forests/examples/cohort_ranking_bench.rs` exercises the real evolution loop
+with a generated 32-input MLP, deterministic residual regions, seed 1, the same
+starting creature and fixed family settings. It alternates profile order across
+repeats and gives each run its own cold cache. It measures legacy-64, exact-64,
+exact-128 and exact-256, widening roots, top-K, scales and combinations together.
+These small synthetic inputs test the protocol and candidate reach, not the
+production speed or default-selection criterion.
+
+```bash
+cargo run --release --example cohort_ranking_bench -- \
+  --scorer "$SCORER" --records 20000 --repeats 3
+```
+
 ## What to do with the answer
 
 - **Stumps win repeatedly:** keep going; measure saturation via

@@ -7,6 +7,15 @@ All notable changes to NEAT-AI-Forests are recorded here. The format follows
 
 ### Added
 
+- **Exact cohort ranking (Issue #136).** Opt-in `--ranking-mode exact` sends
+  every valid generated candidate and its parent through one full-corpus
+  scorer cohort call, then verifies the highest-ranked eligible candidate in
+  an ordinary full-corpus call with its parent. Diagnostic screen ranks,
+  exact ranks, hosted/fallback status and ranking/verification timings are
+  journalled and reported separately. Older scorers use legacy promotion.
+  The legacy default and cohort-width defaults remain pending a production
+  A/B meeting the 1.5× improvement-per-wall-hour bar.
+
 - **Random arms (Issue #147).** `--refine-leaves`, `--refit-every`,
   `--hidden-features` and `--linear-leaf-conditions` are now optional: left
   unset, each is drawn on (at its protocol G–J value) or off with probability
