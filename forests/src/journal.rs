@@ -70,6 +70,24 @@ pub struct CandidateRecord {
     /// Screen score minus the screen baseline score.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_delta: Option<f64>,
+    /// Hypothetical sampled rank (one-based, candidate id breaks ties).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_rank: Option<u64>,
+    /// What the diagnostic screen would have promoted in exact mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_promoted: Option<bool>,
+    /// Whether the seeded diagnostic bypass would have selected this candidate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_bypass: Option<bool>,
+    /// Exact cohort score used for ranking, never for acceptance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_score: Option<f64>,
+    /// Exact score minus the cohort incumbent's score.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_delta: Option<f64>,
+    /// Exact candidate rank (one-based, candidate id breaks ties).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_rank: Option<u64>,
     /// Promoted to full scoring by the screen.
     pub promoted: bool,
     /// Sent to full scoring by the exploratory bypass quota.
@@ -106,6 +124,9 @@ pub struct DiscardRecord {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenSummary {
+    /// Decisions are hypothetical and cannot exclude candidates from exact ranking.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub diagnostic_only: bool,
     /// Sample rate.
     pub sample_rate: f64,
     /// Sample phase.
@@ -136,10 +157,42 @@ pub struct FullSummary {
     pub scorer_ms: u64,
 }
 
+/// Exact ranking stage; absent from older journals and legacy iterations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RankingSummary {
+    /// Incumbent's exact score in the ranking call.
+    pub baseline_score: f64,
+    /// Candidates scored exactly (excludes the incumbent).
+    pub scored: u64,
+    /// Total creatures sent to the scorer, including the incumbent.
+    pub cohort_size: u64,
+    /// Hosted cohort or documented fallback, with reason.
+    pub execution: crate::scorer::CohortExecution,
+    /// Ranking scorer wall time (ms).
+    pub scorer_ms: u64,
+    /// Diagnostic screen promotes that did not clear the exact threshold.
+    pub screen_false_positives: u64,
+    /// Seeded diagnostic bypasses that cleared the exact threshold.
+    pub screen_false_negatives: u64,
+}
+
 /// One evolution iteration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExperimentRecord {
+    /// Resolved ranking policy (`legacy` or `exact`); absent in older journals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranking_mode: Option<String>,
+    /// Exact full-corpus ranking, separate from ordinary full verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranking: Option<RankingSummary>,
+    /// Ordinary winner/parent verification wall time, including a failed call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_ms: Option<u64>,
+    /// Complete promotion wall time, including cohort I/O and failed calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scoring_ms: Option<u64>,
     /// 1-based iteration.
     pub iteration: u64,
     /// Unix seconds.
@@ -195,6 +248,71 @@ pub struct ExperimentRecord {
     /// Scorer error, if the iteration failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scorer_error: Option<String>,
+}
+
+impl ExperimentRecord {
+    /// Record both promotion entry points with identical score semantics.
+    pub(crate) fn record_scoring(&mut self, outcome: &crate::promote::PromotionOutcome) {
+        self.verification_ms = outcome.verification_ms;
+        self.screen = outcome.screen.as_ref().map(|s| ScreenSummary {
+            diagnostic_only: outcome.ranking.is_some(),
+            sample_rate: s.rate,
+            sample_phase: s.phase,
+            baseline_score: s.baseline_score,
+            screened: (s.scores.len() - 1) as u64,
+            promoted: s.promoted.len() as u64,
+            bypass: s.bypass.len() as u64,
+            scorer_ms: s.scorer_ms,
+        });
+        self.ranking = outcome.ranking.as_ref().map(|r| RankingSummary {
+            baseline_score: r.baseline_score,
+            scored: (r.scores.len() - 1) as u64,
+            cohort_size: r.scores.len() as u64,
+            execution: r.execution.clone(),
+            scorer_ms: r.scorer_ms,
+            screen_false_positives: r.screen_false_positives,
+            screen_false_negatives: r.screen_false_negatives,
+        });
+        self.full = outcome.full.as_ref().map(|f| FullSummary {
+            baseline_score: f.baseline_score,
+            baseline_drift: f.baseline_drift,
+            scored: (f.scores.len() - 1) as u64,
+            scorer_ms: f.scorer_ms,
+        });
+        for c in &mut self.candidates {
+            if let Some(s) = &outcome.screen {
+                c.screen_score = s.scores.get(&c.id).map(|r| r.score);
+                c.screen_delta = c.screen_score.map(|score| score - s.baseline_score);
+                c.screen_rank = s.ranks.get(&c.id).copied();
+                if outcome.ranking.is_some() {
+                    c.screen_promoted = Some(s.promoted.contains(&c.id));
+                    c.screen_bypass = Some(s.bypass.contains(&c.id));
+                }
+                c.promoted = s.promoted.contains(&c.id);
+                c.bypass = s.bypass.contains(&c.id);
+            } else {
+                c.promoted = true;
+            }
+            if let Some(r) = &outcome.ranking {
+                c.exact_score = r.scores.get(&c.id).map(|s| s.score);
+                c.exact_delta = c.exact_score.map(|score| score - r.baseline_score);
+                c.exact_rank = r.ranks.get(&c.id).copied();
+                c.promoted = c.exact_rank == Some(1) && outcome.verification_ms.is_some();
+                c.bypass = false;
+            }
+            if let Some(f) = &outcome.full {
+                c.full_score = f.scores.get(&c.id).map(|r| r.score);
+                c.full_delta = c.full_score.map(|score| score - f.baseline_score);
+            }
+        }
+        self.screen_false_positives = outcome.false_positives;
+        self.screen_false_negatives = outcome.false_negatives;
+        self.scorer_error = outcome
+            .verification_error
+            .as_ref()
+            .map(ToString::to_string)
+            .or_else(|| outcome.veto.clone());
+    }
 }
 
 /// Run summary.
@@ -352,6 +470,10 @@ mod tests {
     #[test]
     fn discard_reasons_survive_the_journal() {
         let record = ExperimentRecord {
+            ranking_mode: None,
+            ranking: None,
+            verification_ms: None,
+            scoring_ms: None,
             iteration: 1,
             timestamp_unix: 1,
             incumbent_checksum: "abc".into(),

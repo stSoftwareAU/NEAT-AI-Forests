@@ -3,7 +3,7 @@
 //! ```text
 //! load + copy immutable incumbent → bin cache → authoritative baseline
 //!   ┌─▶ residuals → search set → histogram (GPU/CPU) → stumps / trees / oblique
-//!   │     → candidate population → screen → full-corpus promotion
+//!   │     → candidate population → legacy screen or exact cohort rank → verification
 //!   │     → accepted?  yes: promote clone to experimental incumbent, recompute
 //!   └─────────────────  residuals, journal;  no: journal and continue
 //! until timeout / max iterations / cancellation / repeated scorer failure
@@ -32,14 +32,13 @@ use crate::enhancements::EnhancementLog;
 use crate::histogram::{HistogramSet, search_stumps};
 use crate::incumbent::{Incumbent, load_incumbent, now_unix};
 use crate::journal::{
-    CandidateRecord, ExperimentRecord, FullSummary, JournalLine, ScreenSummary, SummaryRecord,
-    append_journal_line,
+    CandidateRecord, ExperimentRecord, JournalLine, SummaryRecord, append_journal_line,
 };
 use crate::log;
 use crate::meta::{CreatureMeta, Tag};
 use crate::oblique::{ObliqueControls, search_oblique};
 use crate::patch::Patch;
-use crate::promote::{PromoteConfig, screen_and_promote};
+use crate::promote::{PromoteConfig, resolve_exact_ranking, screen_and_promote};
 use crate::residuals::{ResidualCache, ensure_residual_cache};
 use crate::scorer::DirectoryScorer;
 use crate::strategies::{build_search_set, raw_sample};
@@ -198,8 +197,8 @@ fn refit_due(every: u64, stale: bool, visit: u64) -> bool {
 
 /// File this iteration's full-corpus verdicts in the shared cache (Issue #60).
 ///
-/// Only candidates a full scorer call actually judged are filed: a screen
-/// opinion is a ranking, not a verdict, and a graft refusal belongs to the
+/// Only candidates an ordinary full scorer call actually judged are filed:
+/// sampled and cohort-ranking opinions are not verdicts, and a graft refusal belongs to the
 /// creature rather than to the patch (see `crate::learnings`). `known` is
 /// extended with whatever was filed, so a later iteration of the same run does
 /// not file it again.
@@ -211,6 +210,9 @@ fn file_learnings(
     corpus: &CorpusInfo,
 ) {
     let Some(store) = store else { return };
+    if record.scorer_error.is_some() {
+        return;
+    }
     let verdicts: Vec<crate::learnings::Verdict<'_>> = record
         .candidates
         .iter()
@@ -283,6 +285,8 @@ pub fn run_forests(
 ) -> Result<RunResult, String> {
     cfg.validate()?;
     let started = Instant::now();
+    let exact_ranking =
+        resolve_exact_ranking(cfg.ranking_mode, scorer).map_err(|e| e.to_string())?;
     // Load before anything is written: a bad creature produces no output dir.
     let incumbent = load_incumbent(&cfg.creature).map_err(|e| e.to_string())?;
     let creature_cfg = TrainingDataConfig::new(incumbent.creature.input, incumbent.creature.output);
@@ -1040,6 +1044,10 @@ pub fn run_forests(
 
         // ---- score --------------------------------------------------------
         let mut record = ExperimentRecord {
+            ranking_mode: Some(if exact_ranking { "exact" } else { "legacy" }.into()),
+            ranking: None,
+            verification_ms: None,
+            scoring_ms: None,
             iteration: iterations,
             timestamp_unix: now_unix(),
             incumbent_checksum: state.incumbent.checksum.clone(),
@@ -1082,6 +1090,12 @@ pub fn run_forests(
                     ),
                     screen_score: None,
                     screen_delta: None,
+                    screen_rank: None,
+                    screen_promoted: None,
+                    screen_bypass: None,
+                    exact_score: None,
+                    exact_delta: None,
+                    exact_rank: None,
                     promoted: false,
                     bypass: false,
                     full_score: None,
@@ -1113,12 +1127,14 @@ pub fn run_forests(
         }
         // Frugal screen (#40): the screen exists to choose `promote_count`
         // candidates; when the cohort already fits, go straight to the full call.
-        let screen_rate = if candidates.len() <= cfg.promote_count {
+        let screen_rate = if !exact_ranking && candidates.len() <= cfg.promote_count {
             None
         } else {
             cfg.screen_sample_rate
         };
         let promote_cfg = PromoteConfig {
+            exact_ranking,
+            corpus_records: corpus.record_count,
             screen_sample_rate: screen_rate,
             screen_phase: iterations,
             screen_threshold: cfg.screen_threshold,
@@ -1130,6 +1146,7 @@ pub fn run_forests(
             preserve_dirs: cfg.preserve_candidates,
         };
         let work_dir = workspace.join(format!("iteration-{iterations:04}"));
+        let scoring_started = Instant::now();
         let outcome = match screen_and_promote(
             &candidates,
             &state.incumbent.creature,
@@ -1144,6 +1161,7 @@ pub fn run_forests(
                 scorer_failures += 1;
                 consecutive_failures += 1;
                 log::warn(&format!("scorer failure: {e}"));
+                record.scoring_ms = Some(scoring_started.elapsed().as_millis() as u64);
                 record.scorer_error = Some(e.to_string());
                 append_journal_line(&journal_path, &JournalLine::Experiment(Box::new(record)))?;
                 continue;
@@ -1152,49 +1170,18 @@ pub fn run_forests(
         if !cfg.preserve_candidates {
             let _ = std::fs::remove_dir_all(&work_dir);
         }
+        record.scoring_ms = Some(scoring_started.elapsed().as_millis() as u64);
+        record.record_scoring(&outcome);
+        if let Some(e) = &outcome.verification_error {
+            scorer_failures += 1;
+            consecutive_failures += 1;
+            log::warn(&format!("standalone verification failure: {e}"));
+            append_journal_line(&journal_path, &JournalLine::Experiment(Box::new(record)))?;
+            continue;
+        }
         consecutive_failures = 0;
-        if let Some(s) = &outcome.screen {
-            record.screen = Some(ScreenSummary {
-                sample_rate: s.rate,
-                sample_phase: s.phase,
-                baseline_score: s.baseline_score,
-                screened: (s.scores.len() - 1) as u64,
-                promoted: s.promoted.len() as u64,
-                bypass: s.bypass.len() as u64,
-                scorer_ms: s.scorer_ms,
-            });
-            for c in &mut record.candidates {
-                if let Some(r) = s.scores.get(&c.id) {
-                    c.screen_score = Some(r.score);
-                    c.screen_delta = Some(r.score - s.baseline_score);
-                }
-                c.promoted = s.promoted.contains(&c.id);
-                c.bypass = s.bypass.contains(&c.id);
-            }
-        } else {
-            for c in &mut record.candidates {
-                c.promoted = true;
-            }
-        }
-        if let Some(f) = &outcome.full {
-            record.full = Some(FullSummary {
-                baseline_score: f.baseline_score,
-                baseline_drift: f.baseline_drift,
-                scored: (f.scores.len() - 1) as u64,
-                scorer_ms: f.scorer_ms,
-            });
-            for c in &mut record.candidates {
-                if let Some(r) = f.scores.get(&c.id) {
-                    c.full_score = Some(r.score);
-                    c.full_delta = Some(r.score - f.baseline_score);
-                }
-            }
-        }
-        record.screen_false_positives = outcome.false_positives;
-        record.screen_false_negatives = outcome.false_negatives;
         if let Some(v) = &outcome.veto {
             log::warn(v);
-            record.scorer_error = Some(v.clone());
         }
         match (&outcome.winner, &outcome.full) {
             (Some((id, improvement)), Some(full)) => {
@@ -1372,6 +1359,7 @@ pub fn run_forests(
                 state.runner_ups = outcome
                     .full
                     .as_ref()
+                    .filter(|_| outcome.veto.is_none())
                     .map(|f| {
                         candidates
                             .iter()
@@ -1487,7 +1475,8 @@ pub fn print_run_summary(r: &RunResult) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::baseline::fake::LocalMseScorer;
+    use crate::baseline::fake::{CohortScorer, LocalMseScorer, Verification};
+    use crate::config::RankingMode;
     use crate::corpus::write_bin_file;
     use crate::graft::fixtures::identity_creature_json;
     use crate::journal::read_journal;
@@ -1530,6 +1519,191 @@ mod tests {
             ..Default::default()
         };
         (tmp, cfg)
+    }
+
+    #[test]
+    fn exact_loop_ranks_every_valid_candidate_but_files_only_verified_verdicts() {
+        let (tmp, mut cfg) = fixture();
+        cfg.ranking_mode = RankingMode::Exact;
+        cfg.max_iterations = Some(2);
+        cfg.learnings_dir = Some(tmp.path().join("learnings"));
+        cfg.learnings_host = Some("exact-test".into());
+        cfg.learnings_replay = 0;
+        let scorer = CohortScorer::default();
+        let result = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
+        assert!(result.acceptances > 0);
+        assert_eq!(scorer.probes.get(), 1);
+        let experiments = experiments_of(&result);
+        assert_eq!(scorer.cohorts.get(), experiments.len());
+        let mut ranked_only_positive = false;
+        for e in &experiments {
+            let ranking = e.ranking.as_ref().unwrap();
+            assert_eq!(e.ranking_mode.as_deref(), Some("exact"));
+            assert_eq!(ranking.scored, e.candidates.len() as u64);
+            assert_eq!(ranking.cohort_size, e.candidates.len() as u64 + 1);
+            assert!(
+                e.candidates
+                    .iter()
+                    .all(|c| c.exact_score.is_some() && c.exact_rank.is_some())
+            );
+            assert_eq!(
+                e.candidates
+                    .iter()
+                    .filter(|c| c.full_score.is_some())
+                    .count(),
+                1
+            );
+            assert!(e.screen.as_ref().unwrap().diagnostic_only);
+            let winner = e
+                .candidates
+                .iter()
+                .find(|c| Some(&c.id) == e.winner.as_ref())
+                .unwrap();
+            assert_eq!(winner.exact_rank, Some(1));
+            assert_eq!(winner.full_delta, e.improvement);
+            ranked_only_positive |= e.candidates.iter().any(|c| {
+                c.combo.is_empty()
+                    && c.exact_delta.is_some_and(|d| d > 0.0)
+                    && c.full_score.is_none()
+            });
+            assert!(
+                e.candidates
+                    .iter()
+                    .flat_map(|c| std::iter::once(&c.patch).chain(&c.combo))
+                    .all(|p| !p.provenance.strategy.starts_with("carry-forward:"))
+            );
+        }
+        assert!(
+            ranked_only_positive,
+            "fixture must offer positive ranking-only near-winners"
+        );
+        let corpus = corpus_info(&cfg.training_data, &TrainingDataConfig::new(3, 1)).unwrap();
+        let store = crate::learnings::LearningsStore::new(
+            cfg.learnings_dir.unwrap(),
+            crate::learnings::CorpusId::new(corpus.identity),
+            crate::learnings::HostName::new("exact-test"),
+        );
+        let filed = store.load().unwrap();
+        assert!(!filed.is_empty());
+        for learning in filed {
+            let experiment = experiments
+                .iter()
+                .find(|e| e.incumbent_checksum == learning.incumbent)
+                .unwrap();
+            let verified = experiment
+                .candidates
+                .iter()
+                .find(|c| c.id == learning.id)
+                .unwrap();
+            assert_eq!(verified.full_delta, Some(learning.delta));
+            assert_eq!(experiment.winner.as_deref(), Some(learning.id.as_str()));
+        }
+    }
+
+    #[test]
+    fn exact_loop_never_replaces_best_or_files_rankings_when_verification_fails() {
+        for verification in [
+            Verification::Failed,
+            Verification::Drift,
+            Verification::Regression,
+        ] {
+            let (tmp, mut cfg) = fixture();
+            cfg.ranking_mode = RankingMode::Exact;
+            cfg.max_iterations = Some(2);
+            cfg.max_consecutive_scorer_failures = 1;
+            cfg.learnings_dir = Some(tmp.path().join("learnings"));
+            cfg.learnings_host = Some("exact-test".into());
+            let original = std::fs::read(&cfg.creature).unwrap();
+            let scorer = CohortScorer {
+                verification,
+                ..Default::default()
+            };
+            let result = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
+            assert_eq!(result.acceptances, 0);
+            assert_eq!(std::fs::read(&result.best_path).unwrap(), original);
+            if matches!(verification, Verification::Regression) {
+                let corpus =
+                    corpus_info(&cfg.training_data, &TrainingDataConfig::new(3, 1)).unwrap();
+                let store = crate::learnings::LearningsStore::new(
+                    cfg.learnings_dir.clone().unwrap(),
+                    crate::learnings::CorpusId::new(corpus.identity),
+                    crate::learnings::HostName::new("exact-test"),
+                );
+                let filed = store.load().unwrap();
+                assert_eq!(filed.len(), result.iterations as usize);
+                assert!(
+                    filed
+                        .iter()
+                        .all(|l| l.outcome == crate::learnings::Outcome::Rejected && l.delta < 0.0)
+                );
+            } else {
+                assert!(!cfg.learnings_dir.as_ref().unwrap().exists());
+            }
+            let experiments = experiments_of(&result);
+            assert!(experiments[0].ranking.is_some());
+            assert!(experiments.iter().all(|e| !e.accepted));
+            assert!(
+                experiments
+                    .iter()
+                    .flat_map(|e| &e.candidates)
+                    .all(|c| !c.strategy.starts_with("carry-forward:"))
+            );
+            match verification {
+                Verification::Failed => {
+                    assert_eq!(result.stop_reason, StopReason::ScorerFailures);
+                    assert_eq!(result.scorer_failures, 1);
+                    assert!(
+                        experiments[0]
+                            .scorer_error
+                            .as_ref()
+                            .unwrap()
+                            .contains("verification fixture failure")
+                    );
+                    assert!(experiments[0].verification_ms.is_some());
+                    assert!(experiments[0].full.is_none());
+                }
+                Verification::Drift => assert!(
+                    experiments[0]
+                        .scorer_error
+                        .as_ref()
+                        .unwrap()
+                        .contains("disagrees")
+                ),
+                Verification::Regression => assert!(
+                    experiments[0]
+                        .candidates
+                        .iter()
+                        .any(|c| c.full_delta.is_some_and(|d| d < 0.0))
+                ),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn exact_request_with_an_older_scorer_runs_the_legacy_loop() {
+        let (_tmp, mut cfg) = fixture();
+        cfg.ranking_mode = RankingMode::Exact;
+        cfg.max_iterations = Some(2);
+        let scorer = CohortScorer {
+            supported: false,
+            ..Default::default()
+        };
+        let result = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
+        assert!(result.acceptances > 0);
+        assert_eq!(scorer.probes.get(), 1);
+        assert_eq!(scorer.cohorts.get(), 0);
+        let experiments = experiments_of(&result);
+        assert!(
+            experiments
+                .iter()
+                .all(|e| e.ranking_mode.as_deref() == Some("legacy") && e.ranking.is_none())
+        );
+        assert!(
+            experiments
+                .iter()
+                .any(|e| e.screen.as_ref().is_some_and(|s| !s.diagnostic_only))
+        );
     }
 
     /// Issue #56 — end to end under `--graft-constants per-patch`: the accepted

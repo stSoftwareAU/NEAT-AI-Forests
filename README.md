@@ -56,7 +56,8 @@ residual caches, CPU stump search,
 portable patches grafted as ordinary `IF` structure, two-phase screening with
 authoritative promotion, the 45-minute evolution loop and journal, depth-2/3
 trees, sampling and random "dirty tricks", oblique splits, the XGBoost external
-control, and the shared learnings cache. The phase table and the outstanding
+control, and the shared learnings cache. Exact cohort ranking is available as
+an opt-in experiment; legacy ranking remains the default pending the production A/B. The phase table and the outstanding
 work are at the bottom of this file.
 
 One shared-family prerequisite is still open upstream:
@@ -251,14 +252,15 @@ experiment back on the table.
 | `--refit-steps` | `0.25,0.5,1.0` | step multipliers tried on the refit's least-squares step |
 | `--refit-ridges` | `1.0,0.1` | ridge strengths tried, relative to each leaf's curvature |
 | `--boost-rounds` | `1` | boosting rounds on the sample: subtract the best patch, search again; bundle prefixes verified in one scorer call |
-| `--combo-candidates` | `4` | combinations: top-2…top-N distinct discoveries stacked on one clone, plus last iteration's near-winners carried forward |
+| `--combo-candidates` | `4` | combinations: top-2…top-N distinct discoveries stacked on one clone, plus ordinary full-scored positive near-winners carried forward; cohort rankings alone are not carried |
 | `--candidates` | `64` | maximum grafted candidates per iteration |
 | `--graft-constants` | `shared` | who owns a graft's three bias-1 constants: `shared` (one set per creature) or `per-patch` (`forest-<patch id>-one-c/p/n`, three extra constant neurons per patch, blast radius of one patch) |
 | `--if-correction` | `typed-pair` | how a correction reaches both branches of an `IF` anchor: `typed-pair` (one source feeding both roles — a neuron cheaper, and what every engine agrees on from @stsoftware/neat-ai 6.6.40 and a `rust_scorer` built against neat-core 0.10.6) or `relay` (an IDENTITY neuron per graft, for creatures that must load under an older engine) |
-| `--screen-sample-rate` | `0.05` | scorer sample rate for the screen; 0 disables; skipped automatically when the cohort already fits `--promote-count` |
+| `--ranking-mode` | `legacy` | `legacy` screen/promotion or `exact` full-corpus cohort ranking followed by ordinary winner/parent verification; older scorers fall back to legacy |
+| `--screen-sample-rate` | `0.05` | sample rate; 0 disables; legacy skips it when the cohort fits `--promote-count`; exact uses it for diagnostics when `--explore-quota` is positive |
 | `--screen-threshold` | `0` | sampled Δ required to promote |
-| `--promote-count` | `8` | candidates promoted to full scoring |
-| `--explore-quota` | `1` | screen rejects fully scored to measure false negatives |
+| `--promote-count` | `8` | legacy full-scoring cap; hypothetical screen promotion cap in exact mode |
+| `--explore-quota` | `1` | legacy rejects bypassing the screen; in exact mode enables diagnostic screening and selects seeded rejects for comparison against exact scores; 0 disables those diagnostics |
 | `--baseline-drift-epsilon` | `1e-6` | tolerated same-call vs stored baseline disagreement |
 | `--skip-parity` | off | skip the local-MSE vs scorer parity gate (non-MSE costs) |
 | `--parity-abs` / `--parity-rel` | `1e-7` / `1e-4` | parity tolerances |
@@ -271,8 +273,9 @@ experiment back on the table.
 | `--learnings-retry-after-hours` | `168` | how long a candidate that only ever failed is left alone before it is offered again |
 
 `--help` and `--version` are the usual clap extras. The scorer's own
-`--sample-rate`, `--sample-phase`, `--gpu` and `--cost` flags are passed by
-Forests, not by you.
+`--cohort`, `--sample-rate` and `--sample-phase` flags are controlled by
+Forests; supplying them through `--scorer-arg` is refused. Use `--scorer-arg`
+for backend and cost settings such as `--gpu=off` or `--cost=MSE`.
 
 ---
 
@@ -284,8 +287,8 @@ Forests, not by you.
 4. **Baseline** — score the incumbent alone with the full-corpus scorer; compare its `error` with the local MSE (parity gate, fail closed); journal the result.
 5. **Search** — build the quantised search set (sampled rows/features as configured), accumulate per-feature histograms, rank stumps; optionally grow depth-2/3 trees and oblique splits.
 6. **Candidates** — expand discoveries into patches (analytical optimum, one-sided variants, magnitude scales, threshold jitter, random controls), graft each onto a clone, discard anything NEAT-AI-core rejects — including anything `neat_core::creature_validate` rules invalid, with the reason journalled (see [docs/architecture.md](docs/architecture.md#creature-validation)).
-7. **Screen** — the scorer's record-sampling mode ranks the cohort; the top `--promote-count` plus an exploratory bypass quota go on.
-8. **Promote** — full-corpus scorer call with the baseline in the same cohort; accept only `Δscore > --min-improvement` and only if the same-call baseline matches the stored one.
+7. **Rank** — legacy mode screens the cohort and sends the top `--promote-count` plus seeded bypasses on. With `--ranking-mode exact` and a supporting scorer, every candidate surviving generation and graft validation enters one full-corpus cohort call, including combinations and refits. Scores sort descending, with candidate id breaking ties. The optional sample comparison records what the legacy screen would do and excludes nobody from ranking.
+8. **Verify** — exact mode re-scores the highest-ranked candidate whose exact delta clears the threshold together with its parent in a separate ordinary full-corpus call, without cohort mode or sampling. Legacy mode fully scores its promotion cohort with the parent. Both accept only `Δscore > --min-improvement` against the same-call parent and only if that parent matches the stored baseline. Incomplete or malformed results fail closed.
 9. **Repeat** — a winner becomes the experimental incumbent, `best.json` and `winners/winner-NNNN.json` are written, residuals are recomputed, and the loop continues until the budget ends.
 
 ---
@@ -384,9 +387,10 @@ run that accepted nothing and a negative delta is reported rather than hidden.
 - `runHeader` — timestamp, seed + source, version, incumbent checksum, corpus identity, bin-cache identity, the complete effective configuration.
 - `baseline` — authoritative score/error, scorer identity, cost name, parity verdict (written at start and after every acceptance).
 - `experiment` — per iteration: search backend/set/records/features/strategies, timings, every candidate's patch + provenance, its **screen** score and its **full** score recorded separately, promotion/bypass flags, winner, improvement, acceptance, new incumbent checksum, screen false-positive/false-negative counts, scorer error or baseline veto, and `discarded` — every rejected candidate with the verbatim graft/validation reason.
+- Exact iterations additionally record `rankingMode`, `ranking` (baseline, candidate count, cohort size, hosted/fallback execution and reason, timing, diagnostic FP/FN), `verificationMs` and total `scoringMs`. Candidates carry `exactScore`, `exactDelta`, `exactRank`, `screenRank`, `screenPromoted` and `screenBypass` where measured. `fullScore` / `fullDelta` retain ordinary full-verification meanings; ranking-only candidates have neither. A diagnostic screen is marked `diagnosticOnly`. Older journals without these fields still read.
 - `summary` — stop reason, iterations, acceptances, opening/final score, wall time.
 
-`neat_ai_forests report` folds the journal into the economics metrics: cumulative improvement, **improvement per wall-clock hour**, time to first acceptance, candidates per minute, search vs scorer time, screen false-positive/negative rates, and per-strategy / per-backend / per-depth winner counts and accepted gain. `scripts/report-experiments.sh` compares several journals side by side, and groups runs by their randomly drawn family arms (`forests-arms`, #147).
+`neat_ai_forests report` folds the journal into the economics metrics: cumulative improvement, **improvement per wall-clock hour**, time to first acceptance, candidates per minute, search vs scorer time, screen false-positive/negative rates, and per-strategy / per-backend / per-depth winner counts and accepted gain. It also emits `rankComparisons` rows (exact rank versus hypothetical screen rank), `exactCandidatesPerIteration` (cohort candidates, or legacy full-scored candidates), separate ranking/verification times and a wall split. `verificationScorerMs` is included in `fullScorerMs`; do not add it twice. `scripts/report-experiments.sh` compares several journals side by side, and groups runs by their randomly drawn family arms (`forests-arms`, #147).
 
 ---
 
@@ -463,7 +467,9 @@ flowchart TD
     OTHER --> PATCH
 
     PATCH --> GRAFT["graft each patch onto a clone"]
-    GRAFT --> SCREEN{"cheap screen\noptional / non-authoritative"}
+    GRAFT -- "legacy" --> SCREEN{"cheap screen\noptional / non-authoritative"}
+    GRAFT -- "exact + supported" --> RANK["full-corpus cohort ranking"]
+    RANK -- "top eligible candidate" --> FULL
 
     SCREEN -- "unlikely" --> DROP["discard"]
     SCREEN -- "interesting" --> FULL{"NEAT-AI-scorer\nfull canonical corpus"}
@@ -481,7 +487,7 @@ flowchart TD
     classDef reject fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
 
     class FIT,RES creature
-    class HIST,SAMPLE,OTHER,SCREEN,FULL search
+    class HIST,SAMPLE,OTHER,SCREEN,RANK,FULL search
     class PATCH,GRAFT,REPEAT candidate
     class WIN win
     class DROP,DROP2 reject
@@ -628,7 +634,7 @@ flowchart LR
     RES["residuals → shallow tree → add"] --> L1["gradient boosting<br/>Friedman 2001 · GrowNet 2020"]
     SPLIT["split search"] --> L2["histogram / oblique splits<br/>XGBoost 2016 · OC1 1994 · Breiman 2001"]
     GRAFT["patch → native IF structure"] --> L3["automated software transplantation<br/>Barr 2015 · genetic improvement 2018"]
-    SCREEN["sampled screen → full score"] --> L4["racing<br/>Hoeffding 1994 · F-Race 2002 · Hyperband 2017"]
+    SCREEN["legacy sampled screen → full score"] --> L4["racing<br/>Hoeffding 1994 · F-Race 2002 · Hyperband 2017"]
     CACHE["shared learnings cache"] --> L5["memory-based search<br/>tabu 1986 · adaptive operator selection 2010"]
     ACCEPT["accept on the same corpus, every time"] --> L6["adaptive data analysis<br/>Dwork 2015 · Blum &amp; Hardt 2015"]
 
@@ -683,6 +689,9 @@ gate — structurally the same contract as "graft onto a clone, let the scorer
 decide". Citing it bounds the claim: the novelty is real, and it is narrow.
 
 ### Two-phase screening is racing
+
+This describes the legacy path. Exact cohort ranking measures the full corpus
+for each generated candidate before selecting one for ordinary verification.
 
 Running every candidate on a cheap sample, dropping what the sample can resolve
 as a loser, and spending the expensive evaluation only on survivors is
@@ -788,7 +797,7 @@ NEAT-AI-Forests/
 │   │   ├── meta.rs            # creature tag preservation
 │   │   ├── oblique.rs         # multi-feature linear splits (#14)
 │   │   ├── patch.rs           # portable patch format + evaluator (#7)
-│   │   ├── promote.rs         # screen + authoritative promotion (#9)
+│   │   ├── promote.rs         # legacy screen / exact rank + authoritative verification
 │   │   ├── refine.rs          # read trees back + refine their leaves (#140)
 │   │   ├── refit.rs           # joint ridge refit of every leaf (#137)
 │   │   ├── report.rs          # journal economics report (#15)
@@ -799,7 +808,7 @@ NEAT-AI-Forests/
 │   │   ├── tools.rs           # export-matrix / import-xgboost (#13)
 │   │   ├── tree.rs            # depth-2/3 growth (#11)
 │   │   └── xgboost.rs         # XGBoost dump conversion (#13)
-│   ├── examples/stump_search_bench.rs
+│   ├── examples/               # stump_search_bench.rs and cohort_ranking_bench.rs
 │   └── tests/                 # README contract, real-scorer integration
 ├── docs/                      # architecture, caches, patch format, strategies, xgboost control, benchmarks, learnings cache
 │   └── archive/pr-summaries/  # one summary per merged PR

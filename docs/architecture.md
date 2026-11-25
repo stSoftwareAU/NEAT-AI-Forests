@@ -25,7 +25,7 @@ flowchart LR
     TR --> CA
     OB --> CA
     CA --> G[graft<br/>patch → IF on a clone]
-    G --> P[promote<br/>screen → full scorer]
+    G --> P[promote<br/>legacy screen/full or exact rank/verify]
     B --> P
     P -->|accepted| W[best.json + winners/]
     P -->|accepted, --enhancements| E[enhancements<br/>patch → v1 bundle for Rebase]
@@ -56,11 +56,33 @@ flowchart LR
 | `patch` | portable `Leaf` / `Split(Condition{terms, threshold})` tree, `f32` evaluator mirroring the `IF` kernel, provenance, content id | — |
 | `graft` | patch → canonical `neat_core::IfNodeSpec` per node, the whole batch built by `neat_core::graft_if_nodes` (plus `graft_relay_node` for an `IF` output) onto a clone in canonical order; NEAT-AI-core compile, structural validation and `creature_validate` | NEAT-AI-core |
 | `candidates` | analytical optimum, one-sided variants, magnitude scales, threshold jitter, random stumps; dedup + cap + graft | — |
-| `promote` | screen (scorer sample mode) → full-corpus cohort with baseline; strict threshold; same-call baseline drift veto; FP/FN bookkeeping | **scorer** |
+| `promote` | legacy screen → full scoring, or exact cohort ranking → ordinary winner/parent full verification; strict threshold and same-call baseline drift veto; diagnostic screen comparisons | **scorer** |
 | `run` | the loop, outputs, journal, promotion of winners, residual recomputation | — |
 | `enhancements` | `--enhancements` only: each accepted patch filed as a v1 Rebase enhancement, stamped with the opening creature's checksum, score, corpus and widths; the bundle written beside `best.json` | NEAT-AI-Rebase |
 | `journal`, `report` | append-only JSONL; economics aggregation | — |
 | `xgboost`, `tools` | matrix export, dump → patch conversion with exact `>=` mapping, control run through `promote` | **scorer** |
+
+## Exact ranking and acceptance
+
+With `--ranking-mode exact`, capability is probed once per run. An older scorer
+uses the legacy path. A supporting scorer ranks the incumbent and the whole
+valid generated cohort together on the canonical corpus. Its hosted/fallback
+note is recorded; a documented directory fallback still produces exact ranks.
+The top candidate whose ranking delta exceeds the improvement threshold reaches
+ordinary full verification. Only that ordinary result can update `best.json`,
+file a learning or supply positive combination carry-forward material.
+
+```mermaid
+flowchart LR
+    V[Valid generated candidates and parent] --> R[Full-corpus cohort ranking]
+    V --> D[Optional diagnostic sample]
+    D --> J[Hypothetical ranks and seeded bypass journal]
+    R --> E[Highest-ranked eligible candidate]
+    E --> F[Ordinary full-corpus candidate and parent call]
+    F --> G{Threshold and baseline agreement}
+    G -->|pass| B[Update best and file verified verdict]
+    G -->|fail| N[No acceptance]
+```
 
 ## Creature validation
 

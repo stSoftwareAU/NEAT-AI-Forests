@@ -161,12 +161,16 @@ pub fn establish_baseline(
 
 /// In-process fake scorers for tests.
 pub mod fake {
+    #[cfg(test)]
+    use std::cell::Cell;
     use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::path::Path;
 
     use neat_core::training_data::TrainingDataConfig;
 
+    #[cfg(test)]
+    use crate::scorer::{CohortExecution, CohortScores};
     use crate::scorer::{DirectoryScorer, ScoreResult, ScorerError, ScorerMode};
 
     /// Scores every creature with a real forward pass (MSE over the corpus),
@@ -174,6 +178,9 @@ pub mod fake {
     /// Records every call so tests can inspect modes.
     #[derive(Default)]
     pub struct LocalMseScorer {
+        /// Simulate a binary advertising cohort support; scores use real local inference.
+        #[cfg(test)]
+        pub cohort_supported: bool,
         /// Calls made: (mode label, creature stems).
         pub calls: RefCell<Vec<(String, Vec<String>)>>,
         /// When set, every call fails with this message.
@@ -192,6 +199,30 @@ pub mod fake {
     }
 
     impl DirectoryScorer for LocalMseScorer {
+        #[cfg(test)]
+        fn supports_cohort(&self) -> Result<bool, ScorerError> {
+            Ok(self.cohort_supported)
+        }
+
+        #[cfg(test)]
+        fn score_cohort(&self, dir: &Path, training: &Path) -> Result<CohortScores, ScorerError> {
+            if !self.cohort_supported {
+                return Err(ScorerError::UnsupportedCohort);
+            }
+            let before = self.calls.borrow().len();
+            let scores = self.score_directory(dir, training, ScorerMode::Full)?;
+            let mut calls = self.calls.borrow_mut();
+            if calls.len() == before {
+                calls.push(("cohort".into(), scores.keys().cloned().collect()));
+            } else {
+                calls.last_mut().unwrap().0 = "cohort".into();
+            }
+            Ok(CohortScores {
+                scores,
+                execution: CohortExecution::Hosted,
+            })
+        }
+
         fn score_directory(
             &self,
             creature_dir: &Path,
@@ -291,6 +322,124 @@ pub mod fake {
 
         fn identity(&self) -> String {
             "fake:local-mse".into()
+        }
+    }
+
+    /// Faults confined to the ordinary verification after a successful cohort.
+    #[cfg(test)]
+    #[derive(Default, Clone, Copy)]
+    pub(crate) enum Verification {
+        #[default]
+        Normal,
+        Failed,
+        Drift,
+        Regression,
+        MissingCandidate,
+        Sampled,
+        WrongCount,
+    }
+
+    /// Shared integration seam: real local inference with controlled verification faults.
+    #[cfg(test)]
+    pub(crate) struct CohortScorer {
+        pub(crate) local: LocalMseScorer,
+        pub(crate) supported: bool,
+        pub(crate) probes: Cell<usize>,
+        pub(crate) cohorts: Cell<usize>,
+        pub(crate) verification: Verification,
+        pub(crate) fallback_reason: Option<String>,
+    }
+
+    #[cfg(test)]
+    impl Default for CohortScorer {
+        fn default() -> Self {
+            Self {
+                local: LocalMseScorer {
+                    cohort_supported: true,
+                    ..Default::default()
+                },
+                supported: true,
+                probes: Cell::new(0),
+                cohorts: Cell::new(0),
+                verification: Verification::Normal,
+                fallback_reason: None,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    impl DirectoryScorer for CohortScorer {
+        fn supports_cohort(&self) -> Result<bool, ScorerError> {
+            self.probes.set(self.probes.get() + 1);
+            Ok(self.supported)
+        }
+
+        fn score_cohort(&self, dir: &Path, training: &Path) -> Result<CohortScores, ScorerError> {
+            self.cohorts.set(self.cohorts.get() + 1);
+            let mut result = self.local.score_cohort(dir, training)?;
+            if let Some(reason) = &self.fallback_reason {
+                result.execution = CohortExecution::DirectoryFallback {
+                    reason: reason.clone(),
+                };
+            }
+            Ok(result)
+        }
+
+        fn score_directory(
+            &self,
+            dir: &Path,
+            training: &Path,
+            mode: ScorerMode,
+        ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
+            let mut scores = self.local.score_directory(dir, training, mode)?;
+            if mode == ScorerMode::Full && self.cohorts.get() > 0 && scores.len() > 1 {
+                match self.verification {
+                    Verification::Normal => {}
+                    Verification::Failed => {
+                        return Err(ScorerError::Failed {
+                            status: "exit 1".into(),
+                            stderr: "verification fixture failure".into(),
+                        });
+                    }
+                    Verification::Drift => {
+                        let base = scores.get_mut("baseline").unwrap();
+                        base.score -= 0.1;
+                        base.error += 0.1;
+                    }
+                    Verification::Regression => {
+                        let base = scores["baseline"].score;
+                        for (id, result) in &mut scores {
+                            if id != "baseline" {
+                                result.score = base - 0.01;
+                                result.error = 1.0 - result.score - result.complexity_penalty;
+                            }
+                        }
+                    }
+                    Verification::MissingCandidate => {
+                        let id = scores
+                            .keys()
+                            .find(|id| id.as_str() != "baseline")
+                            .unwrap()
+                            .clone();
+                        scores.remove(&id);
+                    }
+                    Verification::Sampled => {
+                        for result in scores.values_mut() {
+                            result.sample_rate = Some(0.05);
+                        }
+                    }
+                    Verification::WrongCount => {
+                        for result in scores.values_mut() {
+                            result.record_count -= 1;
+                        }
+                    }
+                }
+            }
+            Ok(scores)
+        }
+
+        fn identity(&self) -> String {
+            self.local.identity()
         }
     }
 }

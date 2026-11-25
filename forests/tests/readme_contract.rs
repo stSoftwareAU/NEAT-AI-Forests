@@ -79,6 +79,7 @@ fn long_flags(text: &str) -> BTreeSet<String> {
 const FOREIGN_FLAGS: &[&str] = &[
     "--sample-rate",
     "--sample-phase",
+    "--cohort",
     "--cost",
     "--release",
     "--features",

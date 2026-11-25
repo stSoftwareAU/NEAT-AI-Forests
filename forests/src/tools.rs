@@ -1,6 +1,7 @@
 //! Auxiliary subcommands: matrix export and XGBoost import (Issue #13).
 
 use std::path::Path;
+use std::time::Instant;
 
 use neat_core::training_data::TrainingDataConfig;
 use rand::SeedableRng;
@@ -11,11 +12,9 @@ use crate::candidates::{CandidateConfig, generate_candidates};
 use crate::config::ForestsConfig;
 use crate::corpus::corpus_info;
 use crate::incumbent::{load_incumbent, now_unix};
-use crate::journal::{
-    CandidateRecord, ExperimentRecord, FullSummary, JournalLine, ScreenSummary, append_journal_line,
-};
+use crate::journal::{CandidateRecord, ExperimentRecord, JournalLine, append_journal_line};
 use crate::log;
-use crate::promote::{PromoteConfig, screen_and_promote};
+use crate::promote::{PromoteConfig, resolve_exact_ranking, screen_and_promote};
 use crate::residuals::ensure_residual_cache;
 use crate::scorer::DirectoryScorer;
 use crate::xgboost::{convert_dump, export_matrix as export_csv, parse_dump};
@@ -64,8 +63,8 @@ pub fn export_matrix(
 /// `import-xgboost`: convert dumped trees and judge them with the scorer.
 ///
 /// Writes `experiments.jsonl` (one experiment line) and, when a converted tree
-/// wins, `best.json` — through exactly the same screen → full path as native
-/// candidates.
+/// wins, `best.json` — through the same ranking and ordinary full verification
+/// policies as native candidates.
 pub fn import_xgboost(
     cfg: &ForestsConfig,
     scorer: &dyn DirectoryScorer,
@@ -73,6 +72,9 @@ pub fn import_xgboost(
     output: usize,
     allow_missing_divergence: bool,
 ) -> Result<(), String> {
+    cfg.validate()?;
+    let exact_ranking =
+        resolve_exact_ranking(cfg.ranking_mode, scorer).map_err(|e| e.to_string())?;
     let incumbent = load_incumbent(&cfg.creature).map_err(|e| e.to_string())?;
     let tcfg = TrainingDataConfig::new(incumbent.creature.input, incumbent.creature.output);
     let corpus = corpus_info(&cfg.training_data, &tcfg)?;
@@ -128,6 +130,8 @@ pub fn import_xgboost(
     }
     let mut rng = StdRng::seed_from_u64(cfg.seed.unwrap_or(0));
     let promote = PromoteConfig {
+        exact_ranking,
+        corpus_records: corpus.record_count,
         screen_sample_rate: cfg.screen_sample_rate,
         screen_phase: 0,
         screen_threshold: cfg.screen_threshold,
@@ -138,7 +142,8 @@ pub fn import_xgboost(
         baseline_drift_epsilon: cfg.baseline_drift_epsilon,
         preserve_dirs: cfg.preserve_candidates,
     };
-    let outcome = screen_and_promote(
+    let scoring_started = Instant::now();
+    let outcome_result = screen_and_promote(
         &candidates,
         &incumbent.creature,
         &cfg.training_data,
@@ -146,9 +151,13 @@ pub fn import_xgboost(
         &workspace.join("xgboost"),
         &promote,
         &mut rng,
-    )
-    .map_err(|e| e.to_string())?;
+    );
+    let scoring_ms = scoring_started.elapsed().as_millis() as u64;
     let mut record = ExperimentRecord {
+        ranking_mode: Some(if exact_ranking { "exact" } else { "legacy" }.into()),
+        ranking: None,
+        verification_ms: None,
+        scoring_ms: Some(scoring_ms),
         iteration: 1,
         timestamp_unix: now_unix(),
         incumbent_checksum: incumbent.checksum.clone(),
@@ -181,59 +190,48 @@ pub fn import_xgboost(
                 predicted_gain: 0.0,
                 affected_records: 0,
                 affected_fraction: 0.0,
-                screen_score: outcome
-                    .screen
-                    .as_ref()
-                    .and_then(|s| s.scores.get(&c.id))
-                    .map(|r| r.score),
-                screen_delta: outcome
-                    .screen
-                    .as_ref()
-                    .and_then(|s| s.scores.get(&c.id).map(|r| r.score - s.baseline_score)),
-                promoted: outcome
-                    .screen
-                    .as_ref()
-                    .is_none_or(|s| s.promoted.contains(&c.id)),
-                bypass: outcome
-                    .screen
-                    .as_ref()
-                    .is_some_and(|s| s.bypass.contains(&c.id)),
-                full_score: outcome
-                    .full
-                    .as_ref()
-                    .and_then(|f| f.scores.get(&c.id))
-                    .map(|r| r.score),
-                full_delta: outcome
-                    .full
-                    .as_ref()
-                    .and_then(|f| f.scores.get(&c.id).map(|r| r.score - f.baseline_score)),
+                screen_score: None,
+                screen_delta: None,
+                screen_rank: None,
+                screen_promoted: None,
+                screen_bypass: None,
+                exact_score: None,
+                exact_delta: None,
+                exact_rank: None,
+                promoted: false,
+                bypass: false,
+                full_score: None,
+                full_delta: None,
                 patch: c.patch.clone(),
                 combo: c.combo.clone(),
             })
             .collect(),
-        screen: outcome.screen.as_ref().map(|s| ScreenSummary {
-            sample_rate: s.rate,
-            sample_phase: s.phase,
-            baseline_score: s.baseline_score,
-            screened: (s.scores.len() - 1) as u64,
-            promoted: s.promoted.len() as u64,
-            bypass: s.bypass.len() as u64,
-            scorer_ms: s.scorer_ms,
-        }),
-        full: outcome.full.as_ref().map(|f| FullSummary {
-            baseline_score: f.baseline_score,
-            baseline_drift: f.baseline_drift,
-            scored: (f.scores.len() - 1) as u64,
-            scorer_ms: f.scorer_ms,
-        }),
-        winner: outcome.winner.as_ref().map(|w| w.0.clone()),
-        improvement: outcome.winner.as_ref().map(|w| w.1),
-        accepted: outcome.winner.is_some(),
+        screen: None,
+        full: None,
+        winner: None,
+        improvement: None,
+        accepted: false,
         new_incumbent_checksum: None,
-        screen_false_positives: outcome.false_positives,
-        screen_false_negatives: outcome.false_negatives,
-        scorer_error: outcome.veto.clone(),
+        screen_false_positives: 0,
+        screen_false_negatives: 0,
+        scorer_error: None,
     };
+    let outcome = match outcome_result {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            record.scorer_error = Some(e.to_string());
+            append_journal_line(&journal, &JournalLine::Experiment(Box::new(record)))?;
+            return Err(e.to_string());
+        }
+    };
+    record.record_scoring(&outcome);
+    if let Some(e) = &outcome.verification_error {
+        append_journal_line(&journal, &JournalLine::Experiment(Box::new(record)))?;
+        return Err(e.to_string());
+    }
+    record.winner = outcome.winner.as_ref().map(|w| w.0.clone());
+    record.improvement = outcome.winner.as_ref().map(|w| w.1);
+    record.accepted = outcome.winner.is_some();
     if let Some((id, delta)) = &outcome.winner {
         let winner = candidates.iter().find(|c| &c.id == id).unwrap();
         let text =
@@ -252,4 +250,205 @@ pub fn import_xgboost(
     }
     append_journal_line(&journal, &JournalLine::Experiment(Box::new(record)))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::baseline::fake::{CohortScorer, Verification};
+    use crate::config::RankingMode;
+    use crate::corpus::write_bin_file;
+    use crate::graft::fixtures::identity_creature_json;
+    use crate::journal::read_journal;
+
+    fn fixture() -> (tempfile::TempDir, ForestsConfig, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let train = tmp.path().join("train");
+        std::fs::create_dir_all(&train).unwrap();
+        let records: Vec<_> = (0..400)
+            .map(|i| {
+                let x = if i % 2 == 0 { 1.0 } else { -1.0 };
+                (vec![0.2, x], vec![0.2 + if x > 0.0 { 0.3 } else { 0.0 }])
+            })
+            .collect();
+        write_bin_file(&train.join("0.bin"), &records).unwrap();
+        let creature = tmp.path().join("creature.json");
+        std::fs::write(&creature, identity_creature_json(2, 1)).unwrap();
+        let dump = tmp.path().join("dump.json");
+        std::fs::write(
+            &dump,
+            r#"[
+            {"nodeid":0,"split":"f1","split_condition":0.0,"yes":1,"no":2,"missing":1,
+             "children":[{"nodeid":1,"leaf":0.0},{"nodeid":2,"leaf":0.3}]},
+            {"nodeid":0,"split":"f1","split_condition":0.0,"yes":1,"no":2,"missing":1,
+             "children":[{"nodeid":1,"leaf":0.0},{"nodeid":2,"leaf":-0.3}]}
+        ]"#,
+        )
+        .unwrap();
+        let cfg = ForestsConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            ranking_mode: RankingMode::Exact,
+            seed: Some(1),
+            screen_sample_rate: Some(0.5),
+            promote_count: 1,
+            ..Default::default()
+        };
+        (tmp, cfg, dump)
+    }
+
+    #[test]
+    fn xgboost_import_ranks_every_valid_tree_and_verifies_only_the_exact_winner() {
+        let (_tmp, cfg, dump) = fixture();
+        let scorer = CohortScorer::default();
+        import_xgboost(&cfg, &scorer, &dump, 0, false).unwrap();
+        assert_eq!(scorer.probes.get(), 1);
+        assert_eq!(scorer.cohorts.get(), 1);
+        let lines = read_journal(&cfg.output_dir.join("experiments.jsonl")).unwrap();
+        let JournalLine::Experiment(e) = lines.last().unwrap() else {
+            panic!("experiment")
+        };
+        assert_eq!(e.ranking.as_ref().unwrap().scored, 2);
+        assert_eq!(e.ranking.as_ref().unwrap().cohort_size, 3);
+        assert_eq!(e.full.as_ref().unwrap().scored, 1);
+        assert!(e.screen.as_ref().unwrap().diagnostic_only);
+        assert!(e.accepted);
+        let winner = e
+            .candidates
+            .iter()
+            .find(|c| Some(&c.id) == e.winner.as_ref())
+            .unwrap();
+        assert_eq!(winner.exact_rank, Some(1));
+        assert_eq!(winner.full_delta, e.improvement);
+        let best = crate::incumbent::load_incumbent(&cfg.output_dir.join("best.json")).unwrap();
+        let original = crate::incumbent::load_incumbent(&cfg.creature).unwrap();
+        assert!(best.creature.neurons.len() > original.creature.neurons.len());
+    }
+
+    #[test]
+    fn diagnostic_screen_decisions_survive_the_import_journal_and_report() {
+        let (_tmp, mut cfg, dump) = fixture();
+        cfg.screen_sample_rate = Some(0.2);
+        cfg.promote_count = 2;
+        cfg.explore_quota = 1;
+
+        // Every fifth record asks for +0.2, but the full-corpus mean is -0.2.
+        // The sampled top two both regress. The sole bypass is the exact winner.
+        let records: Vec<_> = (0..400)
+            .map(|i| {
+                let residual = if i % 5 == 0 { 0.2 } else { -0.3 };
+                (vec![0.2, 1.0], vec![0.2 + residual])
+            })
+            .collect();
+        write_bin_file(&cfg.training_data.join("0.bin"), &records).unwrap();
+        let trees: Vec<_> = [0.2, 0.1, -0.2]
+            .into_iter()
+            .map(|leaf| {
+                serde_json::json!({
+                    "nodeid": 0, "split": "f1", "split_condition": 0.0,
+                    "yes": 1, "no": 2, "missing": 1,
+                    "children": [{"nodeid": 1, "leaf": 0.0}, {"nodeid": 2, "leaf": leaf}]
+                })
+            })
+            .collect();
+        std::fs::write(&dump, serde_json::to_vec(&trees).unwrap()).unwrap();
+
+        import_xgboost(&cfg, &CohortScorer::default(), &dump, 0, false).unwrap();
+        let lines = read_journal(&cfg.output_dir.join("experiments.jsonl")).unwrap();
+        let JournalLine::Experiment(e) = lines.last().unwrap() else {
+            panic!("expected an import experiment")
+        };
+        let ranking = e.ranking.as_ref().unwrap();
+        assert_eq!(ranking.screen_false_positives, 2);
+        assert_eq!(ranking.screen_false_negatives, 1);
+        let report = crate::report::report_from_lines(&lines);
+        assert_eq!(report.diagnostic_screen_false_positives, 2);
+        assert_eq!(report.diagnostic_screen_false_negatives, 1);
+        assert_eq!(report.rank_comparisons.len(), 3);
+        assert_eq!(e.candidates.len(), 3);
+        for (leaf, screen_rank, exact_rank, promoted, bypass) in [
+            (0.2, 1, 3, true, false),
+            (0.1, 2, 2, true, false),
+            (-0.2, 3, 1, false, true),
+        ] {
+            let c = e
+                .candidates
+                .iter()
+                .find(|c| (c.patch.evaluate(&[0.2, 1.0]) - leaf).abs() < 1e-6)
+                .unwrap();
+            assert_eq!(c.screen_rank, Some(screen_rank));
+            assert_eq!(c.exact_rank, Some(exact_rank));
+            assert_eq!(c.screen_promoted, Some(promoted));
+            assert_eq!(c.screen_bypass, Some(bypass));
+            let row = report
+                .rank_comparisons
+                .iter()
+                .find(|r| r.id == c.id)
+                .unwrap();
+            assert_eq!(row.screen_rank, Some(screen_rank));
+            assert_eq!(row.exact_rank, exact_rank);
+            assert_eq!(row.screen_promoted, Some(promoted));
+            assert_eq!(row.screen_bypass, Some(bypass));
+        }
+    }
+
+    #[test]
+    fn xgboost_import_never_publishes_a_ranking_after_bad_verification() {
+        for verification in [
+            Verification::Failed,
+            Verification::Drift,
+            Verification::Regression,
+        ] {
+            let (_tmp, cfg, dump) = fixture();
+            let scorer = CohortScorer {
+                verification,
+                ..Default::default()
+            };
+            let result = import_xgboost(&cfg, &scorer, &dump, 0, false);
+            if matches!(verification, Verification::Failed) {
+                assert!(result.unwrap_err().contains("verification fixture failure"));
+            } else {
+                result.unwrap();
+            }
+            assert!(!cfg.output_dir.join("best.json").exists());
+            let lines = read_journal(&cfg.output_dir.join("experiments.jsonl")).unwrap();
+            let JournalLine::Experiment(e) = lines.last().unwrap() else {
+                panic!("experiment")
+            };
+            assert!(!e.accepted);
+            assert!(e.winner.is_none());
+            assert_eq!(e.ranking.as_ref().unwrap().scored, 2);
+            assert_eq!(
+                e.candidates
+                    .iter()
+                    .filter(|c| c.full_score.is_some())
+                    .count(),
+                usize::from(!matches!(verification, Verification::Failed))
+            );
+            if matches!(verification, Verification::Drift) {
+                assert!(e.scorer_error.as_ref().unwrap().contains("disagrees"));
+            }
+        }
+    }
+
+    #[test]
+    fn xgboost_import_with_an_older_scorer_preserves_the_legacy_path() {
+        let (_tmp, cfg, dump) = fixture();
+        let scorer = CohortScorer {
+            supported: false,
+            ..Default::default()
+        };
+        import_xgboost(&cfg, &scorer, &dump, 0, false).unwrap();
+        assert_eq!(scorer.probes.get(), 1);
+        assert_eq!(scorer.cohorts.get(), 0);
+        let lines = read_journal(&cfg.output_dir.join("experiments.jsonl")).unwrap();
+        let JournalLine::Experiment(e) = lines.last().unwrap() else {
+            panic!("experiment")
+        };
+        assert!(e.ranking.is_none());
+        assert_eq!(e.ranking_mode.as_deref(), Some("legacy"));
+        assert!(e.accepted);
+        assert!(!e.screen.as_ref().unwrap().diagnostic_only);
+    }
 }

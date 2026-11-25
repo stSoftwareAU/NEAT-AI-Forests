@@ -19,6 +19,17 @@ pub const DEFAULT_CHUNK_RECORDS: usize = 4096;
 /// Default in-memory search sample (records). `0` streams the full corpus.
 pub const DEFAULT_SEARCH_RECORDS: u64 = 200_000;
 
+/// Candidate ranking policy. Exact ranking is experimental until the production A/B passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum RankingMode {
+    /// Sample screen followed by ordinary full-corpus promotion.
+    #[default]
+    Legacy,
+    /// Full-corpus cohort ranking, then ordinary winner/parent verification.
+    Exact,
+}
+
 /// Default cap on the total depth of a refined path (Issue #140).
 pub const DEFAULT_REFINE_MAX_DEPTH: usize = 6;
 
@@ -265,13 +276,16 @@ pub struct ForestsConfig {
     pub candidates: usize,
     /// Who owns a graft's three bias-1 constants (Issue #56).
     pub graft_constants: GraftConstants,
-    /// Screen sample rate (`None` = no screen; every candidate is fully scored).
+    /// Candidate ranking policy; older configurations retain the legacy path.
+    #[serde(default)]
+    pub ranking_mode: RankingMode,
+    /// Screen sample rate (`None` disables it); diagnostic only under exact ranking.
     pub screen_sample_rate: Option<f64>,
     /// Screen promotion threshold on sampled Δscore.
     pub screen_threshold: f64,
     /// Maximum candidates promoted to full scoring.
     pub promote_count: usize,
-    /// Exploratory bypass quota: screen-rejected candidates fully scored to measure false negatives.
+    /// Legacy bypass quota; in exact mode enables diagnostic screening and seeded bypass measurement.
     pub explore_quota: usize,
     /// Tolerated |same-call full baseline − authoritative baseline|.
     pub baseline_drift_epsilon: f64,
@@ -362,6 +376,7 @@ impl Default for ForestsConfig {
             combo_candidates: 4,
             boost_rounds: 1,
             candidates: 64,
+            ranking_mode: RankingMode::Legacy,
             graft_constants: GraftConstants::Shared,
             screen_sample_rate: Some(DEFAULT_SCREEN_SAMPLE_RATE),
             screen_threshold: 0.0,
@@ -510,6 +525,33 @@ impl ForestsConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_configurations_keep_legacy_ranking_and_exact_mode_requires_an_explicit_choice() {
+        let mut value = serde_json::to_value(ForestsConfig::default()).unwrap();
+        value.as_object_mut().unwrap().remove("rankingMode");
+        let old: ForestsConfig = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(old.ranking_mode, RankingMode::Legacy);
+        assert_eq!(
+            (old.candidates, old.tree_roots, old.combo_candidates),
+            (64, 8, 4)
+        );
+        assert_eq!(old.magnitude_scales, vec![1.0, 0.5, 0.25]);
+        value["rankingMode"] = serde_json::json!("exact");
+        assert_eq!(
+            serde_json::from_value::<ForestsConfig>(value.clone())
+                .unwrap()
+                .ranking_mode,
+            RankingMode::Exact
+        );
+        value["rankingMode"] = serde_json::json!("unknown");
+        assert!(
+            serde_json::from_value::<ForestsConfig>(value)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown variant")
+        );
+    }
 
     #[test]
     fn defaults_validate_and_bad_values_name_the_flag() {

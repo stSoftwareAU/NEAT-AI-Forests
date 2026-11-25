@@ -4,7 +4,7 @@
 //! training matrix (`export-matrix`), `scripts/xgboost-control.py` trains
 //! shallow boosted trees on the incumbent's correction-space residuals, and
 //! `import-xgboost` converts the dumped trees into ordinary Forest patches
-//! that go through the very same graft → screen → full-scorer path as native
+//! that go through the same graft → ranking → ordinary verification policies as native
 //! candidates. An XGBoost training metric never proves anything.
 //!
 //! ## Semantics mapping

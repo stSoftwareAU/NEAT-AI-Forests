@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use neat_ai_forests::config::{
-    FeatureSelection, ForestsConfig, GraftConstants, GrowthPolicy, IfCorrection, RowSampling,
+    FeatureSelection, ForestsConfig, GraftConstants, GrowthPolicy, IfCorrection, RankingMode,
+    RowSampling,
 };
 use neat_ai_forests::histogram::StumpKind;
 use neat_ai_forests::{CancelToken, ExternalScorer, log};
@@ -40,6 +41,9 @@ struct Cli {
     /// Extra argument passed verbatim to the scorer (repeatable), e.g. `--scorer-arg=--gpu=off`.
     #[arg(long = "scorer-arg")]
     scorer_args: Vec<String>,
+    /// Candidate ranking: legacy screen, or exact cohort ranking with separate verification.
+    #[arg(long, value_enum, default_value = "legacy")]
+    ranking_mode: RankingMode,
     /// Wall-clock budget in seconds.
     #[arg(long, default_value_t = neat_ai_forests::config::DEFAULT_TIMEOUT_SECONDS)]
     timeout_seconds: u64,
@@ -169,7 +173,7 @@ struct Cli {
     /// patch at three extra constant neurons per patch).
     #[arg(long, value_enum, default_value_t = GraftConstants::Shared)]
     graft_constants: GraftConstants,
-    /// Screen sample rate in (0,1); 0 disables the screen (every candidate is fully scored).
+    /// Screen sample rate in (0,1); 0 disables it. Diagnostic only with exact ranking.
     #[arg(long, default_value_t = neat_ai_forests::config::DEFAULT_SCREEN_SAMPLE_RATE)]
     screen_sample_rate: f64,
     /// Sampled Δscore a candidate must exceed to be promoted.
@@ -178,7 +182,7 @@ struct Cli {
     /// Maximum candidates promoted to full scoring per iteration.
     #[arg(long, default_value_t = 8)]
     promote_count: usize,
-    /// Screen-rejected candidates fully scored anyway, to measure false negatives.
+    /// Legacy screen bypass quota; with exact ranking enables diagnostic screen/bypass measurement.
     #[arg(long, default_value_t = 1)]
     explore_quota: usize,
     /// Tolerated |same-call full baseline − authoritative baseline|.
@@ -389,6 +393,7 @@ fn main() -> ExitCode {
         cache_dir: cli.cache_dir.clone(),
         scorer_path: cli.scorer.clone(),
         scorer_args: cli.scorer_args.clone(),
+        ranking_mode: cli.ranking_mode,
         timeout: Duration::from_secs(cli.timeout_seconds),
         max_iterations: cli.max_iterations,
         seed: cli.seed,

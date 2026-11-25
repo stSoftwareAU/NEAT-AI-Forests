@@ -17,11 +17,19 @@ pip install xgboost pandas
 scripts/xgboost-control.py matrix.csv --depth 1 --rounds 8 --out dump.json
 #    → dump.json (booster.get_dump(dump_format="json")) + dump.json.meta.json (params, train RMSE, seed)
 
-# 3. convert every tree to a patch, graft, screen, full-score — same path as native candidates
-neat_ai_forests creature.json training/ import-xgboost --dump dump.json \
-  --scorer ../NEAT-AI-scorer/target/release/rust_scorer --output-dir runs/xgb
+# 3. convert trees to patches, graft, rank and verify — same policies as native candidates
+neat_ai_forests creature.json training/ \
+  --scorer ../NEAT-AI-scorer/target/release/rust_scorer --output-dir runs/xgb \
+  import-xgboost --dump dump.json
 #    → runs/xgb/experiments.jsonl (strategy "xgboost-import"), best.json only if the scorer agrees
 ```
+
+The import uses `--ranking-mode legacy` by default. With `--ranking-mode exact`
+and a supporting scorer, it ranks every valid converted candidate in one
+full-corpus cohort call and verifies only the highest-ranked eligible tree in
+an ordinary full-corpus call with its parent. The journal keeps exact rankings
+separate from ordinary verification; a failure or baseline drift veto cannot
+publish a winner. Older scorers retain legacy screening and promotion.
 
 ## Conversion rules
 

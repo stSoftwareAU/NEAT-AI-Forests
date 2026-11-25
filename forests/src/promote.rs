@@ -1,15 +1,14 @@
-//! Two-phase screening and authoritative promotion (Issue #9).
+//! Candidate ranking and authoritative promotion.
 //!
-//! 1. Every cohort includes the current incumbent as `baseline.json`.
-//! 2. **Screen** (optional): the scorer's record-sampling mode ranks
-//!    candidates cheaply. This is explicitly non-authoritative.
-//! 3. The best `promote_count` screen survivors, plus an exploratory bypass
-//!    quota of screen rejects (to measure false negatives), are **fully
-//!    scored** on the canonical corpus in one call together with the baseline.
-//! 4. A candidate is accepted only when its full `score` beats the *same-call*
-//!    full baseline by more than `min_improvement`, **and** that same-call
-//!    baseline agrees with the stored authoritative baseline within
-//!    `baseline_drift_epsilon`. Any scorer failure means no acceptance.
+//! Legacy mode screens a sample and fully scores the survivors plus seeded
+//! bypasses together with the incumbent. Exact mode ranks every valid candidate
+//! in one full-corpus `--cohort` call, then verifies the top eligible candidate
+//! with its parent in a separate ordinary full-corpus call. An optional sample
+//! comparison in exact mode records hypothetical decisions and excludes nobody.
+//!
+//! Only ordinary full results can accept: the same-call delta must exceed the
+//! improvement threshold, and the parent must agree with the stored baseline.
+//! Cohort ranking scores are never acceptance results or shared-cache verdicts.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,12 +18,18 @@ use rand::Rng;
 use rand::rngs::StdRng;
 
 use crate::candidates::Candidate;
-use crate::scorer::{DirectoryScorer, ScoreResult, ScorerError, ScorerMode};
+use crate::scorer::{
+    CohortExecution, DirectoryScorer, ScoreResult, ScorerError, ScorerMode, validate_scores,
+};
 
 /// Promotion controls.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PromoteConfig {
-    /// Screen sample rate (`None` = no screen).
+    /// Use exact cohort ranking (capability resolved once by the caller).
+    pub exact_ranking: bool,
+    /// Number of records in the canonical corpus, checked on full results.
+    pub corpus_records: u64,
+    /// Screen sample rate (`None` = no screen); diagnostic only under exact ranking.
     pub screen_sample_rate: Option<f64>,
     /// Phase for the screen stride (vary per iteration).
     pub screen_phase: u64,
@@ -47,6 +52,8 @@ pub struct PromoteConfig {
 /// Screen results.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScreenOutcome {
+    /// One-based hypothetical screen ranks, with candidate-id tie breaking.
+    pub ranks: BTreeMap<String, u64>,
     /// Sample rate.
     pub rate: f64,
     /// Phase.
@@ -61,6 +68,25 @@ pub struct ScreenOutcome {
     pub bypass: Vec<String>,
     /// Scorer ms.
     pub scorer_ms: u64,
+}
+
+/// Full-corpus cohort ranking; separate from authoritative verification.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RankingOutcome {
+    /// Same-call incumbent score used for ranking deltas.
+    pub baseline_score: f64,
+    /// Exact scores, including the incumbent.
+    pub scores: BTreeMap<String, ScoreResult>,
+    /// One-based candidate ranks, with candidate-id tie breaking.
+    pub ranks: BTreeMap<String, u64>,
+    /// Hosted cohort or documented directory fallback.
+    pub execution: CohortExecution,
+    /// Ranking scorer wall time.
+    pub scorer_ms: u64,
+    /// Hypothetical screen promotes that did not clear the exact threshold.
+    pub screen_false_positives: u64,
+    /// Seeded bypass candidates above the exact threshold.
+    pub screen_false_negatives: u64,
 }
 
 /// Full-corpus results.
@@ -79,6 +105,12 @@ pub struct FullOutcome {
 /// Complete outcome of one cohort.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PromotionOutcome {
+    /// Exact ranking, when enabled.
+    pub ranking: Option<RankingOutcome>,
+    /// Standalone verification time, including failed attempts.
+    pub verification_ms: Option<u64>,
+    /// Standalone verification failure; ranking scores must not become verdicts.
+    pub verification_error: Option<ScorerError>,
     /// Screen stage (if run).
     pub screen: Option<ScreenOutcome>,
     /// Full stage (if any candidate reached it).
@@ -91,6 +123,40 @@ pub struct PromotionOutcome {
     pub false_negatives: u64,
     /// Why no acceptance happened despite a full run (baseline disagreement).
     pub veto: Option<String>,
+}
+
+/// Resolve capability once per run. A probe error fails closed; an older
+/// binary explicitly falls back to the legacy path.
+pub(crate) fn resolve_exact_ranking(
+    requested: crate::config::RankingMode,
+    scorer: &dyn DirectoryScorer,
+) -> Result<bool, ScorerError> {
+    if requested == crate::config::RankingMode::Legacy {
+        return Ok(false);
+    }
+    let supported = scorer.supports_cohort()?;
+    if !supported {
+        crate::log::warn("scorer lacks --cohort; using legacy screen and promotion");
+    }
+    Ok(supported)
+}
+
+fn ranked_ids(scores: &BTreeMap<String, ScoreResult>) -> Vec<String> {
+    let mut ids: Vec<_> = scores
+        .keys()
+        .filter(|id| id.as_str() != "baseline")
+        .cloned()
+        .collect();
+    ids.sort_by(|a, b| scores[b].score.total_cmp(&scores[a].score).then(a.cmp(b)));
+    ids
+}
+
+fn ranks(scores: &BTreeMap<String, ScoreResult>) -> BTreeMap<String, u64> {
+    ranked_ids(scores)
+        .into_iter()
+        .enumerate()
+        .map(|(i, id)| (id, i as u64 + 1))
+        .collect()
 }
 
 fn write_cohort(
@@ -120,7 +186,7 @@ fn cleanup(dir: &Path, preserve: bool) {
     }
 }
 
-/// Run the screen + promote pipeline for one cohort.
+/// Rank and verify one cohort under the selected promotion policy.
 pub fn screen_and_promote(
     candidates: &[Candidate],
     incumbent: &neat_core::CreatureExport,
@@ -136,7 +202,9 @@ pub fn screen_and_promote(
     }
     let mut to_full: Vec<&Candidate> = Vec::new();
     let mut bypass_ids: Vec<String> = Vec::new();
-    if let Some(rate) = cfg.screen_sample_rate {
+    if let Some(rate) = cfg.screen_sample_rate
+        && (!cfg.exact_ranking || cfg.explore_quota > 0)
+    {
         let dir: PathBuf = work_dir.join("screen");
         let refs: Vec<&Candidate> = candidates.iter().collect();
         write_cohort(&dir, incumbent, &refs).map_err(ScorerError::Spawn)?;
@@ -151,6 +219,7 @@ pub fn screen_and_promote(
         );
         cleanup(&dir, cfg.preserve_dirs);
         let scores = result?;
+        validate_scores(&scores, candidates.iter().map(|c| c.id.as_str()), None)?;
         let base = scores["baseline"].score;
         let mut ranked: Vec<(&Candidate, f64)> = candidates
             .iter()
@@ -179,6 +248,7 @@ pub fn screen_and_promote(
         to_full.extend(promoted);
         to_full.extend(bypass);
         outcome.screen = Some(ScreenOutcome {
+            ranks: ranks(&scores),
             rate,
             phase: cfg.screen_phase,
             baseline_score: base,
@@ -190,6 +260,53 @@ pub fn screen_and_promote(
     } else {
         to_full.extend(candidates.iter());
     }
+    if cfg.exact_ranking {
+        let dir = work_dir.join("ranking");
+        let refs: Vec<_> = candidates.iter().collect();
+        write_cohort(&dir, incumbent, &refs).map_err(ScorerError::Spawn)?;
+        let started = Instant::now();
+        let result = scorer.score_cohort(&dir, training_dir);
+        let scorer_ms = started.elapsed().as_millis() as u64;
+        cleanup(&dir, cfg.preserve_dirs);
+        let result = result?;
+        let scores = result.scores;
+        validate_scores(
+            &scores,
+            candidates.iter().map(|c| c.id.as_str()),
+            Some(cfg.corpus_records),
+        )?;
+        let base = scores["baseline"].score;
+        let ordered = ranked_ids(&scores);
+        let eligible = ordered
+            .first()
+            .filter(|id| scores[*id].score - base > cfg.min_improvement);
+        to_full = eligible
+            .into_iter()
+            .map(|id| candidates.iter().find(|c| &c.id == id).unwrap())
+            .collect();
+        let mut ranking = RankingOutcome {
+            baseline_score: base,
+            ranks: ranks(&scores),
+            scores,
+            execution: result.execution,
+            scorer_ms,
+            screen_false_positives: 0,
+            screen_false_negatives: 0,
+        };
+        if let Some(screen) = &outcome.screen {
+            ranking.screen_false_positives = screen
+                .promoted
+                .iter()
+                .filter(|id| ranking.scores[*id].score - base <= cfg.min_improvement)
+                .count() as u64;
+            ranking.screen_false_negatives = screen
+                .bypass
+                .iter()
+                .filter(|id| ranking.scores[*id].score - base > cfg.min_improvement)
+                .count() as u64;
+        }
+        outcome.ranking = Some(ranking);
+    }
     if to_full.is_empty() {
         return Ok(outcome);
     }
@@ -197,8 +314,27 @@ pub fn screen_and_promote(
     write_cohort(&dir, incumbent, &to_full).map_err(ScorerError::Spawn)?;
     let started = Instant::now();
     let result = scorer.score_directory(&dir, training_dir, ScorerMode::Full);
+    let scorer_ms = started.elapsed().as_millis() as u64;
     cleanup(&dir, cfg.preserve_dirs);
-    let scores = result?;
+    let result = result.and_then(|scores| {
+        validate_scores(
+            &scores,
+            to_full.iter().map(|c| c.id.as_str()),
+            Some(cfg.corpus_records),
+        )?;
+        Ok(scores)
+    });
+    if cfg.exact_ranking {
+        outcome.verification_ms = Some(scorer_ms);
+    }
+    let scores = match result {
+        Ok(scores) => scores,
+        Err(e) if cfg.exact_ranking => {
+            outcome.verification_error = Some(e);
+            return Ok(outcome);
+        }
+        Err(e) => return Err(e),
+    };
     let base = scores["baseline"].score;
     let drift = base - cfg.authoritative_baseline;
     let mut best: Option<(String, f64)> = None;
@@ -206,12 +342,14 @@ pub fn screen_and_promote(
         let Some(s) = scores.get(&c.id) else { continue };
         let delta = s.score - base;
         let cleared = delta > cfg.min_improvement;
-        if bypass_ids.contains(&c.id) {
-            if cleared {
-                outcome.false_negatives += 1;
+        if !cfg.exact_ranking {
+            if bypass_ids.contains(&c.id) {
+                if cleared {
+                    outcome.false_negatives += 1;
+                }
+            } else if !cleared {
+                outcome.false_positives += 1;
             }
-        } else if !cleared {
-            outcome.false_positives += 1;
         }
         if cleared
             && best
@@ -225,7 +363,7 @@ pub fn screen_and_promote(
         baseline_score: base,
         baseline_drift: drift,
         scores,
-        scorer_ms: started.elapsed().as_millis() as u64,
+        scorer_ms,
     });
     if drift.abs() > cfg.baseline_drift_epsilon {
         outcome.veto = Some(format!(
@@ -241,7 +379,7 @@ pub fn screen_and_promote(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::baseline::fake::LocalMseScorer;
+    use crate::baseline::fake::{CohortScorer, LocalMseScorer, Verification};
     use crate::corpus::write_bin_file;
     use crate::graft::fixtures::identity_creature;
     use crate::incumbent::Incumbent;
@@ -292,6 +430,8 @@ mod tests {
 
     fn cfg(base: f64) -> PromoteConfig {
         PromoteConfig {
+            exact_ranking: false,
+            corpus_records: 400,
             screen_sample_rate: Some(0.5),
             screen_phase: 0,
             screen_threshold: 0.0,
@@ -447,5 +587,302 @@ mod tests {
         assert!(out.screen.is_none());
         assert_eq!(out.full.unwrap().scores.len(), 5);
         assert_eq!(out.winner.unwrap().0, cands[0].id);
+    }
+
+    #[test]
+    fn an_incomplete_cohort_is_an_error_instead_of_silently_dropping_candidates() {
+        let (tmp, inc, cands) = setup();
+        let scorer = LocalMseScorer {
+            raw_output: Some(r#"{"baseline":{"score":0.9,"error":0.1,"recordCount":400}}"#.into()),
+            ..Default::default()
+        };
+        let result = screen_and_promote(
+            &cands,
+            &inc.creature,
+            tmp.path(),
+            &scorer,
+            &tmp.path().join("w"),
+            &PromoteConfig {
+                screen_sample_rate: None,
+                ..cfg(0.9)
+            },
+            &mut StdRng::seed_from_u64(1),
+        );
+        assert!(
+            matches!(result, Err(ScorerError::Malformed(ref message)) if message.contains(cands.iter().map(|c| c.id.as_str()).min().unwrap())),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn exact_ranking_finds_the_winner_even_when_the_screen_rejects_every_candidate() {
+        let (tmp, inc, cands) = setup();
+        let base = baseline_score(tmp.path(), &inc);
+        let scorer = LocalMseScorer {
+            cohort_supported: true,
+            sample_bias: -0.5,
+            ..Default::default()
+        };
+        let config = PromoteConfig {
+            exact_ranking: true,
+            explore_quota: 1,
+            ..cfg(base)
+        };
+        let out = screen_and_promote(
+            &cands,
+            &inc.creature,
+            tmp.path(),
+            &scorer,
+            &tmp.path().join("w"),
+            &config,
+            &mut StdRng::seed_from_u64(1),
+        )
+        .unwrap();
+        assert!(out.screen.as_ref().unwrap().promoted.is_empty());
+        assert!(!out.screen.as_ref().unwrap().bypass.contains(&cands[0].id));
+        assert_eq!(out.winner.as_ref().map(|w| &w.0), Some(&cands[0].id));
+        let calls = scorer.calls.borrow();
+        let exact = calls
+            .iter()
+            .find(|(mode, _)| mode == "cohort")
+            .expect("an exact cohort call");
+        let mut expected: Vec<String> = cands.iter().map(|c| c.id.clone()).collect();
+        expected.push("baseline".into());
+        expected.sort();
+        assert_eq!(exact.1, expected);
+        let verification = calls.last().unwrap();
+        assert_eq!(verification.0, "full");
+        let mut pair = vec!["baseline".to_string(), cands[0].id.clone()];
+        pair.sort();
+        assert_eq!(verification.1, pair);
+        assert_eq!(out.full.unwrap().scores.len(), 2);
+    }
+
+    #[test]
+    fn tied_exact_scores_are_ranked_by_candidate_id_and_zero_quota_skips_diagnostics() {
+        let (tmp, inc, mut cands) = setup();
+        let mut twin = cands[0].clone();
+        twin.id = "000-tied-winner".into();
+        cands.push(twin);
+        cands.reverse();
+        let base = baseline_score(tmp.path(), &inc);
+        let scorer = CohortScorer::default();
+        let out = screen_and_promote(
+            &cands,
+            &inc.creature,
+            tmp.path(),
+            &scorer,
+            &tmp.path().join("w"),
+            &PromoteConfig {
+                exact_ranking: true,
+                explore_quota: 0,
+                ..cfg(base)
+            },
+            &mut StdRng::seed_from_u64(1),
+        )
+        .unwrap();
+        assert_eq!(out.winner.as_ref().unwrap().0, "000-tied-winner");
+        let ranking = out.ranking.unwrap();
+        assert_eq!(ranking.ranks["000-tied-winner"], 1);
+        assert_eq!(ranking.ranks[&cands.last().unwrap().id], 2);
+        assert_eq!(ranking.scores.len(), cands.len() + 1);
+        assert!(out.screen.is_none());
+        assert_eq!(scorer.local.calls.borrow().len(), 2);
+    }
+
+    #[test]
+    fn standalone_verification_is_required_even_after_a_good_exact_ranking() {
+        let (tmp, inc, cands) = setup();
+        let base = baseline_score(tmp.path(), &inc);
+        for verification in [
+            Verification::Normal,
+            Verification::Failed,
+            Verification::Drift,
+            Verification::Regression,
+            Verification::MissingCandidate,
+            Verification::Sampled,
+            Verification::WrongCount,
+        ] {
+            let scorer = CohortScorer {
+                verification,
+                ..Default::default()
+            };
+            let out = screen_and_promote(
+                &cands,
+                &inc.creature,
+                tmp.path(),
+                &scorer,
+                &tmp.path().join("w"),
+                &PromoteConfig {
+                    exact_ranking: true,
+                    explore_quota: 0,
+                    ..cfg(base)
+                },
+                &mut StdRng::seed_from_u64(1),
+            )
+            .unwrap();
+            assert_eq!(out.ranking.as_ref().unwrap().ranks[&cands[0].id], 1);
+            assert!(out.verification_ms.is_some());
+            match verification {
+                Verification::Normal => assert_eq!(out.winner.unwrap().0, cands[0].id),
+                Verification::Drift => {
+                    assert!(out.winner.is_none());
+                    assert!(out.veto.unwrap().contains("disagrees"));
+                    assert!(out.full.as_ref().unwrap().baseline_drift.abs() > 0.09);
+                }
+                Verification::Regression => {
+                    assert!(out.winner.is_none());
+                    assert!(out.full.unwrap().scores[&cands[0].id].score < base);
+                }
+                Verification::Failed => assert!(matches!(out.verification_error,
+                    Some(ScorerError::Failed { ref stderr, .. }) if stderr.contains("verification fixture failure"))),
+                Verification::MissingCandidate => assert!(matches!(out.verification_error,
+                    Some(ScorerError::Malformed(ref m)) if m.contains(&cands[0].id))),
+                Verification::Sampled | Verification::WrongCount => {
+                    assert!(matches!(out.verification_error,
+                    Some(ScorerError::Malformed(ref m)) if m.contains("did not score the full corpus")))
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exact_ranking_with_no_eligible_candidate_does_not_spend_a_verification_call() {
+        let (tmp, inc, cands) = setup();
+        let base = baseline_score(tmp.path(), &inc);
+        let scorer = CohortScorer::default();
+        let out = screen_and_promote(
+            &cands[2..],
+            &inc.creature,
+            tmp.path(),
+            &scorer,
+            &tmp.path().join("w"),
+            &PromoteConfig {
+                exact_ranking: true,
+                explore_quota: 0,
+                ..cfg(base)
+            },
+            &mut StdRng::seed_from_u64(1),
+        )
+        .unwrap();
+        assert_eq!(out.ranking.unwrap().scores.len(), 3);
+        assert!(out.winner.is_none());
+        assert!(out.full.is_none());
+        assert!(out.verification_ms.is_none());
+        assert_eq!(scorer.local.calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn malformed_or_incomplete_exact_results_fail_closed_before_verification() {
+        let (tmp, inc, cands) = setup();
+        let base = baseline_score(tmp.path(), &inc);
+        for raw in [
+            "not json",
+            r#"{"baseline":{"score":0.9,"error":0.1,"recordCount":400}}"#,
+        ] {
+            let scorer = LocalMseScorer {
+                cohort_supported: true,
+                raw_output: Some(raw.into()),
+                ..Default::default()
+            };
+            let result = screen_and_promote(
+                &cands,
+                &inc.creature,
+                tmp.path(),
+                &scorer,
+                &tmp.path().join("w"),
+                &PromoteConfig {
+                    exact_ranking: true,
+                    explore_quota: 0,
+                    ..cfg(base)
+                },
+                &mut StdRng::seed_from_u64(1),
+            );
+            assert!(
+                matches!(result, Err(ScorerError::Malformed(_))),
+                "{raw}: {result:?}"
+            );
+            assert!(scorer.calls.borrow().iter().all(|(mode, _)| mode != "full"));
+        }
+        let supported = CohortScorer::default();
+        let good = screen_and_promote(
+            &cands,
+            &inc.creature,
+            tmp.path(),
+            &supported,
+            &tmp.path().join("good"),
+            &PromoteConfig {
+                exact_ranking: true,
+                explore_quota: 0,
+                ..cfg(base)
+            },
+            &mut StdRng::seed_from_u64(1),
+        )
+        .unwrap();
+        assert_eq!(good.winner.unwrap().0, cands[0].id);
+    }
+
+    #[test]
+    fn documented_cohort_fallback_still_requires_ordinary_verification() {
+        let (tmp, inc, cands) = setup();
+        let base = baseline_score(tmp.path(), &inc);
+        for verification in [Verification::Normal, Verification::Failed] {
+            let scorer = CohortScorer {
+                verification,
+                fallback_reason: Some("cost MAE is not hosted".into()),
+                ..Default::default()
+            };
+            let out = screen_and_promote(
+                &cands,
+                &inc.creature,
+                tmp.path(),
+                &scorer,
+                &tmp.path().join("w"),
+                &PromoteConfig {
+                    exact_ranking: true,
+                    explore_quota: 0,
+                    ..cfg(base)
+                },
+                &mut StdRng::seed_from_u64(1),
+            )
+            .unwrap();
+            assert!(
+                matches!(out.ranking.unwrap().execution, CohortExecution::DirectoryFallback { ref reason } if reason.contains("MAE"))
+            );
+            match verification {
+                Verification::Normal => assert_eq!(out.winner.unwrap().0, cands[0].id),
+                Verification::Failed => {
+                    assert!(out.winner.is_none());
+                    assert!(out.full.is_none());
+                    assert!(matches!(
+                        out.verification_error,
+                        Some(ScorerError::Failed { .. })
+                    ));
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn capability_resolution_preserves_legacy_and_fails_closed_on_probe_errors() {
+        use crate::config::RankingMode;
+        let scorer = CohortScorer {
+            supported: false,
+            ..Default::default()
+        };
+        assert!(!resolve_exact_ranking(RankingMode::Legacy, &scorer).unwrap());
+        assert_eq!(scorer.probes.get(), 0);
+        assert!(!resolve_exact_ranking(RankingMode::Exact, &scorer).unwrap());
+        assert_eq!(scorer.probes.get(), 1);
+        assert!(matches!(
+            resolve_exact_ranking(
+                RankingMode::Exact,
+                &crate::scorer::ExternalScorer::new("/missing/scorer")
+            ),
+            Err(ScorerError::Spawn(_))
+        ));
+        let supported = CohortScorer::default();
+        assert!(resolve_exact_ranking(RankingMode::Exact, &supported).unwrap());
     }
 }

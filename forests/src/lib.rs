@@ -17,7 +17,7 @@
 //! | CPU histogram stump search | [`histogram`] | #5 |
 //! | portable patch + `IF` graft | [`patch`], [`graft`] | #7 |
 //! | candidate population | [`candidates`] | #8 |
-//! | screen + promote | [`promote`] | #9 |
+//! | legacy screen / exact cohort ranking + verification | [`promote`] | #9, #136 |
 //! | evolution loop + journal | [`run`], [`journal`] | #10 |
 //! | depth-2/3 trees | [`tree`] | #11 |
 //! | sampling / jitter / diversity | [`strategies`] | #12 |
