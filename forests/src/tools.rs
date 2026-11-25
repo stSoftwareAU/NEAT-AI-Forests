@@ -327,6 +327,73 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_screen_decisions_survive_the_import_journal_and_report() {
+        let (_tmp, mut cfg, dump) = fixture();
+        cfg.screen_sample_rate = Some(0.2);
+        cfg.promote_count = 2;
+        cfg.explore_quota = 1;
+
+        // Every fifth record asks for +0.2, but the full-corpus mean is -0.2.
+        // The sampled top two both regress. The sole bypass is the exact winner.
+        let records: Vec<_> = (0..400)
+            .map(|i| {
+                let residual = if i % 5 == 0 { 0.2 } else { -0.3 };
+                (vec![0.2, 1.0], vec![0.2 + residual])
+            })
+            .collect();
+        write_bin_file(&cfg.training_data.join("0.bin"), &records).unwrap();
+        let trees: Vec<_> = [0.2, 0.1, -0.2]
+            .into_iter()
+            .map(|leaf| {
+                serde_json::json!({
+                    "nodeid": 0, "split": "f1", "split_condition": 0.0,
+                    "yes": 1, "no": 2, "missing": 1,
+                    "children": [{"nodeid": 1, "leaf": 0.0}, {"nodeid": 2, "leaf": leaf}]
+                })
+            })
+            .collect();
+        std::fs::write(&dump, serde_json::to_vec(&trees).unwrap()).unwrap();
+
+        import_xgboost(&cfg, &CohortScorer::default(), &dump, 0, false).unwrap();
+        let lines = read_journal(&cfg.output_dir.join("experiments.jsonl")).unwrap();
+        let JournalLine::Experiment(e) = lines.last().unwrap() else {
+            panic!("expected an import experiment")
+        };
+        let ranking = e.ranking.as_ref().unwrap();
+        assert_eq!(ranking.screen_false_positives, 2);
+        assert_eq!(ranking.screen_false_negatives, 1);
+        let report = crate::report::report_from_lines(&lines);
+        assert_eq!(report.diagnostic_screen_false_positives, 2);
+        assert_eq!(report.diagnostic_screen_false_negatives, 1);
+        assert_eq!(report.rank_comparisons.len(), 3);
+        assert_eq!(e.candidates.len(), 3);
+        for (leaf, screen_rank, exact_rank, promoted, bypass) in [
+            (0.2, 1, 3, true, false),
+            (0.1, 2, 2, true, false),
+            (-0.2, 3, 1, false, true),
+        ] {
+            let c = e
+                .candidates
+                .iter()
+                .find(|c| (c.patch.evaluate(&[0.2, 1.0]) - leaf).abs() < 1e-6)
+                .unwrap();
+            assert_eq!(c.screen_rank, Some(screen_rank));
+            assert_eq!(c.exact_rank, Some(exact_rank));
+            assert_eq!(c.screen_promoted, Some(promoted));
+            assert_eq!(c.screen_bypass, Some(bypass));
+            let row = report
+                .rank_comparisons
+                .iter()
+                .find(|r| r.id == c.id)
+                .unwrap();
+            assert_eq!(row.screen_rank, Some(screen_rank));
+            assert_eq!(row.exact_rank, exact_rank);
+            assert_eq!(row.screen_promoted, Some(promoted));
+            assert_eq!(row.screen_bypass, Some(bypass));
+        }
+    }
+
+    #[test]
     fn xgboost_import_never_publishes_a_ranking_after_bad_verification() {
         for verification in [
             Verification::Failed,
