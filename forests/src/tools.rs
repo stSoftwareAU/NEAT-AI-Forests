@@ -1,6 +1,7 @@
 //! Auxiliary subcommands: matrix export and XGBoost import (Issue #13).
 
 use std::path::Path;
+use std::time::Instant;
 
 use neat_core::training_data::TrainingDataConfig;
 use rand::SeedableRng;
@@ -12,10 +13,10 @@ use crate::config::ForestsConfig;
 use crate::corpus::corpus_info;
 use crate::incumbent::{load_incumbent, now_unix};
 use crate::journal::{
-    CandidateRecord, ExperimentRecord, FullSummary, JournalLine, ScreenSummary, append_journal_line,
+    CandidateRecord, ExperimentRecord, JournalLine, append_journal_line,
 };
 use crate::log;
-use crate::promote::{PromoteConfig, screen_and_promote};
+use crate::promote::{PromoteConfig, resolve_exact_ranking, screen_and_promote};
 use crate::residuals::ensure_residual_cache;
 use crate::scorer::DirectoryScorer;
 use crate::xgboost::{convert_dump, export_matrix as export_csv, parse_dump};
@@ -73,6 +74,8 @@ pub fn import_xgboost(
     output: usize,
     allow_missing_divergence: bool,
 ) -> Result<(), String> {
+    cfg.validate()?;
+    let exact_ranking = resolve_exact_ranking(cfg.ranking_mode, scorer).map_err(|e| e.to_string())?;
     let incumbent = load_incumbent(&cfg.creature).map_err(|e| e.to_string())?;
     let tcfg = TrainingDataConfig::new(incumbent.creature.input, incumbent.creature.output);
     let corpus = corpus_info(&cfg.training_data, &tcfg)?;
@@ -128,6 +131,8 @@ pub fn import_xgboost(
     }
     let mut rng = StdRng::seed_from_u64(cfg.seed.unwrap_or(0));
     let promote = PromoteConfig {
+            exact_ranking,
+            corpus_records: corpus.record_count,
         screen_sample_rate: cfg.screen_sample_rate,
         screen_phase: 0,
         screen_threshold: cfg.screen_threshold,
@@ -138,7 +143,8 @@ pub fn import_xgboost(
         baseline_drift_epsilon: cfg.baseline_drift_epsilon,
         preserve_dirs: cfg.preserve_candidates,
     };
-    let outcome = screen_and_promote(
+    let scoring_started = Instant::now();
+    let outcome_result = screen_and_promote(
         &candidates,
         &incumbent.creature,
         &cfg.training_data,
@@ -146,9 +152,13 @@ pub fn import_xgboost(
         &workspace.join("xgboost"),
         &promote,
         &mut rng,
-    )
-    .map_err(|e| e.to_string())?;
+    );
+    let scoring_ms = scoring_started.elapsed().as_millis() as u64;
     let mut record = ExperimentRecord {
+            ranking_mode: Some(if exact_ranking { "exact" } else { "legacy" }.into()),
+            ranking: None,
+            verification_ms: None,
+            scoring_ms: Some(scoring_ms),
         iteration: 1,
         timestamp_unix: now_unix(),
         incumbent_checksum: incumbent.checksum.clone(),
@@ -181,59 +191,48 @@ pub fn import_xgboost(
                 predicted_gain: 0.0,
                 affected_records: 0,
                 affected_fraction: 0.0,
-                screen_score: outcome
-                    .screen
-                    .as_ref()
-                    .and_then(|s| s.scores.get(&c.id))
-                    .map(|r| r.score),
-                screen_delta: outcome
-                    .screen
-                    .as_ref()
-                    .and_then(|s| s.scores.get(&c.id).map(|r| r.score - s.baseline_score)),
-                promoted: outcome
-                    .screen
-                    .as_ref()
-                    .is_none_or(|s| s.promoted.contains(&c.id)),
-                bypass: outcome
-                    .screen
-                    .as_ref()
-                    .is_some_and(|s| s.bypass.contains(&c.id)),
-                full_score: outcome
-                    .full
-                    .as_ref()
-                    .and_then(|f| f.scores.get(&c.id))
-                    .map(|r| r.score),
-                full_delta: outcome
-                    .full
-                    .as_ref()
-                    .and_then(|f| f.scores.get(&c.id).map(|r| r.score - f.baseline_score)),
+                screen_score: None,
+                screen_delta: None,
+                screen_rank: None,
+                screen_promoted: None,
+                screen_bypass: None,
+                exact_score: None,
+                exact_delta: None,
+                exact_rank: None,
+                promoted: false,
+                bypass: false,
+                full_score: None,
+                full_delta: None,
                 patch: c.patch.clone(),
                 combo: c.combo.clone(),
             })
             .collect(),
-        screen: outcome.screen.as_ref().map(|s| ScreenSummary {
-            sample_rate: s.rate,
-            sample_phase: s.phase,
-            baseline_score: s.baseline_score,
-            screened: (s.scores.len() - 1) as u64,
-            promoted: s.promoted.len() as u64,
-            bypass: s.bypass.len() as u64,
-            scorer_ms: s.scorer_ms,
-        }),
-        full: outcome.full.as_ref().map(|f| FullSummary {
-            baseline_score: f.baseline_score,
-            baseline_drift: f.baseline_drift,
-            scored: (f.scores.len() - 1) as u64,
-            scorer_ms: f.scorer_ms,
-        }),
-        winner: outcome.winner.as_ref().map(|w| w.0.clone()),
-        improvement: outcome.winner.as_ref().map(|w| w.1),
-        accepted: outcome.winner.is_some(),
+        screen: None,
+        full: None,
+        winner: None,
+        improvement: None,
+        accepted: false,
         new_incumbent_checksum: None,
-        screen_false_positives: outcome.false_positives,
-        screen_false_negatives: outcome.false_negatives,
-        scorer_error: outcome.veto.clone(),
+        screen_false_positives: 0,
+        screen_false_negatives: 0,
+        scorer_error: None,
     };
+    let outcome = match outcome_result {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            record.scorer_error = Some(e.to_string());
+            append_journal_line(&journal, &JournalLine::Experiment(Box::new(record)))?;
+            return Err(e.to_string());
+        }
+    };
+    record.record_scoring(&outcome);
+    if let Some(e) = &outcome.verification_error {
+        append_journal_line(&journal, &JournalLine::Experiment(Box::new(record)))?;
+        return Err(e.to_string());
+    }
+    record.winner = outcome.winner.as_ref().map(|w| w.0.clone());
+    record.improvement = outcome.winner.as_ref().map(|w| w.1);
+    record.accepted = outcome.winner.is_some();
     if let Some((id, delta)) = &outcome.winner {
         let winner = candidates.iter().find(|c| &c.id == id).unwrap();
         let text =

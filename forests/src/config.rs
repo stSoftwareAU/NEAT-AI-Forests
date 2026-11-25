@@ -19,6 +19,17 @@ pub const DEFAULT_CHUNK_RECORDS: usize = 4096;
 /// Default in-memory search sample (records). `0` streams the full corpus.
 pub const DEFAULT_SEARCH_RECORDS: u64 = 200_000;
 
+/// Candidate ranking policy. Exact ranking is experimental until the production A/B passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum RankingMode {
+    /// Sample screen followed by ordinary full-corpus promotion.
+    #[default]
+    Legacy,
+    /// Full-corpus cohort ranking, then ordinary winner/parent verification.
+    Exact,
+}
+
 /// Default cap on the total depth of a refined path (Issue #140).
 pub const DEFAULT_REFINE_MAX_DEPTH: usize = 6;
 
@@ -265,6 +276,9 @@ pub struct ForestsConfig {
     pub candidates: usize,
     /// Who owns a graft's three bias-1 constants (Issue #56).
     pub graft_constants: GraftConstants,
+    /// Candidate ranking policy; older configurations retain the legacy path.
+    #[serde(default)]
+    pub ranking_mode: RankingMode,
     /// Screen sample rate (`None` = no screen; every candidate is fully scored).
     pub screen_sample_rate: Option<f64>,
     /// Screen promotion threshold on sampled Δscore.
@@ -362,6 +376,7 @@ impl Default for ForestsConfig {
             combo_candidates: 4,
             boost_rounds: 1,
             candidates: 64,
+            ranking_mode: RankingMode::Legacy,
             graft_constants: GraftConstants::Shared,
             screen_sample_rate: Some(DEFAULT_SCREEN_SAMPLE_RATE),
             screen_threshold: 0.0,

@@ -6,12 +6,34 @@
 //! non-zero exit, malformed JSON, missing `baseline` entry, non-finite score —
 //! is an error. Nothing here ever guesses a score.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use serde::{Deserialize, Serialize};
+
+/// How the scorer executed an exact cohort request (its documented stderr contract).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase")]
+pub enum CohortExecution {
+    /// The scorer shared computation across the cohort.
+    Hosted,
+    /// The scorer could not host the cohort and scored the directory normally.
+    DirectoryFallback {
+        /// Scorer-reported reason for falling back.
+        reason: String,
+    },
+}
+
+/// Exact ranking scores and their execution provenance; these never authorise acceptance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CohortScores {
+    /// Full-corpus scores keyed by creature stem.
+    pub scores: BTreeMap<String, ScoreResult>,
+    /// Hosted or documented fallback.
+    pub execution: CohortExecution,
+}
 
 /// One scorer result. `score` is the acceptance metric — **larger is better**.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -73,6 +95,8 @@ impl ScorerMode {
 /// Scorer failure — always fail closed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScorerError {
+    /// Cohort scoring was requested from an implementation that lacks it.
+    UnsupportedCohort,
     /// Could not spawn the binary.
     Spawn(String),
     /// Non-zero exit.
@@ -93,6 +117,7 @@ pub enum ScorerError {
 impl fmt::Display for ScorerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnsupportedCohort => write!(f, "scorer does not support --cohort"),
             Self::Spawn(m) => write!(f, "cannot run scorer: {m}"),
             Self::Failed { status, stderr } => write!(f, "scorer failed ({status}): {stderr}"),
             Self::Malformed(m) => write!(f, "scorer output malformed: {m}"),
@@ -106,6 +131,20 @@ impl std::error::Error for ScorerError {}
 
 /// Scores a directory of creature JSON files in one corpus pass.
 pub trait DirectoryScorer {
+    /// Probe once per exact run; older implementations retain the legacy pipeline.
+    fn supports_cohort(&self) -> Result<bool, ScorerError> {
+        Ok(false)
+    }
+
+    /// Rank a directory on the full corpus using the scorer's cohort mode.
+    fn score_cohort(
+        &self,
+        _creature_dir: &Path,
+        _training_dir: &Path,
+    ) -> Result<CohortScores, ScorerError> {
+        Err(ScorerError::UnsupportedCohort)
+    }
+
     /// Score every `*.json` in `creature_dir` against `training_dir`.
     fn score_directory(
         &self,
@@ -136,6 +175,100 @@ impl ExternalScorer {
             extra_args: Vec::new(),
         }
     }
+
+    fn run(&self, cmd: &mut Command) -> Result<Output, ScorerError> {
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        crate::log::flush();
+        let out = cmd.output()
+            .map_err(|e| ScorerError::Spawn(format!("{}: {e}", self.binary.display())))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let tail: String = stderr.chars().rev().take(2000).collect::<Vec<_>>()
+                .into_iter().rev().collect();
+            return Err(ScorerError::Failed {
+                status: out.status.to_string(),
+                stderr: tail.trim().to_string(),
+            });
+        }
+        Ok(out)
+    }
+
+    fn invoke(&self, creatures: &Path, training: &Path, mode: ScorerMode, cohort: bool)
+        -> Result<Output, ScorerError>
+    {
+        // These flags belong to this adapter: extra arguments must not turn a
+        // verification into a sample, cohort, or a different scorer protocol.
+        for arg in &self.extra_args {
+            let flag = arg.split('=').next().unwrap_or(arg);
+            if matches!(flag, "--cohort" | "--sample-rate" | "--sample-phase" | "--race-stdio" | "--creature-stdin" | "--ensemble" | "--perturb-sigma") {
+                return Err(ScorerError::Malformed(format!("scorer argument {flag} is controlled by Forests")));
+            }
+        }
+        let mut cmd = Command::new(&self.binary);
+        if cohort {
+            cmd.arg("--cohort");
+        }
+        if let ScorerMode::Sample { rate, phase } = mode {
+            cmd.arg("--sample-rate").arg(rate.to_string())
+                .arg("--sample-phase").arg(phase.to_string());
+        }
+        cmd.args(&self.extra_args).arg(creatures).arg(training);
+        self.run(&mut cmd)
+    }
+}
+
+/// Reject incomplete, unexpected, non-finite or sampled full-corpus results.
+pub(crate) fn validate_scores<'a>(
+    scores: &BTreeMap<String, ScoreResult>,
+    candidate_ids: impl IntoIterator<Item = &'a str>,
+    full_records: Option<u64>,
+) -> Result<(), ScorerError> {
+    if !scores.contains_key("baseline") {
+        return Err(ScorerError::MissingBaseline);
+    }
+    let mut expected: BTreeSet<&str> = candidate_ids.into_iter().collect();
+    expected.insert("baseline");
+    for id in &expected {
+        if !scores.contains_key(*id) {
+            return Err(ScorerError::Malformed(format!("missing result for `{id}`")));
+        }
+    }
+    for id in scores.keys() {
+        if !expected.contains(id.as_str()) {
+            return Err(ScorerError::Malformed(format!("unexpected result for `{id}`")));
+        }
+    }
+    check_finite(scores)?;
+    if let Some(records) = full_records {
+        for (id, result) in scores {
+            if result.sample_rate.is_some() || records == 0 || result.record_count != records {
+                return Err(ScorerError::Malformed(format!(
+                    "`{id}` did not score the full corpus: expected {records} records without sampling, got {} (sample rate {:?})",
+                    result.record_count, result.sample_rate
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cohort_execution(stderr: &str) -> Result<CohortExecution, ScorerError> {
+    let mut notes = stderr.lines().filter(|line| line.starts_with("[cohort] "));
+    let note = notes.next().ok_or_else(|| ScorerError::Malformed("missing cohort execution note".into()))?;
+    if notes.next().is_some() {
+        return Err(ScorerError::Malformed("multiple cohort execution notes".into()));
+    }
+    if let Some(reason) = note.strip_prefix("[cohort] fallback to directory mode: ")
+        && !reason.trim().is_empty()
+    {
+        return Ok(CohortExecution::DirectoryFallback { reason: reason.to_string() });
+    }
+    if note.starts_with("[cohort] hosted ") {
+        return Ok(CohortExecution::Hosted);
+    }
+    Err(ScorerError::Malformed("unrecognised cohort execution note".into()))
 }
 
 /// Parse scorer stdout; every entry must be finite and `baseline` must exist.
@@ -160,43 +293,28 @@ pub fn check_finite(results: &BTreeMap<String, ScoreResult>) -> Result<(), Score
 }
 
 impl DirectoryScorer for ExternalScorer {
+    fn supports_cohort(&self) -> Result<bool, ScorerError> {
+        let mut cmd = Command::new(&self.binary);
+        cmd.arg("--help");
+        let out = self.run(&mut cmd)?;
+        Ok(String::from_utf8_lossy(&out.stdout).split_whitespace().any(|word| word == "--cohort"))
+    }
+
+    fn score_cohort(&self, creature_dir: &Path, training_dir: &Path) -> Result<CohortScores, ScorerError> {
+        let out = self.invoke(creature_dir, training_dir, ScorerMode::Full, true)?;
+        Ok(CohortScores {
+            scores: parse_scorer_output(&String::from_utf8_lossy(&out.stdout))?,
+            execution: cohort_execution(&String::from_utf8_lossy(&out.stderr))?,
+        })
+    }
+
     fn score_directory(
         &self,
         creature_dir: &Path,
         training_dir: &Path,
         mode: ScorerMode,
     ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
-        let mut cmd = Command::new(&self.binary);
-        if let ScorerMode::Sample { rate, phase } = mode {
-            cmd.arg("--sample-rate")
-                .arg(format!("{rate}"))
-                .arg("--sample-phase")
-                .arg(phase.to_string());
-        }
-        cmd.args(&self.extra_args);
-        cmd.arg(creature_dir).arg(training_dir);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        crate::log::flush();
-        let out = cmd
-            .output()
-            .map_err(|e| ScorerError::Spawn(format!("{}: {e}", self.binary.display())))?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let tail: String = stderr
-                .chars()
-                .rev()
-                .take(2000)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            return Err(ScorerError::Failed {
-                status: out.status.to_string(),
-                stderr: tail.trim().to_string(),
-            });
-        }
+        let out = self.invoke(creature_dir, training_dir, mode, false)?;
         parse_scorer_output(&String::from_utf8_lossy(&out.stdout))
     }
 

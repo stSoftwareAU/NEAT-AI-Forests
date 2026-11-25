@@ -167,13 +167,15 @@ pub mod fake {
 
     use neat_core::training_data::TrainingDataConfig;
 
-    use crate::scorer::{DirectoryScorer, ScoreResult, ScorerError, ScorerMode};
+    use crate::scorer::{CohortExecution, CohortScores, DirectoryScorer, ScoreResult, ScorerError, ScorerMode};
 
     /// Scores every creature with a real forward pass (MSE over the corpus),
     /// `score = 1 − error − 1e-7·hidden`, optionally applying a sample stride.
     /// Records every call so tests can inspect modes.
     #[derive(Default)]
     pub struct LocalMseScorer {
+        /// Simulate a binary advertising cohort support; scores use real local inference.
+        pub cohort_supported: bool,
         /// Calls made: (mode label, creature stems).
         pub calls: RefCell<Vec<(String, Vec<String>)>>,
         /// When set, every call fails with this message.
@@ -192,6 +194,19 @@ pub mod fake {
     }
 
     impl DirectoryScorer for LocalMseScorer {
+        fn supports_cohort(&self) -> Result<bool, ScorerError> {
+            Ok(self.cohort_supported)
+        }
+
+        fn score_cohort(&self, dir: &Path, training: &Path) -> Result<CohortScores, ScorerError> {
+            if !self.cohort_supported {
+                return Err(ScorerError::UnsupportedCohort);
+            }
+            let scores = self.score_directory(dir, training, ScorerMode::Full)?;
+            self.calls.borrow_mut().last_mut().unwrap().0 = "cohort".into();
+            Ok(CohortScores { scores, execution: CohortExecution::Hosted })
+        }
+
         fn score_directory(
             &self,
             creature_dir: &Path,

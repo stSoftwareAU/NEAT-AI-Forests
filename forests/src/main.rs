@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use neat_ai_forests::config::{
-    FeatureSelection, ForestsConfig, GraftConstants, GrowthPolicy, IfCorrection, RowSampling,
+    FeatureSelection, ForestsConfig, GraftConstants, GrowthPolicy, IfCorrection, RankingMode,
+    RowSampling,
 };
 use neat_ai_forests::histogram::StumpKind;
 use neat_ai_forests::{CancelToken, ExternalScorer, log};
@@ -40,6 +41,9 @@ struct Cli {
     /// Extra argument passed verbatim to the scorer (repeatable), e.g. `--scorer-arg=--gpu=off`.
     #[arg(long = "scorer-arg")]
     scorer_args: Vec<String>,
+    /// Candidate ranking: legacy screen, or exact cohort ranking with separate verification.
+    #[arg(long, value_enum, default_value = "legacy")]
+    ranking_mode: RankingMode,
     /// Wall-clock budget in seconds.
     #[arg(long, default_value_t = neat_ai_forests::config::DEFAULT_TIMEOUT_SECONDS)]
     timeout_seconds: u64,
@@ -389,6 +393,7 @@ fn main() -> ExitCode {
         cache_dir: cli.cache_dir.clone(),
         scorer_path: cli.scorer.clone(),
         scorer_args: cli.scorer_args.clone(),
+        ranking_mode: cli.ranking_mode,
         timeout: Duration::from_secs(cli.timeout_seconds),
         max_iterations: cli.max_iterations,
         seed: cli.seed,

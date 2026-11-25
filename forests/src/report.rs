@@ -310,6 +310,12 @@ mod tests {
             affected_fraction: 0.1,
             screen_score: Some(0.5),
             screen_delta: Some(0.01),
+            screen_rank: None,
+            screen_promoted: None,
+            screen_bypass: None,
+            exact_score: None,
+            exact_delta: None,
+            exact_rank: None,
             promoted,
             bypass: !promoted,
             full_score: full.map(|d| 0.5 + d),
@@ -338,6 +344,10 @@ mod tests {
             created_at_unix: 0,
         };
         let exp = ExperimentRecord {
+            ranking_mode: None,
+            ranking: None,
+            verification_ms: None,
+            scoring_ms: None,
             iteration: 1,
             timestamp_unix: 1060,
             incumbent_checksum: "a".into(),
@@ -358,6 +368,7 @@ mod tests {
                 cand("b", "random-stump", false, Some(0.005)),
             ],
             screen: Some(ScreenSummary {
+                diagnostic_only: false,
                 sample_rate: 0.1,
                 sample_phase: 0,
                 baseline_score: 0.5,

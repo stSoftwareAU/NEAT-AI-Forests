@@ -32,14 +32,14 @@ use crate::enhancements::EnhancementLog;
 use crate::histogram::{HistogramSet, search_stumps};
 use crate::incumbent::{Incumbent, load_incumbent, now_unix};
 use crate::journal::{
-    CandidateRecord, ExperimentRecord, FullSummary, JournalLine, ScreenSummary, SummaryRecord,
+    CandidateRecord, ExperimentRecord, JournalLine, SummaryRecord,
     append_journal_line,
 };
 use crate::log;
 use crate::meta::{CreatureMeta, Tag};
 use crate::oblique::{ObliqueControls, search_oblique};
 use crate::patch::Patch;
-use crate::promote::{PromoteConfig, screen_and_promote};
+use crate::promote::{PromoteConfig, resolve_exact_ranking, screen_and_promote};
 use crate::residuals::{ResidualCache, ensure_residual_cache};
 use crate::scorer::DirectoryScorer;
 use crate::strategies::{build_search_set, raw_sample};
@@ -211,6 +211,9 @@ fn file_learnings(
     corpus: &CorpusInfo,
 ) {
     let Some(store) = store else { return };
+    if record.scorer_error.is_some() {
+        return;
+    }
     let verdicts: Vec<crate::learnings::Verdict<'_>> = record
         .candidates
         .iter()
@@ -283,6 +286,7 @@ pub fn run_forests(
 ) -> Result<RunResult, String> {
     cfg.validate()?;
     let started = Instant::now();
+    let exact_ranking = resolve_exact_ranking(cfg.ranking_mode, scorer).map_err(|e| e.to_string())?;
     // Load before anything is written: a bad creature produces no output dir.
     let incumbent = load_incumbent(&cfg.creature).map_err(|e| e.to_string())?;
     let creature_cfg = TrainingDataConfig::new(incumbent.creature.input, incumbent.creature.output);
@@ -1040,6 +1044,10 @@ pub fn run_forests(
 
         // ---- score --------------------------------------------------------
         let mut record = ExperimentRecord {
+            ranking_mode: Some(if exact_ranking { "exact" } else { "legacy" }.into()),
+            ranking: None,
+            verification_ms: None,
+            scoring_ms: None,
             iteration: iterations,
             timestamp_unix: now_unix(),
             incumbent_checksum: state.incumbent.checksum.clone(),
@@ -1082,6 +1090,12 @@ pub fn run_forests(
                     ),
                     screen_score: None,
                     screen_delta: None,
+                    screen_rank: None,
+                    screen_promoted: None,
+                    screen_bypass: None,
+                    exact_score: None,
+                    exact_delta: None,
+                    exact_rank: None,
                     promoted: false,
                     bypass: false,
                     full_score: None,
@@ -1113,12 +1127,14 @@ pub fn run_forests(
         }
         // Frugal screen (#40): the screen exists to choose `promote_count`
         // candidates; when the cohort already fits, go straight to the full call.
-        let screen_rate = if candidates.len() <= cfg.promote_count {
+        let screen_rate = if !exact_ranking && candidates.len() <= cfg.promote_count {
             None
         } else {
             cfg.screen_sample_rate
         };
         let promote_cfg = PromoteConfig {
+            exact_ranking,
+            corpus_records: corpus.record_count,
             screen_sample_rate: screen_rate,
             screen_phase: iterations,
             screen_threshold: cfg.screen_threshold,
@@ -1130,6 +1146,7 @@ pub fn run_forests(
             preserve_dirs: cfg.preserve_candidates,
         };
         let work_dir = workspace.join(format!("iteration-{iterations:04}"));
+        let scoring_started = Instant::now();
         let outcome = match screen_and_promote(
             &candidates,
             &state.incumbent.creature,
@@ -1144,6 +1161,7 @@ pub fn run_forests(
                 scorer_failures += 1;
                 consecutive_failures += 1;
                 log::warn(&format!("scorer failure: {e}"));
+                record.scoring_ms = Some(scoring_started.elapsed().as_millis() as u64);
                 record.scorer_error = Some(e.to_string());
                 append_journal_line(&journal_path, &JournalLine::Experiment(Box::new(record)))?;
                 continue;
@@ -1152,49 +1170,18 @@ pub fn run_forests(
         if !cfg.preserve_candidates {
             let _ = std::fs::remove_dir_all(&work_dir);
         }
+        record.scoring_ms = Some(scoring_started.elapsed().as_millis() as u64);
+        record.record_scoring(&outcome);
+        if let Some(e) = &outcome.verification_error {
+            scorer_failures += 1;
+            consecutive_failures += 1;
+            log::warn(&format!("standalone verification failure: {e}"));
+            append_journal_line(&journal_path, &JournalLine::Experiment(Box::new(record)))?;
+            continue;
+        }
         consecutive_failures = 0;
-        if let Some(s) = &outcome.screen {
-            record.screen = Some(ScreenSummary {
-                sample_rate: s.rate,
-                sample_phase: s.phase,
-                baseline_score: s.baseline_score,
-                screened: (s.scores.len() - 1) as u64,
-                promoted: s.promoted.len() as u64,
-                bypass: s.bypass.len() as u64,
-                scorer_ms: s.scorer_ms,
-            });
-            for c in &mut record.candidates {
-                if let Some(r) = s.scores.get(&c.id) {
-                    c.screen_score = Some(r.score);
-                    c.screen_delta = Some(r.score - s.baseline_score);
-                }
-                c.promoted = s.promoted.contains(&c.id);
-                c.bypass = s.bypass.contains(&c.id);
-            }
-        } else {
-            for c in &mut record.candidates {
-                c.promoted = true;
-            }
-        }
-        if let Some(f) = &outcome.full {
-            record.full = Some(FullSummary {
-                baseline_score: f.baseline_score,
-                baseline_drift: f.baseline_drift,
-                scored: (f.scores.len() - 1) as u64,
-                scorer_ms: f.scorer_ms,
-            });
-            for c in &mut record.candidates {
-                if let Some(r) = f.scores.get(&c.id) {
-                    c.full_score = Some(r.score);
-                    c.full_delta = Some(r.score - f.baseline_score);
-                }
-            }
-        }
-        record.screen_false_positives = outcome.false_positives;
-        record.screen_false_negatives = outcome.false_negatives;
         if let Some(v) = &outcome.veto {
             log::warn(v);
-            record.scorer_error = Some(v.clone());
         }
         match (&outcome.winner, &outcome.full) {
             (Some((id, improvement)), Some(full)) => {
@@ -1372,6 +1359,7 @@ pub fn run_forests(
                 state.runner_ups = outcome
                     .full
                     .as_ref()
+                    .filter(|_| outcome.veto.is_none())
                     .map(|f| {
                         candidates
                             .iter()
