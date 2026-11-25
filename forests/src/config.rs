@@ -279,13 +279,13 @@ pub struct ForestsConfig {
     /// Candidate ranking policy; older configurations retain the legacy path.
     #[serde(default)]
     pub ranking_mode: RankingMode,
-    /// Screen sample rate (`None` = no screen; every candidate is fully scored).
+    /// Screen sample rate (`None` disables it); diagnostic only under exact ranking.
     pub screen_sample_rate: Option<f64>,
     /// Screen promotion threshold on sampled Δscore.
     pub screen_threshold: f64,
     /// Maximum candidates promoted to full scoring.
     pub promote_count: usize,
-    /// Exploratory bypass quota: screen-rejected candidates fully scored to measure false negatives.
+    /// Legacy bypass quota; in exact mode enables diagnostic screening and seeded bypass measurement.
     pub explore_quota: usize,
     /// Tolerated |same-call full baseline − authoritative baseline|.
     pub baseline_drift_epsilon: f64,

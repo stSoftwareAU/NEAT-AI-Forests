@@ -10,15 +10,16 @@ use std::process::Command;
 use std::time::Duration;
 
 use neat_ai_forests::baseline::ParityPolicy;
-use neat_ai_forests::config::ForestsConfig;
-use neat_ai_forests::config::GraftConstants;
+use neat_ai_forests::config::{ForestsConfig, GraftConstants, RankingMode};
 use neat_ai_forests::corpus::{corpus_info, write_bin_file};
-use neat_ai_forests::graft::fixtures::{identity_creature_json, small_mlp};
+use neat_ai_forests::graft::fixtures::{
+    identity_creature, identity_creature_json, if_output_creature, min_clamped_if_creature, small_mlp,
+};
 use neat_ai_forests::graft::{graft_patch, graft_patches_with};
 use neat_ai_forests::incumbent::Incumbent;
 use neat_ai_forests::journal::{JournalLine, read_journal};
 use neat_ai_forests::patch::{Node, Patch, Provenance};
-use neat_ai_forests::scorer::{DirectoryScorer, ExternalScorer, ScorerMode};
+use neat_ai_forests::scorer::{CohortExecution, DirectoryScorer, ExternalScorer, ScorerMode};
 use neat_ai_forests::{CancelToken, establish_baseline, run_forests};
 use neat_core::training_data::TrainingDataConfig;
 
@@ -291,4 +292,107 @@ fn real_scorer_end_to_end_loop_accepts_a_verified_stump() {
             .iter()
             .any(|l| matches!(l, JournalLine::Experiment(e) if e.accepted && e.full.is_some()))
     );
+}
+
+#[test]
+fn real_cohort_matches_standalone_scores_and_ordering_for_generated_grafts() {
+    let bin = require_scorer!();
+    let tmp = tempfile::tempdir().unwrap();
+    let (_, train) = fixture(tmp.path(), 517);
+    let scorer = ExternalScorer { binary: bin, extra_args: vec!["--gpu=off".into()] };
+    assert!(scorer.supports_cohort().unwrap(), "parity requires a scorer with --cohort");
+    for (shape, parent) in [
+        ("identity", identity_creature(3, 1)), ("mlp", small_mlp(3)),
+        ("if", if_output_creature(3)), ("clamp", min_clamped_if_creature(3)),
+    ] {
+        let dir = tmp.path().join(shape);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut creatures = vec![("baseline".to_string(), parent.clone())];
+        for (i, correction) in [-0.3, 0.05, 0.1, 0.3].into_iter().enumerate() {
+            let patch = Patch::new(0, Node::stump(1, 0.0, 0.0, correction), Provenance::default());
+            creatures.push((format!("candidate-{i}"), graft_patch(&parent, &patch).unwrap().creature));
+        }
+        for (id, creature) in &creatures {
+            std::fs::write(dir.join(format!("{id}.json")), neat_core::creature_to_json(creature).unwrap()).unwrap();
+        }
+        let cohort = scorer.score_cohort(&dir, &train).unwrap();
+        assert_eq!(cohort.execution, CohortExecution::Hosted);
+        assert_eq!(cohort.scores.len(), creatures.len());
+        let standalone_dir = tmp.path().join(format!("{shape}-standalone"));
+        std::fs::create_dir_all(&standalone_dir).unwrap();
+        let mut standalone = std::collections::BTreeMap::new();
+        for (id, creature) in &creatures {
+            std::fs::write(standalone_dir.join("baseline.json"), neat_core::creature_to_json(creature).unwrap()).unwrap();
+            let result = scorer.score_directory(&standalone_dir, &train, ScorerMode::Full).unwrap();
+            let result = &result["baseline"];
+            assert_eq!(cohort.scores[id].score.to_bits(), result.score.to_bits(), "{shape}/{id} score");
+            assert_eq!(cohort.scores[id].error.to_bits(), result.error.to_bits(), "{shape}/{id} error");
+            assert_eq!(cohort.scores[id].record_count, 517);
+            standalone.insert(id.clone(), result.score);
+        }
+        let order = |scores: &std::collections::BTreeMap<String, f64>| {
+            let mut ids: Vec<_> = scores.keys().cloned().collect();
+            ids.sort_by(|a, b| scores[b].total_cmp(&scores[a]).then(a.cmp(b)));
+            ids
+        };
+        let exact = cohort.scores.iter().map(|(id, result)| (id.clone(), result.score)).collect();
+        assert_eq!(order(&exact), order(&standalone));
+    }
+}
+
+#[test]
+fn real_cohort_directory_fallback_is_reported_and_matches_plain_directory_scoring() {
+    let bin = require_scorer!();
+    let tmp = tempfile::tempdir().unwrap();
+    let (creature, train) = fixture(tmp.path(), 37);
+    let scorer = ExternalScorer { binary: bin, extra_args: vec!["--gpu=off".into(), "--cost=MAE".into()] };
+    let dir = tmp.path().join("fallback");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(creature, dir.join("baseline.json")).unwrap();
+    std::fs::write(dir.join("other.json"), identity_creature_json(3, 1)).unwrap();
+    let cohort = scorer.score_cohort(&dir, &train).unwrap();
+    assert!(matches!(cohort.execution, CohortExecution::DirectoryFallback { ref reason } if reason.contains("MAE")));
+    let plain = scorer.score_directory(&dir, &train, ScorerMode::Full).unwrap();
+    assert_eq!(cohort.scores.len(), plain.len());
+    for (id, result) in &plain {
+        assert_eq!(cohort.scores[id].score, result.score);
+        assert_eq!(cohort.scores[id].error, result.error);
+        assert_eq!(cohort.scores[id].record_count, 37);
+    }
+}
+
+#[test]
+fn real_exact_loop_accepts_only_a_standalone_verified_winner() {
+    let bin = require_scorer!();
+    let tmp = tempfile::tempdir().unwrap();
+    let (creature, train) = fixture(tmp.path(), 517);
+    let cfg = ForestsConfig {
+        creature: creature.clone(), training_data: train, output_dir: tmp.path().join("out"),
+        ranking_mode: RankingMode::Exact, max_iterations: Some(2), seed: Some(11),
+        search_records: 0, min_leaf_records: 10.0, bins: 32, candidates: 48,
+        promote_count: 4, screen_sample_rate: Some(0.05), ..Default::default()
+    };
+    let original = std::fs::read(&creature).unwrap();
+    let scorer = ExternalScorer { binary: bin, extra_args: vec!["--gpu=off".into()] };
+    let result = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
+    assert!(result.acceptances > 0);
+    assert!(result.best_score > result.opening_score);
+    assert_eq!(std::fs::read(creature).unwrap(), original);
+    for line in read_journal(&result.journal_path).unwrap() {
+        if let JournalLine::Experiment(e) = line {
+            assert_eq!(e.ranking.as_ref().unwrap().scored, e.candidates.len() as u64);
+            assert_eq!(e.ranking.as_ref().unwrap().execution, CohortExecution::Hosted);
+            if e.accepted {
+                assert_eq!(e.full.as_ref().unwrap().scored, 1);
+                let winner = e.candidates.iter().find(|c| Some(&c.id) == e.winner.as_ref()).unwrap();
+                assert_eq!(winner.full_delta, e.improvement);
+                assert_eq!(winner.exact_rank, Some(1));
+            }
+        }
+    }
+    let verify = tmp.path().join("verify");
+    std::fs::create_dir_all(&verify).unwrap();
+    std::fs::copy(&result.best_path, verify.join("baseline.json")).unwrap();
+    let score = scorer.score_directory(&verify, &cfg.training_data, ScorerMode::Full).unwrap();
+    assert!((score["baseline"].score - result.best_score).abs() < 1e-9);
 }

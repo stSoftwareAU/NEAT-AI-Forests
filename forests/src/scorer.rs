@@ -1,7 +1,7 @@
 //! NEAT-AI-scorer integration — the final judge.
 //!
 //! The external `rust_scorer` binary is invoked in directory mode:
-//! `rust_scorer [--sample-rate R --sample-phase P] <dir-of-creatures> <training-dir>`
+//! `rust_scorer [--cohort | --sample-rate R --sample-phase P] <creatures> <training-dir>`
 //! and prints one JSON object keyed by creature file stem. Any failure —
 //! non-zero exit, malformed JSON, missing `baseline` entry, non-finite score —
 //! is an error. Nothing here ever guesses a score.
@@ -273,8 +273,28 @@ fn cohort_execution(stderr: &str) -> Result<CohortExecution, ScorerError> {
 
 /// Parse scorer stdout; every entry must be finite and `baseline` must exist.
 pub fn parse_scorer_output(stdout: &str) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
-    let parsed: BTreeMap<String, ScoreResult> =
-        serde_json::from_str(stdout.trim()).map_err(|e| ScorerError::Malformed(e.to_string()))?;
+    struct UniqueScores;
+    impl<'de> serde::de::Visitor<'de> for UniqueScores {
+        type Value = BTreeMap<String, ScoreResult>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a map of unique creature stems to scorer results")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut scores = BTreeMap::new();
+            while let Some((id, result)) = map.next_entry::<String, ScoreResult>()? {
+                if scores.insert(id.clone(), result).is_some() {
+                    return Err(serde::de::Error::custom(format!("duplicate scorer result for `{id}`")));
+                }
+            }
+            Ok(scores)
+        }
+    }
+    let mut de = serde_json::Deserializer::from_str(stdout.trim());
+    let parsed = serde::Deserializer::deserialize_map(&mut de, UniqueScores)
+        .map_err(|e| ScorerError::Malformed(e.to_string()))?;
+    de.end().map_err(|e| ScorerError::Malformed(e.to_string()))?;
     if !parsed.contains_key("baseline") {
         return Err(ScorerError::MissingBaseline);
     }
@@ -387,5 +407,42 @@ mod tests {
             sc.score_directory(tmp.path(), tmp.path(), ScorerMode::Full),
             Err(ScorerError::Spawn(_))
         ));
+    }
+
+    #[test]
+    fn duplicate_results_are_malformed_instead_of_overwriting_a_score() {
+        let raw = r#"{"baseline":{"score":0.9,"error":0.1},"baseline":{"score":0.1,"error":0.9}}"#;
+        assert!(matches!(parse_scorer_output(raw), Err(ScorerError::Malformed(ref m)) if m.contains("duplicate")));
+        assert_eq!(parse_scorer_output(r#"{"baseline":{"score":0.9,"error":0.1}}"#).unwrap()["baseline"].score, 0.9);
+    }
+
+    #[test]
+    fn cohort_execution_notes_distinguish_hosting_fallback_and_unknown_output() {
+        assert_eq!(cohort_execution("noise\n[cohort] hosted 5 creatures: 9 neuron activations per record\n").unwrap(), CohortExecution::Hosted);
+        assert_eq!(cohort_execution("[cohort] fallback to directory mode: cost MAE is not hosted\n").unwrap(),
+            CohortExecution::DirectoryFallback { reason: "cost MAE is not hosted".into() });
+        for (stderr, cause) in [
+            ("no cohort note", "missing"),
+            ("[cohort] fallback to directory mode: ", "unrecognised"),
+            ("[cohort] unknown result", "unrecognised"),
+            ("[cohort] hosted 5 creatures\n[cohort] fallback to directory mode: MAE", "multiple"),
+            ("prefix [cohort] hosted 5 creatures", "missing"),
+        ] {
+            assert!(matches!(cohort_execution(stderr), Err(ScorerError::Malformed(ref m)) if m.contains(cause)), "{stderr}");
+        }
+    }
+
+    #[test]
+    fn extra_arguments_cannot_change_the_scoring_protocol() {
+        let tmp = tempfile::tempdir().unwrap();
+        for flag in ["--sample-rate", "--sample-phase", "--cohort", "--race-stdio", "--creature-stdin", "--ensemble", "--perturb-sigma"] {
+            for arg in [flag.to_string(), format!("{flag}=0.05")] {
+                let scorer = ExternalScorer { binary: "/missing/scorer".into(), extra_args: vec![arg] };
+                assert!(matches!(scorer.score_directory(tmp.path(), tmp.path(), ScorerMode::Full),
+                    Err(ScorerError::Malformed(ref m)) if m.contains(flag) && m.contains("controlled by Forests")));
+            }
+        }
+        let allowed = ExternalScorer { binary: "/missing/scorer".into(), extra_args: vec!["--gpu=off".into()] };
+        assert!(matches!(allowed.score_directory(tmp.path(), tmp.path(), ScorerMode::Full), Err(ScorerError::Spawn(_))));
     }
 }

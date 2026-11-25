@@ -3,7 +3,7 @@
 //! ```text
 //! load + copy immutable incumbent → bin cache → authoritative baseline
 //!   ┌─▶ residuals → search set → histogram (GPU/CPU) → stumps / trees / oblique
-//!   │     → candidate population → screen → full-corpus promotion
+//!   │     → candidate population → legacy screen or exact cohort rank → verification
 //!   │     → accepted?  yes: promote clone to experimental incumbent, recompute
 //!   └─────────────────  residuals, journal;  no: journal and continue
 //! until timeout / max iterations / cancellation / repeated scorer failure
@@ -198,8 +198,8 @@ fn refit_due(every: u64, stale: bool, visit: u64) -> bool {
 
 /// File this iteration's full-corpus verdicts in the shared cache (Issue #60).
 ///
-/// Only candidates a full scorer call actually judged are filed: a screen
-/// opinion is a ranking, not a verdict, and a graft refusal belongs to the
+/// Only candidates an ordinary full scorer call actually judged are filed:
+/// sampled and cohort-ranking opinions are not verdicts, and a graft refusal belongs to the
 /// creature rather than to the patch (see `crate::learnings`). `known` is
 /// extended with whatever was filed, so a later iteration of the same run does
 /// not file it again.
@@ -1475,7 +1475,8 @@ pub fn print_run_summary(r: &RunResult) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::baseline::fake::LocalMseScorer;
+    use crate::baseline::fake::{CohortScorer, LocalMseScorer, Verification};
+    use crate::config::RankingMode;
     use crate::corpus::write_bin_file;
     use crate::graft::fixtures::identity_creature_json;
     use crate::journal::read_journal;
@@ -1518,6 +1519,115 @@ mod tests {
             ..Default::default()
         };
         (tmp, cfg)
+    }
+
+    #[test]
+    fn exact_loop_ranks_every_valid_candidate_but_files_only_verified_verdicts() {
+        let (tmp, mut cfg) = fixture();
+        cfg.ranking_mode = RankingMode::Exact;
+        cfg.max_iterations = Some(2);
+        cfg.learnings_dir = Some(tmp.path().join("learnings"));
+        cfg.learnings_host = Some("exact-test".into());
+        cfg.learnings_replay = 0;
+        let scorer = CohortScorer::default();
+        let result = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
+        assert!(result.acceptances > 0);
+        assert_eq!(scorer.probes.get(), 1);
+        let experiments = experiments_of(&result);
+        assert_eq!(scorer.cohorts.get(), experiments.len());
+        let mut ranked_only_positive = false;
+        for e in &experiments {
+            let ranking = e.ranking.as_ref().unwrap();
+            assert_eq!(e.ranking_mode.as_deref(), Some("exact"));
+            assert_eq!(ranking.scored, e.candidates.len() as u64);
+            assert_eq!(ranking.cohort_size, e.candidates.len() as u64 + 1);
+            assert!(e.candidates.iter().all(|c| c.exact_score.is_some() && c.exact_rank.is_some()));
+            assert_eq!(e.candidates.iter().filter(|c| c.full_score.is_some()).count(), 1);
+            assert!(e.screen.as_ref().unwrap().diagnostic_only);
+            let winner = e.candidates.iter().find(|c| Some(&c.id) == e.winner.as_ref()).unwrap();
+            assert_eq!(winner.exact_rank, Some(1));
+            assert_eq!(winner.full_delta, e.improvement);
+            ranked_only_positive |= e.candidates.iter().any(|c| {
+                c.combo.is_empty() && c.exact_delta.is_some_and(|d| d > 0.0) && c.full_score.is_none()
+            });
+            assert!(e.candidates.iter().flat_map(|c| std::iter::once(&c.patch).chain(&c.combo))
+                .all(|p| !p.provenance.strategy.starts_with("carry-forward:")));
+        }
+        assert!(ranked_only_positive, "fixture must offer positive ranking-only near-winners");
+        let corpus = corpus_info(&cfg.training_data, &TrainingDataConfig::new(3, 1)).unwrap();
+        let store = crate::learnings::LearningsStore::new(
+            cfg.learnings_dir.unwrap(), crate::learnings::CorpusId::new(corpus.identity),
+            crate::learnings::HostName::new("exact-test"),
+        );
+        let filed = store.load().unwrap();
+        assert!(!filed.is_empty());
+        for learning in filed {
+            let experiment = experiments.iter().find(|e| e.incumbent_checksum == learning.incumbent).unwrap();
+            let verified = experiment.candidates.iter().find(|c| c.id == learning.id).unwrap();
+            assert_eq!(verified.full_delta, Some(learning.delta));
+            assert_eq!(experiment.winner.as_deref(), Some(learning.id.as_str()));
+        }
+    }
+
+    #[test]
+    fn exact_loop_never_replaces_best_or_files_rankings_when_verification_fails() {
+        for verification in [Verification::Failed, Verification::Drift, Verification::Regression] {
+            let (tmp, mut cfg) = fixture();
+            cfg.ranking_mode = RankingMode::Exact;
+            cfg.max_iterations = Some(2);
+            cfg.max_consecutive_scorer_failures = 1;
+            cfg.learnings_dir = Some(tmp.path().join("learnings"));
+            cfg.learnings_host = Some("exact-test".into());
+            let original = std::fs::read(&cfg.creature).unwrap();
+            let scorer = CohortScorer { verification, ..Default::default() };
+            let result = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
+            assert_eq!(result.acceptances, 0);
+            assert_eq!(std::fs::read(&result.best_path).unwrap(), original);
+            if matches!(verification, Verification::Regression) {
+                let corpus = corpus_info(&cfg.training_data, &TrainingDataConfig::new(3, 1)).unwrap();
+                let store = crate::learnings::LearningsStore::new(
+                    cfg.learnings_dir.clone().unwrap(), crate::learnings::CorpusId::new(corpus.identity),
+                    crate::learnings::HostName::new("exact-test"),
+                );
+                let filed = store.load().unwrap();
+                assert_eq!(filed.len(), result.iterations as usize);
+                assert!(filed.iter().all(|l| l.outcome == crate::learnings::Outcome::Rejected && l.delta < 0.0));
+            } else {
+                assert!(!cfg.learnings_dir.as_ref().unwrap().exists());
+            }
+            let experiments = experiments_of(&result);
+            assert!(experiments[0].ranking.is_some());
+            assert!(experiments.iter().all(|e| !e.accepted));
+            assert!(experiments.iter().flat_map(|e| &e.candidates)
+                .all(|c| !c.strategy.starts_with("carry-forward:")));
+            match verification {
+                Verification::Failed => {
+                    assert_eq!(result.stop_reason, StopReason::ScorerFailures);
+                    assert_eq!(result.scorer_failures, 1);
+                    assert!(experiments[0].scorer_error.as_ref().unwrap().contains("verification fixture failure"));
+                    assert!(experiments[0].verification_ms.is_some());
+                    assert!(experiments[0].full.is_none());
+                }
+                Verification::Drift => assert!(experiments[0].scorer_error.as_ref().unwrap().contains("disagrees")),
+                Verification::Regression => assert!(experiments[0].candidates.iter().any(|c| c.full_delta.is_some_and(|d| d < 0.0))),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn exact_request_with_an_older_scorer_runs_the_legacy_loop() {
+        let (_tmp, mut cfg) = fixture();
+        cfg.ranking_mode = RankingMode::Exact;
+        cfg.max_iterations = Some(2);
+        let scorer = CohortScorer { supported: false, ..Default::default() };
+        let result = run_forests(&cfg, &scorer, &CancelToken::new()).unwrap();
+        assert!(result.acceptances > 0);
+        assert_eq!(scorer.probes.get(), 1);
+        assert_eq!(scorer.cohorts.get(), 0);
+        let experiments = experiments_of(&result);
+        assert!(experiments.iter().all(|e| e.ranking_mode.as_deref() == Some("legacy") && e.ranking.is_none()));
+        assert!(experiments.iter().any(|e| e.screen.as_ref().is_some_and(|s| !s.diagnostic_only)));
     }
 
     /// Issue #56 — end to end under `--graft-constants per-patch`: the accepted

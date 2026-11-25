@@ -65,8 +65,8 @@ pub fn export_matrix(
 /// `import-xgboost`: convert dumped trees and judge them with the scorer.
 ///
 /// Writes `experiments.jsonl` (one experiment line) and, when a converted tree
-/// wins, `best.json` — through exactly the same screen → full path as native
-/// candidates.
+/// wins, `best.json` — through the same ranking and ordinary full verification
+/// policies as native candidates.
 pub fn import_xgboost(
     cfg: &ForestsConfig,
     scorer: &dyn DirectoryScorer,
@@ -251,4 +251,102 @@ pub fn import_xgboost(
     }
     append_journal_line(&journal, &JournalLine::Experiment(Box::new(record)))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::baseline::fake::{CohortScorer, Verification};
+    use crate::config::RankingMode;
+    use crate::corpus::write_bin_file;
+    use crate::graft::fixtures::identity_creature_json;
+    use crate::journal::read_journal;
+
+    fn fixture() -> (tempfile::TempDir, ForestsConfig, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let train = tmp.path().join("train");
+        std::fs::create_dir_all(&train).unwrap();
+        let records: Vec<_> = (0..400).map(|i| {
+            let x = if i % 2 == 0 { 1.0 } else { -1.0 };
+            (vec![0.2, x], vec![0.2 + if x > 0.0 { 0.3 } else { 0.0 }])
+        }).collect();
+        write_bin_file(&train.join("0.bin"), &records).unwrap();
+        let creature = tmp.path().join("creature.json");
+        std::fs::write(&creature, identity_creature_json(2, 1)).unwrap();
+        let dump = tmp.path().join("dump.json");
+        std::fs::write(&dump, r#"[
+            {"nodeid":0,"split":"f1","split_condition":0.0,"yes":1,"no":2,"missing":1,
+             "children":[{"nodeid":1,"leaf":0.0},{"nodeid":2,"leaf":0.3}]},
+            {"nodeid":0,"split":"f1","split_condition":0.0,"yes":1,"no":2,"missing":1,
+             "children":[{"nodeid":1,"leaf":0.0},{"nodeid":2,"leaf":-0.3}]}
+        ]"#).unwrap();
+        let cfg = ForestsConfig {
+            creature, training_data: train, output_dir: tmp.path().join("out"),
+            ranking_mode: RankingMode::Exact, seed: Some(1), screen_sample_rate: Some(0.5),
+            promote_count: 1, ..Default::default()
+        };
+        (tmp, cfg, dump)
+    }
+
+    #[test]
+    fn xgboost_import_ranks_every_valid_tree_and_verifies_only_the_exact_winner() {
+        let (_tmp, cfg, dump) = fixture();
+        let scorer = CohortScorer::default();
+        import_xgboost(&cfg, &scorer, &dump, 0, false).unwrap();
+        assert_eq!(scorer.probes.get(), 1);
+        assert_eq!(scorer.cohorts.get(), 1);
+        let lines = read_journal(&cfg.output_dir.join("experiments.jsonl")).unwrap();
+        let JournalLine::Experiment(e) = lines.last().unwrap() else { panic!("experiment") };
+        assert_eq!(e.ranking.as_ref().unwrap().scored, 2);
+        assert_eq!(e.ranking.as_ref().unwrap().cohort_size, 3);
+        assert_eq!(e.full.as_ref().unwrap().scored, 1);
+        assert!(e.screen.as_ref().unwrap().diagnostic_only);
+        assert!(e.accepted);
+        let winner = e.candidates.iter().find(|c| Some(&c.id) == e.winner.as_ref()).unwrap();
+        assert_eq!(winner.exact_rank, Some(1));
+        assert_eq!(winner.full_delta, e.improvement);
+        let best = crate::incumbent::load_incumbent(&cfg.output_dir.join("best.json")).unwrap();
+        let original = crate::incumbent::load_incumbent(&cfg.creature).unwrap();
+        assert!(best.creature.neurons.len() > original.creature.neurons.len());
+    }
+
+    #[test]
+    fn xgboost_import_never_publishes_a_ranking_after_bad_verification() {
+        for verification in [Verification::Failed, Verification::Drift, Verification::Regression] {
+            let (_tmp, cfg, dump) = fixture();
+            let scorer = CohortScorer { verification, ..Default::default() };
+            let result = import_xgboost(&cfg, &scorer, &dump, 0, false);
+            if matches!(verification, Verification::Failed) {
+                assert!(result.unwrap_err().contains("verification fixture failure"));
+            } else {
+                result.unwrap();
+            }
+            assert!(!cfg.output_dir.join("best.json").exists());
+            let lines = read_journal(&cfg.output_dir.join("experiments.jsonl")).unwrap();
+            let JournalLine::Experiment(e) = lines.last().unwrap() else { panic!("experiment") };
+            assert!(!e.accepted);
+            assert!(e.winner.is_none());
+            assert_eq!(e.ranking.as_ref().unwrap().scored, 2);
+            assert_eq!(e.candidates.iter().filter(|c| c.full_score.is_some()).count(),
+                usize::from(!matches!(verification, Verification::Failed)));
+            if matches!(verification, Verification::Drift) {
+                assert!(e.scorer_error.as_ref().unwrap().contains("disagrees"));
+            }
+        }
+    }
+
+    #[test]
+    fn xgboost_import_with_an_older_scorer_preserves_the_legacy_path() {
+        let (_tmp, cfg, dump) = fixture();
+        let scorer = CohortScorer { supported: false, ..Default::default() };
+        import_xgboost(&cfg, &scorer, &dump, 0, false).unwrap();
+        assert_eq!(scorer.probes.get(), 1);
+        assert_eq!(scorer.cohorts.get(), 0);
+        let lines = read_journal(&cfg.output_dir.join("experiments.jsonl")).unwrap();
+        let JournalLine::Experiment(e) = lines.last().unwrap() else { panic!("experiment") };
+        assert!(e.ranking.is_none());
+        assert_eq!(e.ranking_mode.as_deref(), Some("legacy"));
+        assert!(e.accepted);
+        assert!(!e.screen.as_ref().unwrap().diagnostic_only);
+    }
 }

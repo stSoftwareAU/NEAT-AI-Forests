@@ -173,7 +173,7 @@ struct Cli {
     /// patch at three extra constant neurons per patch).
     #[arg(long, value_enum, default_value_t = GraftConstants::Shared)]
     graft_constants: GraftConstants,
-    /// Screen sample rate in (0,1); 0 disables the screen (every candidate is fully scored).
+    /// Screen sample rate in (0,1); 0 disables it. Diagnostic only with exact ranking.
     #[arg(long, default_value_t = neat_ai_forests::config::DEFAULT_SCREEN_SAMPLE_RATE)]
     screen_sample_rate: f64,
     /// Sampled Δscore a candidate must exceed to be promoted.
@@ -182,7 +182,7 @@ struct Cli {
     /// Maximum candidates promoted to full scoring per iteration.
     #[arg(long, default_value_t = 8)]
     promote_count: usize,
-    /// Screen-rejected candidates fully scored anyway, to measure false negatives.
+    /// Legacy screen bypass quota; with exact ranking enables diagnostic screen/bypass measurement.
     #[arg(long, default_value_t = 1)]
     explore_quota: usize,
     /// Tolerated |same-call full baseline − authoritative baseline|.
