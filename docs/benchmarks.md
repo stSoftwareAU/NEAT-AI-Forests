@@ -443,6 +443,11 @@ GitHub REST reads confirmed scorer prerequisite #683 is closed and Forests
 PR #151 merged as `229d84f7d56e0717466d57ef770dde9d001a2cf3`. The current
 scorer `Develop` source remains `a164969ac4d96ff39eace7086ad22c0538d95705`,
 manifest version `1.1.110`, with neat-core `v0.23.7`.
+The clean checkout was built with `cargo build --locked --release --bin
+rust_scorer` and `rustc 1.99.1`. Its binary SHA-256 is
+`8e6e46de1faf4ed46867e55e5ac2422c149932a5124d605c28a6e1099f77e26a`,
+matching the earlier correctness build. This identifies the local test binary,
+not the production-installed scorer.
 
 The existing promotion and reporting implementation was preserved. No
 production width was selected from the generated-fixture profiles. Production
