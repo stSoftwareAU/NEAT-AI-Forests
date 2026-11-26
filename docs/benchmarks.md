@@ -421,16 +421,28 @@ control trial. Legacy ranking and the existing cohort defaults remain in place.
 
 ### Production-input recheck (26 November 2026)
 
-The latest recheck is local to Linux aarch64 host `vibe-coder-10227`, from
-Forests commit `750784b` on the continuation of merged PR #151. The readable
-workspace checkouts under `/home/vibe`, `/workspace`, `/tmp`, `/var/tmp`,
-`/mnt`, `/media`, `/srv` and `/opt` were searched, excluding hidden directories,
-dependency/build caches and worker state. The only creature matches were GRQ
-test fixtures; the only `.bin` matches were browser runtime assets. There was
-no production corpus in those searched locations. `/home/agent`, `/root` and
-the workspace volume's `lost+found` were unreadable; `/data` is absent.
-No production input paths or scorer/champion/corpus environment settings were
-supplied. This is a local availability check, not a training-host inspection.
+The latest recheck used the Linux aarch64 container with host label `GRQ-23`,
+from Forests checkpoint `fd1af8c`, continuing merged PR #151. Readable checkouts
+under `/home/vibe/auto-issue-work`, `/workspace`, `/tmp`, `/var/tmp`, `/mnt`,
+`/media`, `/srv` and `/opt` were searched for binary corpora, named creature
+files and JSON files larger than 1 MiB, excluding hidden directories,
+dependency/build caches and worker state. Targeted follow-up searches included
+hidden training and population directories; the GRQ temporary training
+directory found was empty.
+
+The search found test creatures and two historical GRQ diagnostic creatures
+(`recurrent-synapse-5809bad99229.json` and
+`recurrent-synapse-abb3851f5d57.json`). Their adjacent evidence record identifies
+them as quarantined recurrent-synapse captures from 6 May, not a verified
+production champion. The only corpus-shaped `.bin` file found was the scorer's
+32-byte `identity_data.bin` test fixture. No matching production corpus was
+located. This corrects the earlier checkpoint's narrower claim that only GRQ
+test creatures were present.
+
+`/home/agent`, `/root` and the workspace volume's `lost+found` were unreadable;
+`/data` is absent. No production input paths or scorer/champion/corpus
+environment settings were supplied. This is a local availability check, not a
+training-host inspection.
 
 | Production prerequisite | Result |
 |---|---|
@@ -439,15 +451,20 @@ supplied. This is a local availability check, not a training-host inspection.
 | Installed production scorer identity | Unavailable: a local source build does not identify the training host's binary |
 | Width tuning and sequential 2700-second A/B | Not run: production inputs unavailable |
 
-GitHub REST reads confirmed scorer prerequisite #683 is closed and Forests
-PR #151 merged as `229d84f7d56e0717466d57ef770dde9d001a2cf3`. The current
-scorer `Develop` source remains `a164969ac4d96ff39eace7086ad22c0538d95705`,
+GitHub CLI reads confirmed scorer prerequisite #683 is closed and Forests
+PR #151 merged as `229d84f7d56e0717466d57ef770dde9d001a2cf3`. The available
+scorer checkout is `a164969ac4d96ff39eace7086ad22c0538d95705`,
 manifest version `1.1.110`, with neat-core `v0.23.7`.
-The clean checkout was built with `cargo build --locked --release --bin
-rust_scorer` and `rustc 1.99.1`. Its binary SHA-256 is
+The existing release-profile binary was rechecked against the clean source
+checkout and its `--help` confirms `--cohort` support. Its binary SHA-256 is
 `8e6e46de1faf4ed46867e55e5ac2422c149932a5124d605c28a6e1099f77e26a`,
 matching the earlier correctness build. This identifies the local test binary,
-not the production-installed scorer.
+not the production-installed scorer. With `NEAT_SCORER_BIN` set explicitly to
+this binary, `cargo test --locked --test real_scorer -- --nocapture` passed all
+seven tests without availability skips. `cargo test --locked --lib exact`
+passed all 14 selected tests, including verification vetoes, legacy fallback
+and report accounting. These checks use generated fixtures; they supply no
+production measurements.
 
 The existing promotion and reporting implementation was preserved. No
 production width was selected from the generated-fixture profiles. Production
