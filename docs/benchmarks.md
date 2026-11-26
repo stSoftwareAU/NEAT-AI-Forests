@@ -473,6 +473,16 @@ winner/parent verification, diagnostic explore-quota behaviour, legacy fallback
 and journal/report compatibility on generated fixtures; they are correctness
 evidence rather than production measurements.
 
+A completion-retry search at checkpoint `a4a7497` again found no verified
+production champion, matching binary corpus or retained `experiments.jsonl`
+under the readable workspace and temporary directories listed above. Dependency
+and build caches and worker state were excluded. The matching creature files
+were GRQ fixtures or historical diagnostic captures; the other `.bin` files
+were browser snapshots. `/data` remains absent, and `NEAT_SCORER_BIN`, `SCORER`,
+`C` and `D` are unset. No production inputs were available to measure promotion
+cost, freeze a treatment width or start either trial. This reproduces the
+outstanding production-evidence finding; it does not resolve it.
+
 The existing promotion and reporting implementation was preserved. No
 production width was selected from the generated-fixture profiles. Production
 improvement per actual wall hour, acceptances, exact candidates per iteration,
