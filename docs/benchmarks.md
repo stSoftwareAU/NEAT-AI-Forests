@@ -293,6 +293,11 @@ legacy default. Missing production data also retains that default.
 Use fresh output directories; do not append another run to an earlier journal.
 Run both arms from the identical source creature and corpus, at seed 1 and the
 same 2700-second budget; pin the candidate families and CPU backend identically.
+Before either trial, measure legacy promotion cost on the verified production
+inputs, then tune candidates, roots, scales and combinations against that cost.
+Include diagnostic screening and ordinary verification in the overall economics.
+Freeze and record the treatment settings before starting the A/B. The treatment
+below illustrates the knobs to vary; its width is **not production-tuned**.
 The treatment widens only the search/cohort knobs being evaluated:
 
 ```bash
@@ -303,7 +308,7 @@ COMMON=("$C" "$D" --scorer "$SCORER" --scorer-arg=--gpu=off
 neat_ai_forests "${COMMON[@]}" --ranking-mode legacy --output-dir runs/cohort-control \
   --candidates 64 --tree-roots 8 --top-k 16 --magnitude-scales 1.0,0.5,0.25 --combo-candidates 4
 
-# Treatment: wider exact cohort; preserve all other control settings.
+# Illustrative treatment: replace with the frozen production-tuned settings.
 neat_ai_forests "${COMMON[@]}" --ranking-mode exact --output-dir runs/cohort-exact \
   --candidates 256 --tree-roots 32 --top-k 64 \
   --magnitude-scales 1.0,0.875,0.75,0.5,0.25,0.125 --combo-candidates 16
@@ -421,50 +426,52 @@ control trial. Legacy ranking and the existing cohort defaults remain in place.
 
 ### Production-input recheck (26 November 2026)
 
-The latest recheck used the Linux aarch64 container with host label `GRQ-23`,
-from Forests checkpoint `fd1af8c`, continuing merged PR #151. Readable checkouts
-under `/home/vibe/auto-issue-work`, `/workspace`, `/tmp`, `/var/tmp`, `/mnt`,
-`/media`, `/srv` and `/opt` were searched for binary corpora, named creature
-files and JSON files larger than 1 MiB, excluding hidden directories,
-dependency/build caches and worker state. Targeted follow-up searches included
-hidden training and population directories; the GRQ temporary training
-directory found was empty.
+The executor recheck continued Forests checkpoint `54a38e9` on Linux aarch64,
+with host label `GRQ-23`. Searches covered readable workspace checkouts under
+`/home/vibe/auto-issue-work`, `/workspace`, `/tmp`, `/var/tmp`, `/mnt`, `/media`,
+`/srv` and `/opt`, including hidden training/population directories but excluding
+build/dependency caches and worker state. No source champion, matching binary
+corpus or retained `experiments.jsonl` was located. No scorer/champion/corpus
+environment settings were supplied. `/data` is absent; `/home/agent`, `/root`
+and the workspace volume's `lost+found` were unreadable. This is a local
+availability check, not a training-host inspection.
 
-The search found test creatures and two historical GRQ diagnostic creatures
+The GRQ checkout contains test creatures and two historical diagnostic captures
 (`recurrent-synapse-5809bad99229.json` and
-`recurrent-synapse-abb3851f5d57.json`). Their adjacent evidence record identifies
-them as quarantined recurrent-synapse captures from 6 May, not a verified
-production champion. The only corpus-shaped `.bin` file found was the scorer's
-32-byte `identity_data.bin` test fixture. No matching production corpus was
-located. This corrects the earlier checkpoint's narrower claim that only GRQ
-test creatures were present.
-
-`/home/agent`, `/root` and the workspace volume's `lost+found` were unreadable;
-`/data` is absent. No production input paths or scorer/champion/corpus
-environment settings were supplied. This is a local availability check, not a
-training-host inspection.
+`recurrent-synapse-abb3851f5d57.json`). The adjacent GRQ evidence record identifies
+them as quarantined recurrent-synapse captures from 6 May. They do not establish
+a production champion, and no matching corpus was found. The scorer fixture
+introduced by the validation checkout is also excluded from production evidence.
 
 | Production prerequisite | Result |
 |---|---|
 | Champion checksum | Unavailable: no verified production source creature |
 | Corpus checksum, identity, record and file counts | Unavailable: no matching production corpus located |
 | Installed production scorer identity | Unavailable: a local source build does not identify the training host's binary |
-| Width tuning and sequential 2700-second A/B | Not run: production inputs unavailable |
+| Resolved production treatment settings | Unavailable: production width tuning has not run |
+| Sequential 2700-second A/B and retained journals | Not run: production inputs unavailable |
 
-GitHub CLI reads confirmed scorer prerequisite #683 is closed and Forests
-PR #151 merged as `229d84f7d56e0717466d57ef770dde9d001a2cf3`. The available
-scorer checkout is `a164969ac4d96ff39eace7086ad22c0538d95705`,
-manifest version `1.1.110`, with neat-core `v0.23.7`.
-The existing release-profile binary was rechecked against the clean source
-checkout and its `--help` confirms `--cohort` support. Its binary SHA-256 is
+GitHub REST reads through `gh api` confirmed scorer prerequisite #683 is closed,
+scorer PR #684 is merged, and Forests PR #151 merged as
+`229d84f7d56e0717466d57ef770dde9d001a2cf3`. Initial GraphQL reads hit the account
+rate limit; the REST reads succeeded.
+
+The previous local scorer binary was absent in this container. Validation
+rebuilt clean source commit `a164969ac4d96ff39eace7086ad22c0538d95705`,
+manifest version `1.1.110`, with neat-core `v0.23.7`, using
+`cargo build --locked --release --bin rust_scorer` and `rustc 1.99.1`.
+The binary SHA-256 is
 `8e6e46de1faf4ed46867e55e5ac2422c149932a5124d605c28a6e1099f77e26a`,
-matching the earlier correctness build. This identifies the local test binary,
-not the production-installed scorer. With `NEAT_SCORER_BIN` set explicitly to
-this binary, `cargo test --locked --test real_scorer -- --nocapture` passed all
-seven tests without availability skips. `cargo test --locked --lib exact`
-passed all 14 selected tests, including verification vetoes, legacy fallback
-and report accounting. These checks use generated fixtures; they supply no
-production measurements.
+matching the earlier correctness build. Its `--help` confirms `--cohort` support.
+This identifies the local validation binary, not the production-installed scorer.
+
+With `NEAT_SCORER_BIN` explicitly pointing at this binary,
+`cargo test --locked --test real_scorer -- --nocapture` passed all seven tests
+without scorer-availability skips. `cargo test --locked --lib exact` passed all
+14 selected tests. These cover full-cohort ranking, separate ordinary
+winner/parent verification, diagnostic explore-quota behaviour, legacy fallback
+and journal/report compatibility on generated fixtures; they are correctness
+evidence rather than production measurements.
 
 The existing promotion and reporting implementation was preserved. No
 production width was selected from the generated-fixture profiles. Production
