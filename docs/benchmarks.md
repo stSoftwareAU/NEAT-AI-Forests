@@ -277,11 +277,10 @@ alone neither file learnings nor qualify a near-winner for combination carry-for
 
 ### Production A/B status and decision rule
 
-**Not run on production.** No production creature/corpus paths were supplied.
-A bounded search of the workspace areas, `/data`, `/mnt` and `/tmp` found only
-the scorer's checked-in fixture. The generated fixtures below cannot measure
-production improvement per wall
-hour. There is no production ratio or production negative result to report.
+**Not run on production.** Production inputs remain unavailable in the
+26 November recheck below. The generated fixtures below cannot measure
+production improvement per wall hour. There is no production ratio or
+production negative result to report.
 The default remains `--ranking-mode legacy`, with 64 candidates, 8 tree roots,
 scales `1.0,0.5,0.25` and 4 combinations.
 
@@ -419,6 +418,32 @@ zero. Generated-fixture validation cannot fill any of these entries.
 The 1.5× decision rule therefore remains unevaluated. This is neither a
 measured negative result nor a zero-gain control; there was no production
 control trial. Legacy ranking and the existing cohort defaults remain in place.
+
+### Production-input recheck (26 November 2026)
+
+The next executor, Linux aarch64 host `vibe-coder-65924`, started from Forests
+commit `229d84f7d56e0717466d57ef770dde9d001a2cf3` (merged PR #151).
+The bounded local search covered the readable workspace checkouts, `/workspace`,
+`/mnt`, `/media`, `/srv`, `/tmp/uploads`, `/tmp/vibe-scratch`, `/var/tmp` and
+`/opt`, excluding dependency/build caches and tool installations. No training
+`.bin` files were found in those searched areas. `/home/agent` and the workspace
+volume's `lost+found` returned permission denied and were not searched;
+`/data` is absent. The GRQ
+checkout contains tracked test/evidence creatures, including 623-input and
+2461-input examples, but no matching training corpus was found. These files
+do not establish the identity of the production champion for this experiment.
+
+| Production prerequisite | Result |
+|---|---|
+| Champion checksum | Unavailable: no verified production source creature |
+| Corpus checksum, identity and record count | Unavailable: no production corpus located |
+| Installed production scorer identity | Unavailable: local source builds do not identify the training host's binary |
+| Width tuning and sequential 2700-second A/B | Not run: production inputs unavailable |
+
+Production improvement per actual wall hour, acceptances, exact candidates per
+iteration, wall split, rank comparisons, scorer failures, fallback executions
+and baseline vetoes remain unmeasured. The 1.5× ratio is unevaluated; this is
+neither a negative result nor a zero-gain control. Legacy defaults remain.
 
 ## What to do with the answer
 
