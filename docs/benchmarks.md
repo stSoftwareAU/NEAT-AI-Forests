@@ -277,11 +277,10 @@ alone neither file learnings nor qualify a near-winner for combination carry-for
 
 ### Production A/B status and decision rule
 
-**Not run on production.** No production creature/corpus paths were supplied.
-A bounded search of the workspace areas, `/data`, `/mnt` and `/tmp` found only
-the scorer's checked-in fixture. The generated fixtures below cannot measure
-production improvement per wall
-hour. There is no production ratio or production negative result to report.
+**Not run on production.** Production inputs remain unavailable in the
+26 November recheck below. The generated fixtures below cannot measure
+production improvement per wall hour. There is no production ratio or
+production negative result to report.
 The default remains `--ranking-mode legacy`, with 64 candidates, 8 tree roots,
 scales `1.0,0.5,0.25` and 4 combinations.
 
@@ -294,6 +293,11 @@ legacy default. Missing production data also retains that default.
 Use fresh output directories; do not append another run to an earlier journal.
 Run both arms from the identical source creature and corpus, at seed 1 and the
 same 2700-second budget; pin the candidate families and CPU backend identically.
+Before either trial, measure legacy promotion cost on the verified production
+inputs, then tune candidates, roots, scales and combinations against that cost.
+Include diagnostic screening and ordinary verification in the overall economics.
+Freeze and record the treatment settings before starting the A/B. The treatment
+below illustrates the knobs to vary; its width is **not production-tuned**.
 The treatment widens only the search/cohort knobs being evaluated:
 
 ```bash
@@ -304,7 +308,7 @@ COMMON=("$C" "$D" --scorer "$SCORER" --scorer-arg=--gpu=off
 neat_ai_forests "${COMMON[@]}" --ranking-mode legacy --output-dir runs/cohort-control \
   --candidates 64 --tree-roots 8 --top-k 16 --magnitude-scales 1.0,0.5,0.25 --combo-candidates 4
 
-# Treatment: wider exact cohort; preserve all other control settings.
+# Illustrative treatment: replace with the frozen production-tuned settings.
 neat_ai_forests "${COMMON[@]}" --ranking-mode exact --output-dir runs/cohort-exact \
   --candidates 256 --tree-roots 32 --top-k 64 \
   --magnitude-scales 1.0,0.875,0.75,0.5,0.25,0.125 --combo-candidates 16
@@ -419,6 +423,72 @@ zero. Generated-fixture validation cannot fill any of these entries.
 The 1.5× decision rule therefore remains unevaluated. This is neither a
 measured negative result nor a zero-gain control; there was no production
 control trial. Legacy ranking and the existing cohort defaults remain in place.
+
+### Production-input recheck (26 November 2026)
+
+The executor recheck continued Forests checkpoint `54a38e9` on Linux aarch64,
+with host label `GRQ-23`. Searches covered readable workspace checkouts under
+`/home/vibe/auto-issue-work`, `/workspace`, `/tmp`, `/var/tmp`, `/mnt`, `/media`,
+`/srv` and `/opt`, including hidden training/population directories but excluding
+build/dependency caches and worker state. No source champion, matching binary
+corpus or retained `experiments.jsonl` was located. No scorer/champion/corpus
+environment settings were supplied. `/data` is absent; `/home/agent`, `/root`
+and the workspace volume's `lost+found` were unreadable. This is a local
+availability check, not a training-host inspection.
+
+The GRQ checkout contains test creatures and two historical diagnostic captures
+(`recurrent-synapse-5809bad99229.json` and
+`recurrent-synapse-abb3851f5d57.json`). The adjacent GRQ evidence record identifies
+them as quarantined recurrent-synapse captures from 6 May. They do not establish
+a production champion, and no matching corpus was found. The scorer fixture
+introduced by the validation checkout is also excluded from production evidence.
+
+| Production prerequisite | Result |
+|---|---|
+| Champion checksum | Unavailable: no verified production source creature |
+| Corpus checksum, identity, record and file counts | Unavailable: no matching production corpus located |
+| Installed production scorer identity | Unavailable: a local source build does not identify the training host's binary |
+| Resolved production treatment settings | Unavailable: production width tuning has not run |
+| Sequential 2700-second A/B and retained journals | Not run: production inputs unavailable |
+
+GitHub REST reads through `gh api` confirmed scorer prerequisite #683 is closed,
+scorer PR #684 is merged, and Forests PR #151 merged as
+`229d84f7d56e0717466d57ef770dde9d001a2cf3`. Initial GraphQL reads hit the account
+rate limit; the REST reads succeeded.
+
+The previous local scorer binary was absent in this container. Validation
+rebuilt clean source commit `a164969ac4d96ff39eace7086ad22c0538d95705`,
+manifest version `1.1.110`, with neat-core `v0.23.7`, using
+`cargo build --locked --release --bin rust_scorer` and `rustc 1.99.1`.
+The binary SHA-256 is
+`8e6e46de1faf4ed46867e55e5ac2422c149932a5124d605c28a6e1099f77e26a`,
+matching the earlier correctness build. Its `--help` confirms `--cohort` support.
+This identifies the local validation binary, not the production-installed scorer.
+
+With `NEAT_SCORER_BIN` explicitly pointing at this binary,
+`cargo test --locked --test real_scorer -- --nocapture` passed all seven tests
+without scorer-availability skips. `cargo test --locked --lib exact` passed all
+14 selected tests. These cover full-cohort ranking, separate ordinary
+winner/parent verification, diagnostic explore-quota behaviour, legacy fallback
+and journal/report compatibility on generated fixtures; they are correctness
+evidence rather than production measurements.
+
+A completion-retry search at checkpoint `a4a7497` again found no verified
+production champion, matching binary corpus or retained `experiments.jsonl`
+under the readable workspace and temporary directories listed above. Dependency
+and build caches and worker state were excluded. The matching creature files
+were GRQ fixtures or historical diagnostic captures; the other `.bin` files
+were browser snapshots. `/data` remains absent, and `NEAT_SCORER_BIN`, `SCORER`,
+`C` and `D` are unset. No production inputs were available to measure promotion
+cost, freeze a treatment width or start either trial. This reproduces the
+outstanding production-evidence finding; it does not resolve it.
+
+The existing promotion and reporting implementation was preserved. No
+production width was selected from the generated-fixture profiles. Production
+improvement per actual wall hour, acceptances, exact candidates per iteration,
+wall split, rank comparisons, scorer failures, fallback executions and baseline
+vetoes remain unmeasured. The 1.5× ratio is unevaluated; missing inputs do not
+establish a negative result or a zero-gain control. Legacy defaults remain.
 
 ## What to do with the answer
 
